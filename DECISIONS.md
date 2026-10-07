@@ -28,3 +28,4 @@
 26. Opening call made at the first second of the window using an estimated K (proxy average of the same 60 s + basis) when Kalshi's floor_strike is not yet published; markets refresh every second until it is. Previously the call waited 6–36 s for floor_strike.
 27. Timing gate has a 'waiting' state before the entry window and in the final minute; it still blocks entries (the rule is unchanged) but is not shown or counted as a failure.
 28. Analytics page fetches /api/engine/analytics once a minute: it is historical, so it is not pushed over the live WebSocket 3×/s.
+29. Market discovery queries markets closing within the next hour (min_close_ts/max_close_ts) instead of status=open + status=unopened. Verified live 2026-10-07: status=unopened returns the furthest-future markets first (a day ahead, paginated), so the next round was often absent; at 16:30 the app had no current market for 3 s and its 'next' market was 21:15. Known markets are also kept until they close.
