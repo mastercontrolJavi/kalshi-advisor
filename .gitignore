@@ -8,3 +8,4 @@ node_modules/
 logs/
 coverage/
 *.tsbuildinfo
+data/*.json

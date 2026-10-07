@@ -7,7 +7,7 @@ export class ProxyFeed {
   venues:Record<string,Venue>={};history:Sample[]=[];private sockets:ReconnectingSocket[]=[];
   constructor(private log:(event:string,data:unknown)=>void=()=>{}){}
   private add(name:string,url:string,subscribe:()=>unknown[],parse:(m:any)=>[number,number,number|null]|null){
-    const venue=this.venues[name]={name,mid:null,spread:null,updated:0,lag:null,status:'disconnected'};
+    const venue:Venue=this.venues[name]={name,mid:null,spread:null,updated:0,lag:null,status:'disconnected'};
     this.sockets.push(new ReconnectingSocket(url,subscribe,m=>{const p=parse(m);if(!p)return;const [bid,ask,ts]=p;if(!Number.isFinite(bid)||!Number.isFinite(ask)||bid<=0||ask<bid)return;venue.mid=(bid+ask)/2;venue.spread=ask-bid;venue.updated=Date.now();venue.lag=ts===null?null:Math.max(0,Date.now()-ts);},status=>{venue.status=status;this.log('feed-status',{name,status});}));
   }
   start(){
