@@ -14,7 +14,8 @@ export class Orderbook {
   // Sequencing is checked per subscription by the feed; a REST snapshot never accepts WS deltas.
   delta(side:'yes'|'no',price:number,delta:number){
     if(!this.valid||this.source!=='ws'){this.valid=false;return false;}
-    const book=this[side],p=Math.round(price*10000),quantity=(book.get(p)??0)+delta;
+    // Fixed-point quantities: round away float residue so emptied levels are deleted, not left as phantom bids.
+    const book=this[side],p=Math.round(price*10000),quantity=Math.round(((book.get(p)??0)+delta)*1e6)/1e6;
     if(!Number.isFinite(quantity)||quantity<-.0001){this.valid=false;return false;}
     if(quantity<=0)book.delete(p);else book.set(p,quantity);
     this.updated=Date.now();return true;

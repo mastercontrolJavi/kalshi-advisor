@@ -20,7 +20,8 @@ export function guardrails(events:RealEvent[],startBalance:number,config:Config,
 }
 export function fillWarnings(fill:RealEvent,suggested:number|null,priorPrices:{time:number;price:number}[],config:Config){
   const warnings:string[]=[];
-  if(suggested!==null&&fill.contracts>suggested)warnings.push(`Oversize: ${fill.contracts} filled vs ${suggested} suggested`);
+  // A zero suggestion means sizing was unavailable (no account state), not a recommendation to compare against.
+  if(suggested!==null&&suggested>0&&fill.contracts>suggested)warnings.push(`Oversize: ${fill.contracts} filled vs ${suggested} suggested`);
   const prices=priorPrices.filter(p=>p.time>=fill.time-config.chaseSeconds*1000&&p.time<fill.time);
   if(prices.length&&fill.price!==undefined&&fill.price-prices[0].price>config.chaseMove)warnings.push(`Chase: price rose ${((fill.price-prices[0].price)*100).toFixed(1)}¢ before fill`);
   return warnings;

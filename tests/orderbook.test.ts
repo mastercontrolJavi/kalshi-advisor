@@ -4,6 +4,7 @@ import {generateKeyPairSync,verify,constants} from 'node:crypto';
 import {signedHeaders,bookPrice,effectiveFees,KalshiFeed,KalshiClient} from '../src/engine/feeds/kalshi';
 it('applies deltas to a WS snapshot',()=>{const b=new Orderbook();b.snapshot([['.4','20']],[['.5','30']]);expect(b.delta('yes',.4,-5)).toBe(true);expect(b.view().yes[0]).toEqual([.4,15]);expect(b.view().yesAsk).toBe(.5);});
 it('REST cannot seed WS deltas and negative depth invalidates',()=>{const b=new Orderbook();b.snapshot([['.4','1']],[],'rest');expect(b.delta('yes',.4,2)).toBe(false);b.snapshot([['.4','1']],[]);expect(b.delta('yes',.4,-2)).toBe(false);expect(b.valid).toBe(false);});
+it('emptied fractional levels are deleted, not left as float-residue phantom bids',()=>{const b=new Orderbook();b.snapshot([['0.74','0.1'],['0.73','5']],[]);b.delta('yes',.74,0.2);b.delta('yes',.74,-0.3);expect(b.view().yesBid).toBe(.73);});
 it('sequence is consecutive per subscription id',()=>{const s=new SubscriptionSequence();expect(s.accept(1,1)).toBe(true);expect(s.accept(1,2)).toBe(true);expect(s.accept(2,7)).toBe(true);expect(s.accept(1,4)).toBe(false);});
 const feed=()=>{const logs:string[]=[];const f=new KalshiFeed(new KalshiClient('',''),e=>logs.push(e));for(const t of ['A','B'])f.books.set(t,new Orderbook());(f as any).recover=()=>logs.push('recover');return {f,logs};};
 it('replays live shared-sid interleaving of two markets without false gaps',()=>{const {f,logs}=feed();
