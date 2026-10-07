@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+:root{color-scheme:dark;--background:240 6% 4%;--foreground:0 0% 96%}
+body{margin:0;background:#090b0d;color:#f4f4f5;font-family:Arial,Helvetica,sans-serif;font-variant-numeric:tabular-nums}
+summary{cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}summary:after{content:'＋';float:right;color:#71717a}details[open]>summary:after{content:'−'}
+input[type=checkbox]{accent-color:#34d399;min-width:20px;min-height:20px}
+.chart{height:250px;min-width:0}.label{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#a1a1aa}
+a{color:inherit}button,a,summary{touch-action:manipulation}.mono{font-family:Consolas,monospace}
+@media(max-width:640px){.chart{height:200px}}

@@ -24,7 +24,7 @@ export class KalshiClient {
         if(auth&&!this.clockSynced)throw new Error('Server clock not synchronized');
         const started=Date.now();
         const response=await fetch(REST+path,{headers:auth?this.headers('/trade-api/v2'+path):{},redirect:'error',signal:AbortSignal.timeout(10000)});
-        const server=response.headers.get('date');if(server){this.clockOffset=Date.parse(server)-(started+Date.now())/2;this.clockSynced=Number.isFinite(this.clockOffset);}
+        const server=response.headers.get('date');if(server){const offset=Date.parse(server)+500-(started+Date.now())/2;if(!this.clockSynced||Math.abs(offset-this.clockOffset)>2000)this.clockOffset=offset;this.clockSynced=Number.isFinite(this.clockOffset);}
         if(response.status===429){await new Promise(r=>setTimeout(r,Math.min(8000,300*2**attempt)));continue;}
         if(!response.ok)throw new Error(`Kalshi GET ${path.split('?')[0]}: HTTP ${response.status}`);
         return response.json();
@@ -42,7 +42,7 @@ export class KalshiClient {
 export class KalshiFeed {
   markets:Market[]=[];books=new Map<string,Orderbook>();status='disconnected';lag:number|null=null;lastMessage=0;fees:FeeSchedule={...baseFees,verified:false};
   trades:{ticker:string;time:number;yesPrice:number;count:number;takerSide:string}[]=[];
-  private socket?:ReconnectingSocket;private signature='';private refreshing=false;
+  private socket?:ReconnectingSocket;private signature='';private refreshing=false;private polling=false;
   constructor(public client:KalshiClient,private log:(event:string,data:unknown)=>void,private onTrade:(t:any)=>void=()=>{},private onFill:()=>void=()=>{}){}
   async refresh(){
     if(this.refreshing)return;this.refreshing=true;
@@ -69,7 +69,7 @@ export class KalshiFeed {
     },status=>{this.status=status;if(status!=='connected')for(const b of this.books.values())b.valid=false;this.log('kalshi-status',{status});},()=>this.client.headers('/trade-api/ws/v2'));
     this.socket.start();
   }
-  async fallback(){for(const m of this.markets){const b=this.books.get(m.ticker)!;if(this.status==='connected'&&b.valid&&b.source==='ws')continue;const r=await this.client.get('/markets/'+encodeURIComponent(m.ticker)+'/orderbook');b.snapshot(r.orderbook_fp?.yes_dollars??[],r.orderbook_fp?.no_dollars??[],null,'rest');}}
+  async fallback(){if(this.polling)return;this.polling=true;try{for(const m of this.markets){const b=this.books.get(m.ticker)!;if(this.status==='connected'&&b.valid&&b.source==='ws')continue;const r=await this.client.get('/markets/'+encodeURIComponent(m.ticker)+'/orderbook');b.snapshot(r.orderbook_fp?.yes_dollars??[],r.orderbook_fp?.no_dollars??[],null,'rest');}}finally{this.polling=false;}}
   recover(){for(const b of this.books.values())b.valid=false;this.connect();void this.fallback().catch(e=>this.log('book-resync-error',{message:e.message}));}
   stop(){this.socket?.stop();}
 }
