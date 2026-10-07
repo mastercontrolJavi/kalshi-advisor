@@ -2,8 +2,8 @@
 import {memo} from 'react';
 import {LineChart,Line,XAxis,YAxis,Tooltip,ResponsiveContainer,CartesianGrid,ReferenceLine} from 'recharts';
 // SVG presentation attributes cannot read CSS variables; these mirror the globals.css tokens.
-export const chartColors={yes:'#3ee08f',info:'#74adff',grid:'#1c242e',axis:'#6b7886',surface:'#121820',line:'#2a3542'};
-function ProbabilityChart({data}:{data:{time:number;model:number|null;market:number|null}[]}){
+export const chartColors={yes:'#3ee08f',info:'#74adff',tactics:'#c4a5ff',grid:'#1c242e',axis:'#6b7886',surface:'#121820',line:'#2a3542'};
+function ProbabilityChart({data}:{data:{time:number;model:number|null;market:number|null;quant?:number|null}[]}){
   if(!data.length)return <div className="chart flex items-center justify-center rounded-xl border border-dashed border-line text-sm text-muted">The chart fills in as this window runs.</div>;
   const last=data.at(-1);
   return <div className="chart" role="img" aria-label={`Model probability up ${last?.model!=null?Math.round(last.model*100)+'%':'unavailable'} versus Kalshi midpoint ${last?.market!=null?Math.round(last.market*100)+'%':'unavailable'} over this window`}><ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{top:8,right:8,bottom:0,left:0}}>
@@ -12,7 +12,8 @@ function ProbabilityChart({data}:{data:{time:number;model:number|null;market:num
     <YAxis domain={[0,1]} ticks={[0,.25,.5,.75,1]} tickFormatter={v=>`${Math.round(v*100)}%`} width={40} stroke={chartColors.axis} tick={{fontSize:11}} tickLine={false} axisLine={false}/>
     <ReferenceLine y={.5} stroke={chartColors.line} strokeDasharray="4 4"/>
     <Tooltip labelFormatter={t=>new Date(Number(t)).toLocaleTimeString()} formatter={(v,name)=>[v===null?'—':`${(Number(v)*100).toFixed(1)}%`,name]} contentStyle={{background:chartColors.surface,border:`1px solid ${chartColors.line}`,borderRadius:12,fontSize:12}}/>
-    <Line name="Model" dataKey="model" type="linear" stroke={chartColors.yes} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={false}/>
+    <Line name="Quant" dataKey="quant" type="linear" stroke={chartColors.yes} strokeWidth={2.5} dot={false} isAnimationActive={false} connectNulls={false}/>
+    <Line name="Model" dataKey="model" type="linear" stroke={chartColors.axis} strokeWidth={1.25} strokeDasharray="3 3" dot={false} isAnimationActive={false} connectNulls={false}/>
     <Line name="Kalshi mid" dataKey="market" type="linear" stroke={chartColors.info} strokeWidth={1.5} dot={false} isAnimationActive={false}/>
   </LineChart></ResponsiveContainer></div>;
 }

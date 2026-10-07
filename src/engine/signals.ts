@@ -2,7 +2,7 @@ import type {Config} from './config';
 import {fee,type FeeSchedule} from './model/fees';
 import type {Market} from './feeds/kalshi';
 import {Orderbook} from './feeds/orderbook';
-export interface Idea {side:'yes'|'no';kind:'taker'|'maker';price:number;fee:number;edge:number;contracts:number;cost:number;maxLoss:number;queue:number;reason:string;belowMinSize?:boolean}
+export interface Idea {side:'yes'|'no';kind:'taker'|'maker'|'scalp'|'dip';target?:number;price:number;fee:number;edge:number;contracts:number;cost:number;maxLoss:number;queue:number;reason:string;belowMinSize?:boolean}
 export function size(prob:number,price:number,balance:number,config:Config,schedule:FeeSchedule,kind:'taker'|'maker'='taker'){
   if(!Number.isFinite(balance)||balance<=0||price<=0||price>=1||prob<=price)return {contracts:0,cost:0,maxLoss:0};
   const cost=price+fee(price,1,kind,schedule),fraction=Math.max(0,(prob-cost)/(1-cost))*config.kellyFraction;
@@ -17,7 +17,7 @@ export function roundDownTick(price:number,market:Market){
   for(const r of ranges){const lo=Number(r.start),hi=Number(r.end),step=Number(r.step);if(step<=0||price<lo)continue;const p=lo+Math.floor((Math.min(price,hi)-lo+1e-10)/step)*step;if(p<=price+1e-9)candidate=Math.max(candidate,p);}
   return Math.round(Math.min(.999,Math.max(0,candidate))*10000)/10000;
 }
-export interface Gate {key:string;label:string;ok:boolean;detail:string;advisory?:boolean}
+export interface Gate {key:string;label:string;ok:boolean;detail:string;advisory?:boolean;wait?:boolean}
 export interface Evaluation {action:string;reason:string;idea:Idea|null;makers:Idea[];edges:{yes:number|null;no:number|null};gates?:Gate[]}
 type Conditions={feedsHealthy:boolean;kConfirmed:boolean;lock:string|null;modelReady:boolean;accountReady:boolean;now:number;healthyFeeds?:number;totalFeeds?:number};
 const cents=(x:number)=>`${(x*100).toFixed(1)}¢`;
@@ -36,7 +36,8 @@ export function gateChecklist(p:number,tau:number,book:Orderbook,market:Market,b
     {key:'account',label:'Account',ok:c.accountReady&&balance!==null,detail:c.accountReady?'synced':'unavailable'},
     {key:'guards',label:'Guardrails',ok:!c.lock,detail:c.lock??'clear'},
     {key:'edge',label:'Edge',ok:Number.isFinite(edge)&&edge>=config.minEdge,detail:Number.isFinite(edge)?`${side.toUpperCase()} ${cents(edge)} vs ${cents(config.minEdge)} min`:'no ask'},
-    {key:'timing',label:'Timing',ok:tau>=60&&(inSweet||edge>=config.earlyEdge),detail:tau<60?'final minute':inSweet?'in window':`opens at ${Math.round(config.sweetMaxSeconds/60)}:00 left${edge>=config.earlyEdge?'':` (or ${cents(config.earlyEdge)}+ edge)`}`},
+    // Before the entry window and in the final minute, timing is a schedule, not a fault: show it as waiting.
+    {key:'timing',label:'Timing',ok:tau>=60&&(inSweet||edge>=config.earlyEdge),wait:tau<60||tau>config.sweetMaxSeconds,detail:tau<60?'closed for entries (final minute)':inSweet?'in entry window':`opens in ${Math.floor((tau-config.sweetMaxSeconds)/60)}:${String(Math.floor((tau-config.sweetMaxSeconds)%60)).padStart(2,'0')} (or ${cents(config.earlyEdge)}+ edge now)`},
     {key:'spread',label:'Spread',ok:price!==null&&bid!==null&&price-bid<=config.maxSpread+1e-8,detail:price!==null&&bid!==null?`${cents(price-bid)} vs ${cents(config.maxSpread)} max`:'one-sided'},
     {key:'depth',label:'Depth',ok:depth>=config.minDepth,detail:`${Math.floor(depth)} vs ${config.minDepth} min`},
     // With signalBelowMinSize the size check informs the contract count but no longer blocks the signal or its paper trade.

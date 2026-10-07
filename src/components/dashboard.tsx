@@ -1,7 +1,7 @@
 'use client';
 import {useState} from 'react';
 import dynamic from 'next/dynamic';
-import {LineChart as ChartIcon,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,ArrowUpRight,BellRing} from 'lucide-react';
+import {LineChart as ChartIcon,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,BellRing,Crosshair} from 'lucide-react';
 import {useSoundAlerts} from './use-sound-alerts';
 import {SoundPanel,SoundToggle} from './sound-panel';
 import {useLive} from './use-live';
@@ -9,7 +9,8 @@ import Settings from './settings';
 import {Button} from './ui/button';
 import {Input} from './ui/input';
 import {Card} from './ui/card';
-import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Session,Feeds,Collapsible,WindowBar,Pill,actionTone} from './panels';
+import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Tactics,Session,Feeds,Collapsible,WindowBar,Pill,actionTone} from './panels';
+import {SiteHeader} from './site-header';
 import {ago,signedDollars} from './format';
 const ProbabilityChart=dynamic(()=>import('./probability-chart'),{ssr:false,loading:()=><div className="chart animate-pulse rounded-xl bg-surface-2"/>});
 
@@ -20,29 +21,22 @@ export default function Dashboard(){
   const ambient=!fresh?'warn':tone==='yes'||tone==='no'?tone:'none';
   return <>
     <div aria-hidden className="ambient" data-tone={ambient}/>
-    <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md">
-      <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:px-6">
-        <a href="/" className="flex items-center gap-2.5"><img src="/icon.svg" alt="" width={28} height={28} className="size-7"/><span className="font-display text-xl font-bold tracking-wide">KALSHI<span className="text-yes">/ADVISOR</span></span></a>
-        <span className="num hidden truncate text-xs text-muted sm:inline">{s?.market?.ticker??'waiting for market'}</span>
-        <nav className="ml-auto flex items-center gap-2 text-sm">
-          <SoundToggle prefs={sound.prefs} setPrefs={sound.setPrefs} ready={sound.ready}/>
-          <Pill tone={fresh?'yes':'warn'}><span className={fresh?'pulse size-1.5 rounded-full bg-yes':'size-1.5 rounded-full bg-warn'}/>{fresh?'Live':connected?'Stale':'Reconnecting'}</Pill>
-          <Pill tone={healthy===4?'neutral':'warn'} title="Exchange price feeds live">{healthy}/4 feeds</Pill>
-          <span className="num hidden text-xs text-muted md:inline" title="Age of data on screen">{s?ago(Math.max(0,Date.now()-s.engineTime)):'—'}</span>
-          <a className="inline-flex min-h-11 items-center gap-1 rounded-xl px-3 text-muted transition-colors hover:text-fg" href="/calibration">Calibration<ArrowUpRight aria-hidden className="size-4"/></a>
-        </nav>
-      </div>
-      <WindowBar s={s}/>
-    </header>
+    <SiteHeader current="/" bottom={<WindowBar s={s}/>} aside={<span className="num hidden truncate text-xs text-muted xl:inline">{s?.market?.ticker??'waiting for market'}</span>}>
+      <SoundToggle prefs={sound.prefs} setPrefs={sound.setPrefs} ready={sound.ready}/>
+      <Pill tone={fresh?'yes':'warn'}><span className={fresh?'pulse size-1.5 rounded-full bg-yes':'size-1.5 rounded-full bg-warn'}/>{fresh?'Live':connected?'Stale':'Reconnecting'}</Pill>
+      <Pill tone={healthy===4?'neutral':'warn'} title="Exchange price feeds live">{healthy}/4 feeds</Pill>
+      <span className="num hidden text-xs text-muted md:inline" title="Age of data on screen">{s?ago(Math.max(0,Date.now()-s.engineTime)):'—'}</span>
+    </SiteHeader>
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 pt-4 pb-16 sm:px-6">
       <div className="grid gap-4 lg:grid-cols-12">
         <div className="lg:col-span-8"><SignalPanel s={s} fresh={fresh}/></div>
         <div className="lg:col-span-4"><ForecastPanel s={s} fresh={fresh}/></div>
       </div>
       <Positions s={s} fresh={fresh}/>
+      <Collapsible open title="Scalp & dip" icon={<Crosshair aria-hidden className="size-4 text-info"/>} aside={fresh&&s?.tactics?.ideas?.length?<span className="text-yes">{s.tactics.ideas.length} setup{s.tactics.ideas.length>1?'s':''} now</span>:'intra-window setups'}><Tactics s={s} fresh={fresh}/></Collapsible>
       <Instruments s={s}/>
       <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-8"><Collapsible open title="Probability over this window" icon={<ChartIcon aria-hidden className="size-4 text-info"/>} aside={<span className="flex gap-3"><span className="text-yes">— Model</span><span className="text-info">— Kalshi mid</span></span>}><ProbabilityChart data={s?.history??[]}/></Collapsible></div>
+        <div className="lg:col-span-8"><Collapsible open title="Probability over this window" icon={<ChartIcon aria-hidden className="size-4 text-info"/>} aside={<span className="flex gap-3"><span className="text-yes">— Quant</span><span className="text-faint">┄ Model</span><span className="text-info">— Kalshi</span></span>}><ProbabilityChart data={s?.history??[]}/></Collapsible></div>
         <div className="lg:col-span-4"><Collapsible open title="Order book" icon={<BookOpen aria-hidden className="size-4 text-info"/>} aside="top 10 bids"><BookLadder s={s}/></Collapsible></div>
       </div>
       <div className="grid gap-4 lg:grid-cols-3">

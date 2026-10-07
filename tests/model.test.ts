@@ -16,3 +16,18 @@ describe('settlement average',()=>{
  it('missing seconds are never imputed',()=>expect(coveredSeconds([{time:0,price:100}],0,2000)).toBeNull());
  it('volatility ignores gaps',()=>expect(volatility([{time:0,price:100},{time:2000,price:120}]).count).toBe(0));
 });
+import {filledSeconds} from '../src/engine/model/math';
+it('final-minute gaps up to 5 s are bridged by interpolation; longer gaps still pause the model',()=>{
+  const s=(t:number,p:number)=>({time:t*1000,price:p});
+  const one=filledSeconds([s(0,100),s(1,101),s(3,103),s(4,104)],0,5000)!;expect(one.values).toEqual([100,101,102,103,104]);expect(one.imputed).toBe(1);
+  const edge=filledSeconds([s(-1,99),s(1,101),s(2,102)],0,3000)!;expect(edge.values[0]).toBeCloseTo(100);expect(edge.imputed).toBe(1);
+  const tail=filledSeconds([s(0,100),s(1,101)],0,3000)!;expect(tail.values).toEqual([100,101,101]);
+  expect(filledSeconds([s(0,100),s(7,107)],0,8000)).toBeNull();expect(filledSeconds([],0,3000)).toBeNull();expect(filledSeconds([s(0,1)],0,0)).toEqual({values:[],imputed:0});});
+import {warmVolatility} from '../src/engine/model/math';
+it('after a restart the saved σ carries the model until enough fresh returns arrive',()=>{
+  const now=1e9,saved={sigma:.00003,time:now-3600000};
+  const cold=warmVolatility({sigma:0,count:0,regime:'warming'},saved,120,now);expect(cold.source).toBe('carried over');expect(cold.sigma).toBeCloseTo(.00003);expect(cold.count).toBe(120);
+  const half=warmVolatility({sigma:.00005,count:60,regime:'normal'},saved,120,now);expect(half.sigma).toBeCloseTo(Math.sqrt(.5*.00005**2+.5*.00003**2));
+  expect(warmVolatility({sigma:.00004,count:200,regime:'calm'},saved,120,now)).toMatchObject({sigma:.00004,source:'live'});
+  expect(warmVolatility({sigma:0,count:5,regime:'warming'},{sigma:.00003,time:now-13*3600000},120,now).source).toBe('warming');
+  expect(warmVolatility({sigma:0,count:5,regime:'warming'},null,120,now).count).toBe(5);});

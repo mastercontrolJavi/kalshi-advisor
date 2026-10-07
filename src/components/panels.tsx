@@ -1,6 +1,6 @@
 'use client';
 import {useEffect,useRef,type ReactNode} from 'react';
-import {Check,X,Info,ChevronRight,ArrowUpRight,ArrowDownRight,Minus,Radio,Gauge,Wallet,BookOpen,Layers,ShieldCheck,Activity,TriangleAlert,Crosshair} from 'lucide-react';
+import {Check,X,Info,Clock,Zap,TrendingDown,ChevronRight,ArrowUpRight,ArrowDownRight,Minus,Radio,Gauge,Wallet,BookOpen,Layers,ShieldCheck,Activity,TriangleAlert,Crosshair} from 'lucide-react';
 import {Card} from './ui/card';
 import {cn} from '@/lib/utils';
 import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,ago} from './format';
@@ -45,19 +45,19 @@ export function WindowBar({s}:{s:any}){
 
 export function SignalPanel({s,fresh}:{s:any;fresh:boolean}){
   const ev=s?.evaluation,idea=fresh?ev?.idea:null,action=fresh?ev?.action??'NO TRADE':'NO TRADE',tone=actionTone(action),tau=Math.max(0,s?.tau??0);
-  const gates:any[]=fresh?ev?.gates??[]:[],failed=gates.filter(g=>!g.ok&&!g.advisory).length,paperOnly=!!idea?.belowMinSize;
+  const gates:any[]=fresh?ev?.gates??[]:[],failed=gates.filter(g=>!g.ok&&!g.advisory&&!g.wait).length,waiting=gates.find(g=>!g.ok&&g.wait),paperOnly=!!idea?.belowMinSize;
   return <Card className={cn('rise relative overflow-hidden',toneBorder[tone])}>
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div><div className="label">Time to close</div><div className={cn('num mt-1 text-5xl font-bold sm:text-6xl',tau<=60&&s?.market?'text-warn':'')}>{s?.market?mmss(tau):'--:--'}</div>{tau<=60&&s?.market?<div className="mt-1 text-xs text-warn">Final minute · settlement average locking</div>:null}</div>
       <div className="flex gap-6 text-right"><div><div className="label">Net edge</div><div className={cn('num mt-1 text-3xl font-semibold',idea?toneText[tone]:'text-muted')}>{idea?signedCents(idea.edge):'—'}</div></div><div><div className="label">Contracts</div><div className="num mt-1 text-3xl font-semibold">{idea?.contracts??0}</div>{paperOnly?<div className="text-xs text-info">paper only</div>:null}</div></div>
     </div>
     <div className={cn('font-display mt-4 text-6xl leading-none font-bold tracking-tight uppercase sm:text-8xl',toneText[tone])} aria-live="polite">{action}</div>
-    <p className="mt-3 max-w-3xl text-[15px] text-fg/90">{fresh?(idea?ev.reason:failed?`${failed} of ${gates.length} checks failing`:ev?.reason??'Warming up'):'Live state unavailable — advice suppressed'}</p>
+    <p className="mt-3 max-w-3xl text-[15px] text-fg/90">{fresh?(idea?ev.reason:failed?`${failed} of ${gates.length} checks failing${waiting?` · ${waiting.label.toLowerCase()} ${waiting.detail}`:''}`:waiting?`All checks clear — waiting: ${waiting.detail}`:ev?.reason??'Warming up'):'Live state unavailable — advice suppressed'}</p>
     {idea?<p className="mt-1 text-sm text-muted">{paperOnly?<><span className="text-info">Below 1 contract at your risk settings — logged as a paper trade.</span> One contract would cost {dollars(idea.price+idea.fee)}.</>:<>Spend / max loss {dollars(idea.maxLoss)} · ask {cents(idea.price)} + {cents(idea.fee,2)} fee</>}</p>:null}
-    {gates.length?<ul className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" aria-label="Trade checks">{gates.some(g=>g.ok)?<li className="flex items-center gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2 text-sm text-muted sm:hidden"><Check aria-hidden className="size-4 text-yes"/>{gates.filter(g=>g.ok).length} passing</li>:null}{gates.map(g=>{const info=!g.ok&&g.advisory;return <li key={g.key} className={cn('items-start gap-2 rounded-xl border px-3 py-2',g.ok?'hidden border-line bg-surface-2/60 sm:flex':info?'flex border-info/35 bg-info/10':'flex border-warn/35 bg-warn-dim/40')}>
-      {g.ok?<Check aria-label="pass" className="mt-0.5 size-4 shrink-0 text-yes"/>:info?<Info aria-label="information" className="mt-0.5 size-4 shrink-0 text-info"/>:<X aria-label="fail" className="mt-0.5 size-4 shrink-0 text-warn"/>}
-      <div className="min-w-0"><div className="text-sm font-medium">{g.label}</div><div className={cn('text-xs leading-snug',g.ok?'text-faint':info?'text-info':'text-warn')}>{g.detail}</div></div></li>;})}</ul>:null}
-    <p className="mt-4 text-xs text-faint">Model is a proxy diffusion estimate — check Calibration before relying on edge. YES edge {signedCents(s?.model?ev?.edges?.yes:null)} · NO edge {signedCents(s?.model?ev?.edges?.no:null)}</p>
+    {gates.length?<ul className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" aria-label="Trade checks">{gates.some(g=>g.ok)?<li className="flex items-center gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2 text-sm text-muted sm:hidden"><Check aria-hidden className="size-4 text-yes"/>{gates.filter(g=>g.ok).length} passing</li>:null}{gates.map(g=>{const info=!g.ok&&g.advisory,wait=!g.ok&&g.wait;return <li key={g.key} className={cn('items-start gap-2 rounded-xl border px-3 py-2',g.ok?'hidden border-line bg-surface-2/60 sm:flex':wait?'flex border-line-strong bg-surface-2/60':info?'flex border-info/35 bg-info/10':'flex border-warn/35 bg-warn-dim/40')}>
+      {g.ok?<Check aria-label="pass" className="mt-0.5 size-4 shrink-0 text-yes"/>:wait?<Clock aria-label="waiting" className="mt-0.5 size-4 shrink-0 text-muted"/>:info?<Info aria-label="information" className="mt-0.5 size-4 shrink-0 text-info"/>:<X aria-label="fail" className="mt-0.5 size-4 shrink-0 text-warn"/>}
+      <div className="min-w-0"><div className="text-sm font-medium">{g.label}</div><div className={cn('text-xs leading-snug',g.ok||wait?'text-faint':info?'text-info':'text-warn')}>{g.detail}</div></div></li>;})}</ul>:null}
+    <p className="mt-4 text-xs text-faint">Edges use the {s?.quant?.signalSource==='quant'?'quant forecast (model blended with Kalshi)':'raw model'} after fees — YES {signedCents(s?.model?ev?.edges?.yes:null)} · NO {signedCents(s?.model?ev?.edges?.no:null)}. Check Calibration before relying on edge.</p>
   </Card>;
 }
 
@@ -68,12 +68,12 @@ export function ForecastPanel({s,fresh}:{s:any;fresh:boolean}){
   const elapsed=s?.market?(Date.parse(s.market.close_time)-Date.parse(s.market.open_time))/1000-(s?.tau??0):null;
   return <Card className="rise flex flex-col gap-5 [animation-delay:60ms]">
     <section>
-      <Heading icon={<Radio aria-hidden className="size-4 text-info"/>} title="Live call" aside={q?<Pill tone={qTone} title={q.issues.join(' · ')}>{q.level==='solid'?<ShieldCheck aria-hidden className="size-3.5"/>:<TriangleAlert aria-hidden className="size-3.5"/>}Data {q.level}</Pill>:null}/>
+      <Heading icon={<Radio aria-hidden className="size-4 text-info"/>} title="Live call · quant" aside={q?<Pill tone={qTone} title={q.issues.join(' · ')}>{q.level==='solid'?<ShieldCheck aria-hidden className="size-3.5"/>:<TriangleAlert aria-hidden className="size-3.5"/>}Data {q.level}</Pill>:null}/>
       {live?<>
         <div className="mt-3 flex items-end gap-3"><DirIcon d={live.direction} className={cn('size-12',toneText[liveTone])}/><div className={cn('font-display text-6xl leading-none font-bold',toneText[liveTone])}>{live.direction}</div>
           <div className="mb-1 ml-auto text-right"><div className="num text-3xl font-semibold">{pct(live.direction==='UP'?live.p:1-live.p)}</div><div className="text-xs text-muted">{live.confidence}</div></div></div>
         <ProbBar p={live.p} mid={s?.book?.yesBid!=null&&s?.book?.yesAsk!=null?(s.book.yesBid+s.book.yesAsk)/2:null} label="Live call"/>
-        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted"><span>Held <span className="num text-fg">{mmss(held)}</span></span><span>{live.flips} flip{live.flips===1?'':'s'} this window</span><span>Model alone {pct(live.baseP)}</span><span className="flex items-center gap-1"><span className="inline-block h-3 w-0.5 bg-info"/>Kalshi</span></div>
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted"><span>Held <span className="num text-fg">{mmss(held)}</span></span><span>{live.flips} flip{live.flips===1?'':'s'} this window</span><span>Model {pct(live.baseP)}</span><span className="flex items-center gap-1"><span className="inline-block h-3 w-0.5 bg-info"/>Kalshi {pct(s?.quant?.mid)}</span><span>{s?.quant?.active==='fitted'?`learned blend · ${s.quant.markets} markets`:'default blend'}</span></div>
         <details className="mt-3"><summary className="flex min-h-9 items-center gap-1 text-xs text-muted"><ChevronRight aria-hidden className="chev size-3.5"/>Why this call</summary><ul className="mt-2 space-y-1 text-xs text-muted">{live.reasons.map((r:string)=><li key={r}>{r}</li>)}</ul></details>
       </>:<p className="mt-3 text-sm text-muted">{!fresh?'Live state unavailable.':q?.level==='unreliable'?`Paused — ${q.issues.join(', ')}.`:'Waiting for the model.'}</p>}
       {q?.level==='degraded'?<p className="mt-2 text-xs text-warn">{q.issues.join(' · ')}</p>:null}
@@ -81,13 +81,23 @@ export function ForecastPanel({s,fresh}:{s:any;fresh:boolean}){
     <section className="border-t border-line pt-4">
       <Heading icon={<Crosshair aria-hidden className="size-4 text-faint"/>} title="Opening call" aside={rec?.count?<span>{rec.hits}/{rec.count} correct · CI {pct(rec.low,0)}–{pct(rec.high,0)}</span>:<span>no settled calls yet</span>}/>
       {open?<div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1"><span className={cn('font-display flex items-center gap-1 text-3xl font-bold',open.direction==='UP'?'text-yes':'text-no')}><DirIcon d={open.direction} className="size-6"/>{open.direction}</span><span className="num text-lg">{pct(open.direction==='UP'?open.p:1-open.p)}</span>
-        {s?.proxy!=null&&s?.K!=null?<Pill tone={(s.proxy>=s.K)===(open.direction==='UP')?'yes':'warn'}>{(s.proxy>=s.K)===(open.direction==='UP')?'On track':'Behind'}</Pill>:null}<span className="text-xs text-faint">frozen at {mmss(open.tau)} left · Kalshi {pct(open.mid)}</span></div>
+        {s?.proxy!=null&&s?.K!=null?<Pill tone={(s.proxy>=s.K)===(open.direction==='UP')?'yes':'warn'}>{(s.proxy>=s.K)===(open.direction==='UP')?'On track':'Behind'}</Pill>:null}<span className="text-xs text-faint">frozen at {mmss(open.tau)} left · Kalshi {pct(open.mid)}{open.inputs?.kSource==='proxy estimate'?' · K estimated':''}</span></div>
       :<p className="mt-2 text-sm text-muted">{s?.market&&elapsed!==null&&elapsed<60?'Making the call for this window…':'No call this window — the engine was not live in its first minute.'}</p>}
     </section>
-    <p className="text-xs text-faint">Both calls use an untested momentum/flow lean (max ±10 pts). Scored on the Calibration page against a coin flip and Kalshi.</p>
+    <NextWindow s={s} fresh={fresh}/>
+    <p className="text-xs text-faint">Calls blend the model with Kalshi; momentum/flow only count once settled windows prove them. All are scored on the Calibration page.</p>
   </Card>;
 }
 
+function NextWindow({s,fresh}:{s:any;fresh:boolean}){
+  const n=fresh?s?.nextCall:null,tau=s?.tau??900,rec=s?.calibration?.next?.find((r:any)=>r.horizon===10),urgent=tau<=60;
+  return <section className={cn('border-t border-line pt-4',urgent&&n?'rounded-xl border border-info/30 bg-info/5 p-3':'')}>
+    <Heading icon={<Zap aria-hidden className={cn('size-4',urgent?'text-info':'text-faint')}/>} title="Next window" aside={rec?.count?<span>{rec.hits}/{rec.count} correct</span>:<span>preview</span>}/>
+    {n?<><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1"><span className={cn('font-display flex items-center gap-1 text-3xl font-bold',n.direction==='UP'?'text-yes':'text-no')}><DirIcon d={n.direction} className="size-6"/>{n.direction}</span><span className="num text-lg">{pct(n.direction==='UP'?n.p:1-n.p)}</span><span className="text-xs text-muted">{n.confidence}</span></div>
+      <p className="mt-1 text-xs text-muted">{tau>60?'Before the final minute the next window is a coin flip plus momentum — its opening price is set by this window\'s last 60 s.':`Head start if it closed now: ${n.headStart>=0?'+':'−'}$${Math.abs(n.headStart).toFixed(2)} (±$${n.headStartSd.toFixed(2)}) · next K ≈ ${dollars(n.expectedK)}`}</p></>
+    :<p className="mt-2 text-sm text-muted">Available once the model is live.</p>}
+  </section>;
+}
 function Stat({label,children,sub,tone='neutral'}:{label:string;children:ReactNode;sub?:ReactNode;tone?:Tone}){
   return <div className="min-w-0"><div className="label">{label}</div><div className={cn('num mt-1.5 text-xl font-medium sm:text-2xl',toneText[tone])}>{children}</div>{sub?<div className="mt-0.5 truncate text-xs text-muted">{sub}</div>:null}</div>;
 }
@@ -98,7 +108,7 @@ export function Instruments({s}:{s:any}){
     <Stat label="BTC proxy" sub={`median of ${s?.venues?.filter((v:any)=>v.healthy).length??0} live venues`}>{dollars(s?.proxy)}</Stat>
     <Stat label="Distance to K" tone={d>0?'yes':d<0?'no':'neutral'} sub={s?.model?`${s.model.z>=0?'+':''}${s.model.z.toFixed(2)} σ of average`:'—'}>{signedDollars(d)}</Stat>
     <Stat label="Model up" sub={<>Kalshi mid <span className="text-info">{pct(mid)}</span></>}>{pct(s?.p)}</Stat>
-    <Stat label="Volatility" sub={`${s?.vol?.count??0} returns · ${s?.lockedCount??0}/60 locked`}>{s?.regime??'warming'}</Stat>
+    <Stat label="Volatility" sub={`${s?.lockedCount??0}/60 locked${s?.lockedImputed?` (${s.lockedImputed} bridged)`:''} · basis ${s?.quant?.basis>=0?'+':'−'}$${Math.abs(s?.quant?.basis??0).toFixed(2)}`}>{s?.regime??'warming'}</Stat>
     <Stat label="Balance" sub={s?.account?.ready?'account synced':'account unavailable'}>{dollars(s?.account?.balance)}</Stat>
   </Card>;
 }
@@ -125,6 +135,18 @@ export function BookLadder({s}:{s:any}){
     <p className="col-span-2 text-xs text-faint">Each side&apos;s ask is 1 − the other side&apos;s best bid. Source: {s?.book?.source??'unavailable'}.</p></div>;
 }
 
+export function Tactics({s,fresh}:{s:any;fresh:boolean}){
+  const t=fresh?s?.tactics:null,ideas:any[]=t?.ideas??[],watch:any[]=t?.dips??[],cfg=s?.config;
+  return <div className="space-y-3">
+    {ideas.length?ideas.map(i=><div key={i.kind+i.side} className={cn('rounded-xl border p-4',i.side==='yes'?'border-yes/35 bg-yes-dim/30':'border-no/35 bg-no-dim/30')}>
+      <div className="flex flex-wrap items-baseline justify-between gap-2"><div className="font-display text-2xl font-bold uppercase">{i.kind==='scalp'?'Scalp':'Buy the dip'} · {i.side.toUpperCase()}</div><div className="num text-lg text-yes">{signedCents(i.profitAtTarget)}<span className="ml-1 text-xs text-muted">at target</span></div></div>
+      <div className="mt-2 grid grid-cols-3 gap-3 text-sm"><div><div className="label">Buy at</div><div className="num">{cents(i.price)}</div></div><div><div className="label">Sell limit</div><div className="num">{cents(i.target)}</div></div><div><div className="label">Bail below</div><div className="num">{cents(i.stopBelow)}</div></div></div>
+      <p className="mt-2 text-xs text-muted">{i.reason}</p>{i.belowMinSize?<p className="mt-1 text-xs text-info">Below 1 contract at your risk settings — paper only.</p>:<p className="mt-1 text-xs text-muted">{i.contracts} contracts suggested</p>}</div>)
+    :<p className="text-sm text-muted">{!t?'Waiting for live data.':!t.live?'Paused (guardrail, data or market state).':`No setup now. Scalps need ≥ ${cents(cfg?.scalpMinEdge,0)} after fees, ≥ ${Math.round((cfg?.scalpMinSeconds??180)/60)} min left and a tight spread.`}</p>}
+    {watch.map(w=><div key={w.side} className={cn('flex items-start gap-2 rounded-xl border px-3 py-2 text-sm',w.verdict==='buy'?'border-yes/30':'border-warn/35 bg-warn-dim/30')}><TrendingDown aria-hidden className={cn('mt-0.5 size-4 shrink-0',w.verdict==='buy'?'text-yes':'text-warn')}/>
+      <span>{w.side.toUpperCase()} dropped {cents(w.drop)} ({cents(w.from)} → {cents(w.to)}) in a minute. {w.verdict==='buy'?'Fair value barely moved — likely overreaction.':`Fair value fell ${cents(Math.max(0,w.fairDrop))} too — falling knife, don't catch it.`}</span></div>)}
+    <p className="text-xs text-faint">Every setup is paper-traded (target hit before close, else held to settlement) and scored on the Calibration page.</p></div>;
+}
 export function MakerIdeas({s,fresh}:{s:any;fresh:boolean}){
   const makers:any[]=fresh?s?.evaluation?.makers??[]:[];
   return <div className="space-y-3">{makers.length?makers.map(m=><div key={m.side} className="flex items-center justify-between rounded-xl border border-line bg-surface-2/60 p-4">

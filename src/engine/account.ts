@@ -33,13 +33,16 @@ export function normalizeAccount(fills:any[],settlements:any[]):RealEvent[]{
   }return events.sort((a,b)=>a.time-b.time);
 }
 export class Account {
-  balance:number|null=null;ready=false;updated=0;error='Credentials unavailable';positions:unknown[]=[];private busy=false;
+  balance:number|null=null;portfolioValue:number|null=null;ready=false;updated=0;error='Credentials unavailable';positions:unknown[]=[];private busy=false;
+  // Fill warnings never change once computed; recomputing ~400 of them every sync stalled the engine loop ~300 ms.
+  private warnings=new Map<string,string[]>();
   constructor(private client:KalshiClient,private journal:Journal){}
   async sync(){
     if(this.busy||!this.client.authenticated)return;this.busy=true;
     try{
-      const b=await this.client.get('/portfolio/balance',true);this.balance=Number(b.balance)/100;
+      const b=await this.client.get('/portfolio/balance',true);this.balance=Number(b.balance)/100;this.portfolioValue=Number.isFinite(Number(b.portfolio_value))?Number(b.portfolio_value)/100:null;
       if(!Number.isFinite(this.balance)||this.balance<0)throw new Error('Unsupported account balance');
+      this.journal.balance(Date.now(),this.balance,this.portfolioValue);
       this.client.limits=(await this.client.get('/account/limits',true));
       this.positions=await this.client.pages('/portfolio/positions','market_positions');
       // Persist every raw record. Refresh live pages; archived fills backfill only on first run.
@@ -50,11 +53,14 @@ export class Account {
       this.journal.db.transaction(()=>{for(const f of fills)put.run('fill:'+(f.fill_id??f.trade_id),'fill',Date.parse(f.created_time),JSON.stringify(f));for(const s of settlements)put.run('settlement:'+s.ticker,'settlement',Date.parse(s.settled_time),JSON.stringify(s));})();
       const raw=this.journal.db.prepare('SELECT type,context FROM account_raw ORDER BY time').all() as {type:string;context:string}[];
       const events=normalizeAccount(raw.filter(r=>r.type==='fill').map(r=>JSON.parse(r.context)),raw.filter(r=>r.type==='settlement').map(r=>JSON.parse(r.context)));
+      const config=this.journal.config();
       for(const e of events.filter(e=>e.type==='fill')){
-        const signal=this.journal.db.prepare('SELECT context FROM signals WHERE ticker=? AND side=? AND time<=? ORDER BY time DESC LIMIT 1').get(e.ticker,e.side,e.time) as {context:string}|undefined;
-        const prior=this.journal.db.prepare('SELECT time,context FROM ticks WHERE ticker=? AND time BETWEEN ? AND ? ORDER BY time').all(e.ticker,e.time-60000,e.time) as {time:number;context:string}[];
+        const cached=this.warnings.get(e.id);if(cached){e.warnings=cached;continue;}
+        const signal=this.journal.db.prepare("SELECT json_extract(context,'$.idea.contracts') AS contracts FROM signals WHERE ticker=? AND side=? AND time<=? ORDER BY time DESC LIMIT 1").get(e.ticker,e.side,e.time) as {contracts:number}|undefined;
+        const prior=this.journal.db.prepare(`SELECT time,json_extract(context,'$.book.${e.side==='yes'?'yesAsk':'noAsk'}') AS price FROM ticks WHERE ticker=? AND time BETWEEN ? AND ? ORDER BY time`).all(e.ticker,e.time-60000,e.time) as {time:number;price:number|null}[];
         const orderCount=events.filter(f=>f.type==='fill'&&f.orderId===e.orderId&&f.time<=e.time).reduce((sum,f)=>sum+f.contracts,0);
-        e.warnings=fillWarnings({...e,contracts:orderCount},signal?JSON.parse(signal.context).idea.contracts:null,prior.map(r=>({time:r.time,price:JSON.parse(r.context).book?.[e.side==='yes'?'yesAsk':'noAsk']})).filter(p=>Number.isFinite(p.price)),this.journal.config());
+        e.warnings=fillWarnings({...e,contracts:orderCount},signal?.contracts??null,prior.filter((p):p is {time:number;price:number}=>Number.isFinite(p.price)),config);
+        this.warnings.set(e.id,e.warnings);
       }
       this.journal.real(events);this.journal.set('historicalBackfill',true);this.ready=true;this.updated=Date.now();this.error='';
     }catch(e){this.ready=false;this.error=(e as Error).message;this.journal.log('account-error',{message:this.error});}finally{this.busy=false;}

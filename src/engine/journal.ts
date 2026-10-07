@@ -5,7 +5,7 @@ import type {Idea} from './signals';
 import {fee,type FeeSchedule} from './model/fees';
 import type {RealEvent} from './guardrails';
 import type {OpeningCall} from './model/opening';
-export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls'] as const;
+export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances'] as const;
 export class Journal {
   db:Database.Database;
   constructor(path='./data/advisor.db'){
@@ -20,6 +20,8 @@ export class Journal {
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,time INTEGER NOT NULL,event TEXT NOT NULL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS opening_calls(ticker TEXT PRIMARY KEY,time INTEGER NOT NULL,tau REAL NOT NULL,direction TEXT NOT NULL,p REAL NOT NULL,base_p REAL NOT NULL,lean REAL NOT NULL,mid REAL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS live_calls(ticker TEXT NOT NULL,horizon INTEGER NOT NULL,time INTEGER NOT NULL,tau REAL NOT NULL,direction TEXT NOT NULL,p REAL NOT NULL,base_p REAL NOT NULL,mid REAL,context TEXT NOT NULL,PRIMARY KEY(ticker,horizon));
+      CREATE TABLE IF NOT EXISTS next_calls(ticker TEXT NOT NULL,horizon INTEGER NOT NULL,from_ticker TEXT NOT NULL,time INTEGER NOT NULL,tau REAL NOT NULL,direction TEXT NOT NULL,p REAL NOT NULL,base_p REAL NOT NULL,head_start REAL,expected_k REAL,context TEXT NOT NULL,PRIMARY KEY(ticker,horizon));
+      CREATE TABLE IF NOT EXISTS balances(time INTEGER PRIMARY KEY,balance REAL NOT NULL,portfolio_value REAL);
       CREATE TABLE IF NOT EXISTS account_raw(id TEXT PRIMARY KEY,type TEXT NOT NULL,time INTEGER NOT NULL,context TEXT NOT NULL);`);
   }
   log(event:string,context:unknown){this.db.prepare('INSERT INTO events(time,event,context) VALUES(?,?,?)').run(Date.now(),event,JSON.stringify(context));}
@@ -31,7 +33,9 @@ export class Journal {
     this.db.transaction(()=>{
       const r=this.db.prepare('INSERT OR IGNORE INTO signals(time,ticker,kind,side,price,edge,p,tau,regime,context) VALUES(?,?,?,?,?,?,?,?,?,?)').run(time,ticker,idea.kind,idea.side,idea.price,idea.edge,context.p,context.tau,context.regime,JSON.stringify({...context,idea}));
       if(!r.changes)return;
-      this.db.prepare('INSERT INTO paper_trades(signal_id,time,ticker,kind,side,price,fee,status,filled_time,context) VALUES(?,?,?,?,?,?,?,?,?,?)').run(r.lastInsertRowid,time,ticker,idea.kind,idea.side,idea.price,fee(idea.price,1,idea.kind,schedule),idea.kind==='taker'?'filled':'resting',idea.kind==='taker'?time:null,JSON.stringify({idea,schedule,close:context.close}));
+      // Taker, scalp and dip enter at the ask immediately; only maker ideas rest.
+      const resting=idea.kind==='maker';
+      this.db.prepare('INSERT INTO paper_trades(signal_id,time,ticker,kind,side,price,fee,status,filled_time,context) VALUES(?,?,?,?,?,?,?,?,?,?)').run(r.lastInsertRowid,time,ticker,idea.kind,idea.side,idea.price,fee(idea.price,1,resting?'maker':'taker',schedule),resting?'resting':'filled',resting?null:time,JSON.stringify({idea,schedule,close:context.close}));
     })();
   }
   throughTrade(trade:{ticker:string;time:number;yesPrice:number;count:number;takerSide:string}){
@@ -45,6 +49,13 @@ export class Journal {
     this.db.transaction(()=>{
       const paired=this.db.prepare('SELECT p,mid,tau FROM ticks WHERE ticker=? AND p IS NOT NULL AND mid IS NOT NULL AND tau BETWEEN 150 AND 210 ORDER BY ABS(tau-180),time LIMIT 1').get(ticker)??null;
       this.db.prepare('INSERT OR REPLACE INTO outcomes VALUES(?,?,?,?,?,?,?,?)').run(ticker,time,result,actual,proxy,proxy!==null&&K!==null?(Math.round(proxy*100)/100>=K?'yes':'no'):null,actual!==null&&proxy!==null?proxy-actual:null,JSON.stringify({market:context,pairedPrediction:paired}));
+      // Scalps/dips exit at their resting target if the side's bid reached it before close (maker fee on the exit);
+      // otherwise they are held to settlement like a taker entry.
+      for(const t of this.db.prepare("SELECT id,time,side,price,fee,context FROM paper_trades WHERE ticker=? AND status='filled' AND kind IN ('scalp','dip')").all(ticker) as any[]){
+        const ctx=JSON.parse(t.context),target=ctx.idea?.target;if(!Number.isFinite(target))continue;
+        const hit=this.db.prepare(`SELECT time FROM ticks WHERE ticker=? AND time>? AND json_extract(context,'$.book.${t.side==='yes'?'yesBid':'noBid'}')>=? ORDER BY time LIMIT 1`).get(ticker,t.time,target-1e-9) as {time:number}|undefined;
+        if(hit)this.db.prepare("UPDATE paper_trades SET status='settled',settled_time=?,pnl=?,context=? WHERE id=?").run(time,target-t.price-t.fee-fee(target,1,'maker',ctx.schedule),JSON.stringify({...ctx,exit:{at:hit.time,price:target,reason:'target'}}),t.id);
+      }
       this.db.prepare("UPDATE paper_trades SET status='settled',settled_time=?,pnl=CASE WHEN side=? THEN 1 ELSE 0 END-price-fee WHERE ticker=? AND status='filled'").run(time,result,ticker);
       this.db.prepare("UPDATE paper_trades SET status='expired',settled_time=? WHERE ticker=? AND status='resting'").run(time,ticker);
       this.log('settlement-logged',{ticker,result,actual,proxy});
@@ -56,6 +67,12 @@ export class Journal {
   private realCache:RealEvent[]|null=null;
   saveLiveCall(ticker:string,horizon:number,time:number,tau:number,call:OpeningCall,mid:number|null){this.db.prepare('INSERT OR IGNORE INTO live_calls VALUES(?,?,?,?,?,?,?,?,?)').run(ticker,horizon,time,tau,call.direction,call.p,call.baseP,mid,JSON.stringify(call));}
   liveHorizons(ticker:string){return new Set((this.db.prepare('SELECT horizon FROM live_calls WHERE ticker=?').all(ticker) as {horizon:number}[]).map(r=>r.horizon));}
+  saveNextCall(ticker:string,horizon:number,fromTicker:string,time:number,tau:number,call:{direction:string;p:number;baseP:number;headStart:number;expectedK:number},context:unknown){
+    this.db.prepare('INSERT OR IGNORE INTO next_calls VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(ticker,horizon,fromTicker,time,tau,call.direction,call.p,call.baseP,call.headStart,call.expectedK,JSON.stringify(context));}
+  nextHorizons(ticker:string){return new Set((this.db.prepare('SELECT horizon FROM next_calls WHERE ticker=?').all(ticker) as {horizon:number}[]).map(r=>r.horizon));}
+  /** Balance history for the equity curve: on change, or every 5 minutes. */
+  balance(time:number,balance:number,portfolio:number|null){const last=this.db.prepare('SELECT time,balance,portfolio_value FROM balances ORDER BY time DESC LIMIT 1').get() as any;
+    if(!last||last.balance!==balance||last.portfolio_value!==portfolio||time-last.time>=300000)this.db.prepare('INSERT OR REPLACE INTO balances VALUES(?,?,?)').run(time,balance,portfolio);}
   real(events:RealEvent[]){this.realCache=null;const stmt=this.db.prepare('INSERT OR REPLACE INTO real_trades VALUES(?,?,?,?,?,?,?)');this.db.transaction(()=>{for(const e of events)stmt.run(e.id,e.time,e.ticker,e.type,e.pnl,e.contracts,JSON.stringify(e));})();}
   realEvents():RealEvent[]{return this.realCache??=(this.db.prepare('SELECT context FROM real_trades ORDER BY time').all() as {context:string}[]).map(r=>JSON.parse(r.context));}
   restoreHistory(){return this.db.prepare('SELECT time,proxy AS price FROM ticks WHERE proxy IS NOT NULL AND time>? GROUP BY time ORDER BY time').all(Date.now()-7200000) as {time:number;price:number}[];}

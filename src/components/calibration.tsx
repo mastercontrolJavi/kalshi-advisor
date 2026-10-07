@@ -1,7 +1,8 @@
 'use client';
 import dynamic from 'next/dynamic';
 import type {ReactNode} from 'react';
-import {ArrowLeft,Download} from 'lucide-react';
+import {Download} from 'lucide-react';
+import {SiteHeader} from './site-header';
 import {useLive} from './use-live';
 import {Card} from './ui/card';
 import {Pill} from './panels';
@@ -12,7 +13,7 @@ const Curves=dynamic(()=>import('./calibration-charts').then(m=>m.CurveChart),{s
 const Basis=dynamic(()=>import('./calibration-charts').then(m=>m.BasisChart),{ssr:false});
 const money=(n:number|null|undefined)=>n==null?'—':`$${n.toFixed(3)}`;
 const num=(n:number|null|undefined)=>n==null?'—':n.toFixed(4);
-const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls'];
+const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances'];
 function Metric({label,children,sub,className}:{label:string;children:ReactNode;sub?:ReactNode;className?:string}){return <div><div className="label">{label}</div><div className={cn('num mt-1.5 text-2xl',className)}>{children}</div>{sub?<div className="mt-0.5 text-xs text-muted">{sub}</div>:null}</div>;}
 function Empty({children}:{children:ReactNode}){return <p className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-muted">{children}</p>;}
 /** Forecast scorecard row: hit rate with CI and Brier vs coin flip / model-only / Kalshi. Lower Brier is better. */
@@ -23,16 +24,20 @@ function ScoreRow({label,o}:{label:string;o:any}){
 export default function Calibration(){
   const {state,fresh}=useLive(),c=state?.calibration;
   return <>
-    <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md"><div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-4 px-4 py-3 sm:px-6">
-      <a href="/" className="flex items-center gap-2.5"><img src="/icon.svg" alt="" width={28} height={28} className="size-7"/><span className="font-display text-xl font-bold tracking-wide">KALSHI<span className="text-yes">/ADVISOR</span></span></a><span className="text-sm text-muted">Evidence & calibration</span>
-      <a className="ml-auto inline-flex min-h-11 items-center gap-1 rounded-xl px-3 text-muted transition-colors hover:text-fg" href="/"><ArrowLeft aria-hidden className="size-4"/>Advisor</a></div></header>
+    <SiteHeader current="/calibration"/>
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 pt-4 pb-16 sm:px-6">
       <Card className="rise"><div className="flex flex-wrap items-center gap-3"><h1 className="font-display text-4xl font-bold">Does the model have an edge?</h1><Pill tone={fresh?'yes':'warn'}>{fresh?'Journal live':'Connecting'}</Pill></div>
         <p className="mt-3 max-w-4xl text-sm text-muted">Every score uses one observation per settled market, so 900 correlated seconds never count as 900 outcomes. Brier score: lower is better; a coin flip scores 0.2500. Profit intervals bootstrap whole markets; under two markets there is no interval. {c?.totalSignals??0} deduplicated signals so far.</p></Card>
 
+      <Card className="border-info/30"><div className="flex flex-wrap items-center gap-3"><h2 className="font-semibold">Quant engine · what it has learned</h2>{c?.quant?<Pill tone={c.quant.active==='fitted'?'yes':'neutral'}>{c.quant.active==='fitted'?'Learned weights active':'Default blend active'}</Pill>:null}</div>
+        <p className="mt-1 max-w-4xl text-sm text-muted">Forecast = Bayesian blend of the diffusion model, Kalshi&apos;s price and momentum/flow features, refit after every settled window. Learned weights replace the default blend only when they beat it on windows they were not fitted on (leave-one-market-out) with ≥ 30 markets.</p>
+        {c?.quant?<><div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-5"><Metric label="Markets learned from" sub={`${c.quant.n} snapshots`}>{c.quant.markets}</Metric><Metric label="Learned blend · out of sample" className="text-yes">{num(c.quant.cv.stack)}</Metric><Metric label="Default blend · out of sample">{num(c.quant.cv.prior)}</Metric><Metric label="Raw model">{num(c.quant.cv.model)}</Metric><Metric label="Kalshi price" className="text-info">{num(c.quant.cv.kalshi)}</Metric></div>
+          <div className="mt-4 grid gap-4 md:grid-cols-2"><table className="w-full text-sm"><thead className="text-left text-xs text-muted"><tr>{['Input','Learned','Default','In use'].map(h=><th key={h} scope="col" className="pb-2 pr-3 font-medium">{h}</th>)}</tr></thead><tbody>{c.quant.weights.map((w:any)=><tr key={w.name} className="border-t border-line"><th scope="row" className="py-1.5 pr-3 text-left font-medium">{w.name}</th><td className="num pr-3">{w.fitted.toFixed(3)}</td><td className="num pr-3 text-faint">{w.prior}</td><td className="num">{w.weight.toFixed(3)}</td></tr>)}</tbody></table>
+          <div className="space-y-2 text-sm"><p><span className="text-muted">Effective trust (learned):</span> model <span className="num">{c.quant.fittedEffective.model.toFixed(2)}</span> · Kalshi <span className="num">{c.quant.fittedEffective.kalshi.toFixed(2)}</span></p><p><span className="text-muted">Proxy → BRTI basis correction:</span> <span className="num">{c.quant.basis?`${c.quant.basis.correction>=0?'+':'−'}$${Math.abs(c.quant.basis.correction).toFixed(2)}`:'—'}</span> from {c.quant.basis?.n??0} settlements</p><p className="text-xs text-faint">Brier score, lower is better. Each settled window adds evidence; the history below shows the out-of-sample scores over time.</p>
+            {c.quant.history?.length?<ul className="max-h-40 space-y-1 overflow-y-auto text-xs text-muted">{[...c.quant.history].reverse().slice(0,12).map((h:any)=><li key={h.time} className="num">{new Date(h.time).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})} · {h.markets} mkts · learned {num(h.stack)} · default {num(h.prior)} · Kalshi {num(h.kalshi)}</li>)}</ul>:null}</div></div></>:<Empty>Quant engine starting.</Empty>}</Card>
       <Card><h2 className="font-semibold">Forecasts · do the calls beat a coin flip and Kalshi?</h2><p className="mt-1 text-sm text-muted">“Model only” is the same forecast without the momentum/flow lean, so the gap shows whether the lean adds information. Count shows settled + pending. Treat everything as noise until roughly 100+ windows per row.</p>
         <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[720px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['Forecast','Settled','Hit rate · 95% CI','Call Brier','Model only','Coin flip','Kalshi mid',''].map(h=><th key={h} scope="col" className="pb-2 pr-4 font-medium">{h}</th>)}</tr></thead>
-          <tbody><ScoreRow label="Opening call" o={c?.opening}/>{c?.live?.map((r:any)=><ScoreRow key={r.horizon} label={`Live call · ${mmss(r.horizon)} left`} o={r}/>)}</tbody></table></div>
+          <tbody><ScoreRow label="Opening call" o={c?.opening}/>{c?.live?.map((r:any)=><ScoreRow key={r.horizon} label={`Live call · ${mmss(r.horizon)} left`} o={r}/>)}{c?.next?.map((r:any)=><ScoreRow key={'n'+r.horizon} label={`Next-window preview · ${mmss(r.horizon)} before it opens`} o={r}/>)}</tbody></table></div>
         {c?.opening?.recent?.length?<div className="mt-4 flex flex-wrap gap-2 text-xs">{c.opening.recent.map((r:any)=><Pill key={r.ticker} tone={r.result==null?'neutral':(r.direction==='UP')===(r.result==='yes')?'yes':'no'}>{r.direction} {pct(r.p,0)} · {r.result?r.result.toUpperCase():'pending'}</Pill>)}</div>:null}</Card>
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4"><Card><Metric label="Model Brier ↓" className="text-yes">{num(c?.modelBrier)}</Metric></Card><Card><Metric label="Kalshi Brier ↓" className="text-info">{num(c?.marketBrier)}</Metric></Card><Card><Metric label="Paired markets">{c?.count??0}</Metric></Card><Card><Metric label="Model − Kalshi" sub="below zero = model better" className={c?.count?(c.modelBrier<c.marketBrier?'text-yes':'text-warn'):''}>{c?.count?num(c.modelBrier-c.marketBrier):'—'}</Metric></Card></div>
@@ -43,7 +48,7 @@ export default function Calibration(){
         <Card><h2 className="mb-4 font-semibold">Cumulative net P&L</h2>{c?.curve?.length?<Curves data={c.curve}/>:<Empty>No settled paper or real P&L yet.</Empty>}</Card>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">{['taker','maker'].map(kind=><Card key={kind}><h2 className="font-semibold">Paper {kind==='taker'?'taker (buy at ask)':'resting bid'} · 1 contract per signal</h2>
+      <div className="grid gap-4 md:grid-cols-2">{['taker','maker','scalp','dip'].map(kind=><Card key={kind}><h2 className="font-semibold">Paper {({taker:'taker (buy at ask)',maker:'resting bid',scalp:'scalp (exit at target)',dip:'buy-the-dip (exit at target)'} as Record<string,string>)[kind]} · 1 contract per signal</h2>
         <div className="mt-4 grid grid-cols-2 gap-4"><Metric label="Net profit" className={(c?.[kind]?.totalPnl??0)>=0?'text-yes':'text-no'}>{money(c?.[kind]?.totalPnl)}</Metric><Metric label="Realized EV / fill">{money(c?.[kind]?.mean)}</Metric><Metric label="95% interval" className="text-base">{money(c?.[kind]?.low)} to {money(c?.[kind]?.high)}</Metric><Metric label="Predicted EV / fill" className="text-base">{money(c?.[kind]?.predictedEV)}</Metric></div>
         <p className="mt-4 text-xs text-faint">{c?.[kind]?.count??0} settled fills · {c?.[kind]?.markets??0} markets · {c?.[kind]?.resting??0} resting · {c?.[kind]?.expired??0} expired</p></Card>)}</div>
 

@@ -32,8 +32,40 @@ export function volatility(samples:Sample[],halfLife=300,blend=.25){
   const percentile=history.filter(v=>v<=sigma).length/history.length;
   return {sigma,count:returns.length,regime:percentile<.25?'calm':percentile>.75?'volatile':'normal',percentile};
 }
+/**
+ * Warm start: while fewer than `needed` contiguous returns exist (e.g. after a restart), blend the saved σ from the last
+ * session (if under maxAgeMs old) with what has been observed so far, weighting by the fraction of the warm-up done.
+ * Volatility persists over hours far more than prices do, so this is far better than no model for two minutes.
+ */
+export function warmVolatility<T extends {sigma:number;count:number;regime:string}>(vol:T,saved:{sigma:number;time:number}|null,needed:number,now:number,maxAgeMs=12*3600000):T&{source:'live'|'carried over'|'warming'}{
+  if(vol.count>=needed&&vol.sigma>0)return {...vol,source:'live'};
+  if(!saved||!(saved.sigma>0)||now-saved.time>maxAgeMs)return {...vol,source:'warming'};
+  const w=Math.min(1,vol.count/needed),sigma=Math.sqrt(w*(vol.sigma>0?vol.sigma**2:saved.sigma**2)+(1-w)*saved.sigma**2);
+  return {...vol,sigma,count:needed,regime:vol.regime==='warming'?'carried over':vol.regime,source:'carried over'};
+}
 export function coveredSeconds(samples:Sample[],start:number,end:number):number[]|null {
   const map=new Map(samples.map(s=>[s.time,s.price]));const result:number[]=[];
   for(let t=start;t<end;t+=1000){const p=map.get(t);if(p===undefined)return null;result.push(p);}
   return result;
+}
+/**
+ * Like coveredSeconds, but bridges short gaps (≤ maxGap seconds) by linear interpolation between the observed
+ * neighbours (or the nearest observation at an edge). A one-second engine stall previously blanked the final-minute
+ * model until close (5 of 28 windows); interpolating 1–2 s of BTC costs cents against a σ-of-average of tens of dollars.
+ * Longer gaps still return null so the model pauses rather than guess.
+ */
+export function filledSeconds(samples:Sample[],start:number,end:number,maxGap=5):{values:number[];imputed:number}|null {
+  const map=new Map(samples.map(s=>[s.time,s.price]));const slots:(number|undefined)[]=[];
+  for(let t=start;t<end;t+=1000)slots.push(map.get(t));
+  if(!slots.length)return {values:[],imputed:0};
+  let imputed=0;const values:number[]=new Array(slots.length);
+  for(let i=0;i<slots.length;){
+    if(slots[i]!==undefined){values[i]=slots[i]!;i++;continue;}
+    let j=i;while(j<slots.length&&slots[j]===undefined)j++;
+    const gap=j-i,before=i>0?values[i-1]:map.get(start-1000),after=j<slots.length?slots[j]:undefined;
+    if(gap>maxGap||(before===undefined&&after===undefined))return null;
+    for(let k=i;k<j;k++){const w=(k-i+1)/(gap+1);values[k]=before!==undefined&&after!==undefined?before+(after-before)*w:(before??after)!;}
+    imputed+=gap;i=j;
+  }
+  return {values,imputed};
 }

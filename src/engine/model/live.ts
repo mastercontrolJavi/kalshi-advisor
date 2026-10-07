@@ -26,8 +26,9 @@ export function dataQuality(q: {healthyFeeds: number; totalFeeds: number; kalshi
   const issues: string[] = [];
   if (!q.modelReady) issues.push('model warming');
   if (q.healthyFeeds < Math.min(2, q.totalFeeds)) issues.push(`only ${q.healthyFeeds}/${q.totalFeeds} price feeds live`);
-  if (!q.kConfirmed) issues.push('opening K estimated');
   const blocking = issues.length > 0;
+  // An estimated K is computed from the same 60 s of prices Kalshi uses; it only degrades confidence.
+  if (!q.kConfirmed) issues.push('opening K estimated from proxy');
   if (q.healthyFeeds < q.totalFeeds && q.healthyFeeds >= 2) issues.push(`${q.healthyFeeds}/${q.totalFeeds} price feeds live`);
   if (!q.kalshiLive) issues.push('Kalshi stream down (REST fallback)');
   if (!q.bookLive) issues.push('Kalshi book stale');
