@@ -18,4 +18,7 @@ it('timing: new window, entry window and final minute fire on crossing only',()=
 it('live call flips within a window, but not across windows',()=>{expect(detectEvents(base,{...base,liveDir:'DOWN'})).toEqual(['flipDown']);expect(detectEvents({...base,liveDir:'DOWN'},{...base,liveDir:'UP'})).toEqual(['flipUp']);expect(detectEvents(base,{...base,ticker:'B',liveDir:'DOWN'})).toEqual(['newWindow']);});
 it('warnings on degradation and locks; simultaneous events are ordered by importance',()=>{expect(detectEvents(base,{...base,unreliable:true})).toEqual(['warning']);expect(detectEvents(base,{...base,locked:true})).toEqual(['lock']);
   expect(detectEvents({...base,exits:{A:'HOLD'}},{...base,exits:{A:'SELL NOW'},pnl:-4,tau:60,ideaKey:'A:no:0.3',ideaSide:'no'})).toEqual(['sell','buyNo','win','closingUp','entryWindow']);});
+it('take profit and cut loss each have their own alert, then hold when back in the band',()=>{
+  expect(detectEvents({...base,exits:{A:'HOLD'}},{...base,exits:{A:'TAKE PROFIT'}})).toEqual(['takeProfit']);expect(detectEvents({...base,exits:{A:'HOLD'}},{...base,exits:{A:'CUT LOSS'}})).toEqual(['cutLoss']);
+  expect(detectEvents({...base,exits:{A:'TAKE PROFIT'}},{...base,exits:{A:'TAKE PROFIT'}})).toEqual([]);expect(detectEvents({...base,exits:{A:'TAKE PROFIT'}},{...base,exits:{A:'HOLD'}})).toEqual(['hold']);});
 it('a new scalp/dip setup pings once',()=>{const s1={...base,setupKey:'A:scalp:yes'};expect(detectEvents(base,s1)).toEqual(['setup']);expect(detectEvents(s1,s1)).toEqual([]);});

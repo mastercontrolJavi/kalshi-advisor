@@ -9,15 +9,15 @@ export function snapshot(s:any,fresh:boolean):AlertSnapshot{
     liveDir:fresh?s?.liveCall?.direction??null:null,unreliable:!fresh||s?.quality?.level==='unreliable',locked:!!s?.guards?.locked};
 }
 // Most important first; the player spaces them out and caps how many play per update.
-export const priority:SoundName[]=['sell','lock','buyYes','buyNo','win','loss','warning','setup','hold','closingUp','closingDown','flipUp','flipDown','newWindow','entryWindow','finalMinute'];
+export const priority:SoundName[]=['cutLoss','takeProfit','sell','lock','buyYes','buyNo','win','loss','warning','setup','hold','closingUp','closingDown','flipUp','flipDown','newWindow','entryWindow','finalMinute'];
 export function detectEvents(prev:AlertSnapshot|null,next:AlertSnapshot):SoundName[]{
   if(!prev)return [];
   const out=new Set<SoundName>();
   if(next.ideaKey&&next.ideaKey!==prev.ideaKey)out.add(next.ideaSide==='yes'?'buyYes':'buyNo');
   if(next.setupKey&&next.setupKey!==prev.setupKey)out.add('setup');
   for(const [ticker,action] of Object.entries(next.exits)){const before=prev.exits[ticker];
-    if(action==='SELL NOW'&&before!=='SELL NOW')out.add('sell');
-    if(action==='HOLD'&&(before===undefined||before==='SELL NOW'))out.add('hold');}
+    if(action!==before){if(action==='TAKE PROFIT')out.add('takeProfit');else if(action==='CUT LOSS')out.add('cutLoss');else if(action==='SELL NOW')out.add('sell');}
+    if(action==='HOLD'&&(before===undefined||['SELL NOW','TAKE PROFIT','CUT LOSS'].includes(before)))out.add('hold');}
   if(prev.pnl!==null&&next.pnl!==null&&prev.day===next.day){const d=next.pnl-prev.pnl;if(d>.005)out.add('win');else if(d<-.005)out.add('loss');}
   const sameWindow=prev.ticker!==null&&prev.ticker===next.ticker;
   if(prev.ticker!==null&&next.ticker!==null&&next.ticker!==prev.ticker)out.add('newWindow');

@@ -17,13 +17,15 @@ export function useSoundAlerts(s:any,fresh:boolean){
   useEffect(()=>{
     if(!s)return;
     const next=snapshot(s,fresh),events=detectEvents(prev.current,next),now=Date.now();prev.current=next;
-    if(prefs.repeatSell&&Object.values(next.exits).includes('SELL NOW')&&!events.includes('sell')&&now-lastSell.current>=SELL_REPEAT_MS)events.unshift('sell');
+    // Exit alerts repeat while they stand, so a take-profit or stop is never missed.
+    const standing=Object.values(next.exits).map(a=>a==='TAKE PROFIT'?'takeProfit':a==='CUT LOSS'?'cutLoss':a==='SELL NOW'?'sell':null).find(Boolean) as SoundName|undefined;
+    if(prefs.repeatSell&&standing&&!events.some(e=>e==='takeProfit'||e==='cutLoss'||e==='sell')&&now-lastSell.current>=SELL_REPEAT_MS)events.unshift(standing);
     const playable=events.filter(n=>n!=='warning'||now-lastWarning.current>=WARNING_GAP_MS).filter(n=>prefs.enabled&&prefs.categories[categoryOf[n]]).slice(0,MAX_PER_UPDATE);
-    if(playable.includes('sell'))lastSell.current=now;if(playable.includes('warning'))lastWarning.current=now;
+    if(playable.some(e=>e==='sell'||e==='takeProfit'||e==='cutLoss'))lastSell.current=now;if(playable.includes('warning'))lastWarning.current=now;
     playable.forEach((n,i)=>setTimeout(()=>engine.current?.play(n,prefs.volume),i*SPACING_MS));
     if(s.config?.notifications&&typeof Notification!=='undefined'&&Notification.permission==='granted'){
-      const sell=(s.exits??[]).find((e:any)=>e.action==='SELL NOW');
-      if(events.includes('sell')&&sell)new Notification('SELL NOW',{body:sell.reason,tag:'sell'});
+      const exit=(s.exits??[]).find((e:any)=>['TAKE PROFIT','CUT LOSS','SELL NOW'].includes(e.action));
+      if(exit&&events.some(e=>e==='sell'||e==='takeProfit'||e==='cutLoss'))new Notification(exit.action,{body:String(exit.reason).split(' Plan: ')[0],tag:'exit'});
       if(events.includes('buyYes')||events.includes('buyNo'))new Notification(s.evaluation.action,{body:s.evaluation.reason,tag:'signal'});
       if(events.includes('win'))new Notification('Profit',{body:`P&L today ${s.guards.pnl>=0?'+':'−'}$${Math.abs(s.guards.pnl).toFixed(2)}`,tag:'result'});
     }

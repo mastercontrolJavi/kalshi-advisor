@@ -35,6 +35,7 @@ const known=new Map<string,Market>();let state:any={status:'Starting',config,eng
 const seriesHistory:{time:number;model:number|null;market:number|null;quant:number|null}[]=[];
 let live:{ticker:string;direction:Direction|null;since:number;flips:number}={ticker:'',direction:null,since:0,flips:0};
 const tacticsHistory:{time:number;yesAsk:number|null;noAsk:number|null;q:number}[]=[];
+const exitLatch=new Map<string,string>();
 let previousTicker='',lastLoop=Date.now(),lastSecond=0,lastPublish=0,lastFastRefresh=0,settling=false,refreshing=false;
 const safe=(name:string,fn:()=>Promise<void>)=>void fn().catch(e=>log(name,{message:e.message}));
 async function refresh(){if(refreshing)return;refreshing=true;try{await kalshi.refresh();for(const m of kalshi.markets){known.set(m.ticker,m);journal.set('market:'+m.ticker,m);}await kalshi.fallback();}finally{refreshing=false;}}
@@ -176,7 +177,7 @@ const loop=setInterval(()=>{
       const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation};
       if(newSecond){journal.tick(tick);for(const idea of [...(evaluation.idea?[evaluation.idea]:[]),...evaluation.makers,...tacticIdeas.map(t=>({...t,queue:0}))])journal.signal(market.ticker,time,idea as any,tick,schedule);
       seriesHistory.push({time,model:model?.p??null,market:mid,quant:q});if(seriesHistory.length>901)seriesHistory.shift();}
-      const exits=(account.positions as any[]).filter(pos=>String(pos.ticker).startsWith('KXBTC15M')).map(pos=>exitAdvice(pos,pos.ticker===market.ticker?q:null,kalshi.books.get(pos.ticker)?.view()??null,schedule,config.exitMargin,config.makerMargin)).filter(Boolean);
+      const exits=(account.positions as any[]).filter(pos=>String(pos.ticker).startsWith('KXBTC15M')).map(pos=>{const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,kalshi.books.get(pos.ticker)?.view()??null,schedule,config,(exitLatch.get(pos.ticker)??null) as any);if(e){if(exitLatch.get(pos.ticker)!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct});exitLatch.set(pos.ticker,e.action);}else exitLatch.delete(pos.ticker);return e;}).filter(Boolean);
       state={...common,...tick,market,evaluation,exits,liveCall,nextCall,quality,openingCall:journal.openingCall(market.ticker),
         quant:{p:q,model:model?.p??null,mid,active:stack.active,markets:stack.markets,basis,autoBasis:basisState,signalSource:config.useQuantForSignals&&q!==null?'quant':'model'},
         tactics:{live:tacticsLive,ideas:tacticIdeas,dips:dipState.watch},lockedCount:locked?.length??0,lockedImputed:lockedFill?.imputed??0,distance:spot!==null&&K!==null?spot-K:null};
