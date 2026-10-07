@@ -1,0 +1,8 @@
+import {it,expect} from 'vitest';
+import {Journal} from '../src/engine/journal';
+import {baseFees} from '../src/engine/model/fees';
+import {normalizeAccount} from '../src/engine/account';
+const idea={side:'yes' as const,kind:'maker' as const,price:.4,fee:0,edge:.1,contracts:1,cost:.4,maxLoss:.4,queue:10,reason:'test'};
+it('deduplicates signals, fills makers only strictly through and opposite aggressor, settles',()=>{const j=new Journal(':memory:');j.signal('BTC',100,idea,{p:.5,tau:200,regime:'normal',close:10000},baseFees);j.signal('BTC',101,idea,{p:.5,tau:200,regime:'normal',close:10000},baseFees);expect((j.db.prepare('SELECT COUNT(*) AS n FROM signals').get() as any).n).toBe(1);j.throughTrade({ticker:'BTC',time:200,yesPrice:.4,count:1,takerSide:'no'});expect((j.db.prepare('SELECT status FROM paper_trades').get() as any).status).toBe('resting');j.throughTrade({ticker:'BTC',time:300,yesPrice:.39,count:1,takerSide:'no'});j.settle('BTC','yes',10000,101,100,99,{});expect((j.db.prepare('SELECT pnl FROM paper_trades').get() as any).pnl).toBeCloseTo(.6);j.db.close();});
+it('prunes only old ticks and safely exports allowlisted tables',()=>{const j=new Journal(':memory:');j.tick({time:1,ticker:'BTC',proxy:100,K:100,tau:100,sigma:.1,p:.5,mid:.5,regime:'normal'});j.prune(40*86400000);expect(j.export('ticks')).toContain('ticker');expect(()=>j.export('settings')).toThrow();j.db.close();});
+it('normalizes actual settlement dollars with revenue cents and fees',()=>{const events=normalizeAccount([],[{ticker:'KXBTC15M-X',revenue:100,yes_total_cost_dollars:'.4',no_total_cost_dollars:'0',fee_cost:'.01',settled_time:new Date().toISOString(),yes_count_fp:'1',no_count_fp:'0'}]);expect(events[0].pnl).toBeCloseTo(.59);});
