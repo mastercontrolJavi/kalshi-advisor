@@ -4,11 +4,12 @@ import {defaults,validateConfig,type Config} from './config';
 import type {Idea} from './signals';
 import {fee,type FeeSchedule} from './model/fees';
 import type {RealEvent} from './guardrails';
-export const tables=['ticks','signals','paper_trades','outcomes','real_trades'] as const;
+import type {OpeningCall} from './model/opening';
+export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls'] as const;
 export class Journal {
   db:Database.Database;
   constructor(path='./data/advisor.db'){
-    if(path!==':memory:')mkdirSync('data',{recursive:true});this.db=new Database(path);this.db.pragma('journal_mode = WAL');this.db.pragma('busy_timeout = 5000');
+    if(path!==':memory:')mkdirSync('data',{recursive:true});this.db=new Database(path);this.db.pragma('journal_mode = WAL');this.db.pragma('synchronous = NORMAL');this.db.pragma('busy_timeout = 5000');
     this.db.exec(`CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS ticks(id INTEGER PRIMARY KEY, time INTEGER NOT NULL,ticker TEXT NOT NULL,proxy REAL,k REAL,tau REAL,sigma REAL,p REAL,mid REAL,regime TEXT,context TEXT NOT NULL,UNIQUE(time,ticker));
       CREATE INDEX IF NOT EXISTS ticks_time ON ticks(time);CREATE INDEX IF NOT EXISTS ticks_market ON ticks(ticker);CREATE INDEX IF NOT EXISTS ticks_market_tau ON ticks(ticker,tau);
@@ -17,6 +18,7 @@ export class Journal {
       CREATE TABLE IF NOT EXISTS outcomes(ticker TEXT PRIMARY KEY,time INTEGER NOT NULL,result TEXT NOT NULL,actual_average REAL,proxy_average REAL,proxy_result TEXT,basis_error REAL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS real_trades(id TEXT PRIMARY KEY,time INTEGER NOT NULL,ticker TEXT NOT NULL,type TEXT NOT NULL,pnl REAL NOT NULL,contracts REAL NOT NULL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,time INTEGER NOT NULL,event TEXT NOT NULL,context TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS opening_calls(ticker TEXT PRIMARY KEY,time INTEGER NOT NULL,tau REAL NOT NULL,direction TEXT NOT NULL,p REAL NOT NULL,base_p REAL NOT NULL,lean REAL NOT NULL,mid REAL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS account_raw(id TEXT PRIMARY KEY,type TEXT NOT NULL,time INTEGER NOT NULL,context TEXT NOT NULL);`);
   }
   log(event:string,context:unknown){this.db.prepare('INSERT INTO events(time,event,context) VALUES(?,?,?)').run(Date.now(),event,JSON.stringify(context));}
@@ -47,8 +49,12 @@ export class Journal {
       this.log('settlement-logged',{ticker,result,actual,proxy});
     })();
   }
-  real(events:RealEvent[]){const stmt=this.db.prepare('INSERT OR REPLACE INTO real_trades VALUES(?,?,?,?,?,?,?)');this.db.transaction(()=>{for(const e of events)stmt.run(e.id,e.time,e.ticker,e.type,e.pnl,e.contracts,JSON.stringify(e));})();}
-  realEvents():RealEvent[]{return (this.db.prepare('SELECT context FROM real_trades ORDER BY time').all() as {context:string}[]).map(r=>JSON.parse(r.context));}
+  /** First call per market wins; later attempts in the same window are ignored. */
+  saveOpeningCall(ticker:string,time:number,tau:number,call:OpeningCall,mid:number|null){this.db.prepare('INSERT OR IGNORE INTO opening_calls VALUES(?,?,?,?,?,?,?,?,?)').run(ticker,time,tau,call.direction,call.p,call.baseP,call.lean,mid,JSON.stringify(call));}
+  openingCall(ticker:string){const row=this.db.prepare('SELECT time,tau,mid,context FROM opening_calls WHERE ticker=?').get(ticker) as {time:number;tau:number;mid:number|null;context:string}|undefined;return row?{...JSON.parse(row.context) as OpeningCall,time:row.time,tau:row.tau,mid:row.mid}:null;}
+  private realCache:RealEvent[]|null=null;
+  real(events:RealEvent[]){this.realCache=null;const stmt=this.db.prepare('INSERT OR REPLACE INTO real_trades VALUES(?,?,?,?,?,?,?)');this.db.transaction(()=>{for(const e of events)stmt.run(e.id,e.time,e.ticker,e.type,e.pnl,e.contracts,JSON.stringify(e));})();}
+  realEvents():RealEvent[]{return this.realCache??=(this.db.prepare('SELECT context FROM real_trades ORDER BY time').all() as {context:string}[]).map(r=>JSON.parse(r.context));}
   restoreHistory(){return this.db.prepare('SELECT time,proxy AS price FROM ticks WHERE proxy IS NOT NULL AND time>? GROUP BY time ORDER BY time').all(Date.now()-7200000) as {time:number;price:number}[];}
   pendingMarkets(){return this.db.prepare('SELECT ticker,MAX(time) AS time FROM ticks WHERE ticker NOT IN (SELECT ticker FROM outcomes) GROUP BY ticker').all() as {ticker:string;time:number}[];}
   prune(now=Date.now()){this.db.prepare('DELETE FROM ticks WHERE time<?').run(now-30*86400000);}

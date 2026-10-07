@@ -19,8 +19,8 @@ export class ProxyFeed {
   }
   sample(time:number,staleMs=2000){
     const price=median(Object.values(this.venues).filter(v=>healthy(v,Date.now(),staleMs)).map(v=>v.mid!));
-    if(price!==null && this.history.at(-1)?.time!==time)this.history.push({time,price});
-    this.history=this.history.filter(s=>s.time>time-7200000);return price;
+    if(price!==null && this.history.at(-1)?.time!==time){this.history.push({time,price});this.history=this.history.filter(s=>s.time>time-7200000);}
+    return price;
   }
   restart(){for(const v of Object.values(this.venues)){v.updated=0;v.mid=null;}for(const s of this.sockets)s.restart();}
   stop(){for(const s of this.sockets)s.stop();}

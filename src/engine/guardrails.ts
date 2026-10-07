@@ -1,6 +1,11 @@
 import type {Config} from './config';
 export interface RealEvent {id:string;time:number;ticker:string;type:'fill'|'settlement';pnl:number;outcomePnl?:number;closedContracts?:number;contracts:number;orderId?:string;side?:string;price?:number;action?:string;warnings?:string[]}
-export function dayKey(time:number,zone=process.env.SESSION_TIMEZONE??'America/Los_Angeles'){return new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(time);}
+// Constructing Intl.DateTimeFormat costs ~0.3 ms; per-event construction made guardrails ~190 ms per loop.
+const formatters=new Map<string,Intl.DateTimeFormat>();
+export function dayKey(time:number,zone=process.env.SESSION_TIMEZONE??'America/Los_Angeles'){
+  let f=formatters.get(zone);if(!f){f=new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'});formatters.set(zone,f);}
+  return f.format(time);
+}
 export function guardrails(events:RealEvent[],startBalance:number,config:Config,now:number,overrideDay:string|null=null){
   const today=dayKey(now),todayEvents=events.filter(e=>dayKey(e.time)===today);
   const pnl=todayEvents.reduce((s,e)=>s+e.pnl,0);

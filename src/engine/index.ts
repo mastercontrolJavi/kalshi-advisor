@@ -13,6 +13,8 @@ import {validateConfig} from './config';
 import {authorized,requireDashboardCredentials} from './auth';
 import {createExecutor} from './executor';
 import {buildCalibration} from './calibration';
+import {openingCall,OPENING_WINDOW_SECONDS} from './model/opening';
+import {exitAdvice} from './exits';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
 let calibration=buildCalibration(journal);
@@ -22,7 +24,7 @@ const client=new KalshiClient(),account=new Account(client,journal);
 const kalshi=new KalshiFeed(client,log,t=>journal.throughTrade(t),()=>void account.sync());
 const known=new Map<string,Market>();let state:any={status:'Starting',config,engineTime:Date.now(),evaluation:{action:'NO TRADE',reason:'Warming feeds',makers:[]}};
 const seriesHistory:{time:number;model:number|null;market:number|null}[]=[];
-let previousTicker='',lastLoop=Date.now(),lastSecond=0,settling=false,refreshing=false;
+let previousTicker='',lastLoop=Date.now(),lastSecond=0,lastPublish=0,settling=false,refreshing=false;
 const safe=(name:string,fn:()=>Promise<void>)=>void fn().catch(e=>log(name,{message:e.message}));
 async function refresh(){if(refreshing)return;refreshing=true;try{await kalshi.refresh();for(const m of kalshi.markets){known.set(m.ticker,m);journal.set('market:'+m.ticker,m);}await kalshi.fallback();}finally{refreshing=false;}}
 async function settlements(){
@@ -73,9 +75,10 @@ const calibrationTimer=setInterval(()=>{try{calibration=buildCalibration(journal
 const loop=setInterval(()=>{
   const started=performance.now(),now=Date.now(),time=Math.floor((now+client.clockOffset)/1000)*1000;
   if(now-lastLoop>5000||now<lastLoop){log('wake-or-clock-jump',{gap:now-lastLoop});proxy.restart();kalshi.recover();client.clockSynced=false;safe('wake-refresh-error',async()=>{await refresh();await account.sync();});}
-  lastLoop=now;if(time===lastSecond)return;lastSecond=time;
+  // Evaluate and publish 4×/second on live quotes; journal ticks/signals once per second.
+  lastLoop=now;if(now-lastPublish<250)return;lastPublish=now;const newSecond=time!==lastSecond;lastSecond=time;
   try{
-    journal.expire(time);
+    if(newSecond)journal.expire(time);
     const spot=proxy.sample(time,config.staleMs),market=kalshi.markets.find(m=>Date.parse(m.open_time)<=time&&Date.parse(m.close_time)>time);
     const events=journal.realEvents(),today=dayKey(now),baselineKey='startBalance:'+today;
     const baseline=journal.get<number|null>(baselineKey,null);
@@ -99,11 +102,18 @@ const loop=setInterval(()=>{
       const bv=book.view(),mid=bv.yesBid!==null&&bv.yesAsk!==null?(bv.yesBid+bv.yesAsk)/2:null;
       const momentum=(seconds:number)=>{const prior=proxy.history.find(s=>s.time===time-seconds*1000);return prior&&spot?Math.log(spot/prior.price):null;};
       const y=bv.yes.slice(0,3).reduce((s,[,q])=>s+q,0),n=bv.no.slice(0,3).reduce((s,[,q])=>s+q,0);
-      const features={imbalance:y+n?(y-n)/(y+n):null,tradeFlow30s:kalshi.status==='connected'?kalshi.trades.filter(t=>t.ticker===market.ticker&&t.time>time-30000).reduce((s,t)=>s+(t.takerSide==='yes'?t.count:-t.count),0):null,momentum30s:momentum(30),momentum120s:momentum(120),midModelGap:model&&mid!==null?mid-model.p:null};
+      const recentTrades=kalshi.trades.filter(t=>t.ticker===market.ticker&&t.time>time-30000);
+      const features={imbalance:y+n?(y-n)/(y+n):null,tradeVolume30s:kalshi.status==='connected'?recentTrades.reduce((s,t)=>s+t.count,0):null,tradeFlow30s:kalshi.status==='connected'?kalshi.trades.filter(t=>t.ticker===market.ticker&&t.time>time-30000).reduce((s,t)=>s+(t.takerSide==='yes'?t.count:-t.count),0):null,momentum30s:momentum(30),momentum120s:momentum(120),midModelGap:model&&mid!==null?mid-model.p:null};
+      // One frozen forecast per window, only if the engine is live during the window's first minute.
+      if(newSecond&&model&&(confirmed||config.allowEstimatedK)&&tau>=(close-open)/1000-OPENING_WINDOW_SECONDS&&!journal.openingCall(market.ticker)){
+        try{const call=openingCall({modelP:model.p,sigma:vol.sigma,momentum30s:features.momentum30s,momentum120s:features.momentum120s,imbalance:features.imbalance,tradeFlow30s:features.tradeFlow30s,tradeVolume30s:features.tradeVolume30s});journal.saveOpeningCall(market.ticker,time,tau,call,mid);log('opening-call',{ticker:market.ticker,direction:call.direction,p:call.p,tau});}
+        catch(e){log('opening-call-error',{message:(e as Error).message});}
+      }
       const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,mid,regime:vol.regime,model,kConfirmed:confirmed,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation};
-      journal.tick(tick);for(const idea of [...(evaluation.idea?[evaluation.idea]:[]),...evaluation.makers])journal.signal(market.ticker,time,idea,tick,schedule);
-      seriesHistory.push({time,model:model?.p??null,market:mid});if(seriesHistory.length>901)seriesHistory.shift();
-      state={...common,...tick,market,evaluation,lockedCount:locked?.length??0,distance:spot!==null&&K!==null?spot-K:null};
+      if(newSecond){journal.tick(tick);for(const idea of [...(evaluation.idea?[evaluation.idea]:[]),...evaluation.makers])journal.signal(market.ticker,time,idea,tick,schedule);
+      seriesHistory.push({time,model:model?.p??null,market:mid});if(seriesHistory.length>901)seriesHistory.shift();}
+      const exits=(account.positions as any[]).map(pos=>exitAdvice(pos,pos.ticker===market.ticker?model?.p??null:null,kalshi.books.get(pos.ticker)?.view()??null,{...kalshi.fees,precision:config.feePrecision},config.exitMargin,config.makerMargin)).filter(Boolean);
+      state={...common,...tick,market,evaluation,exits,openingCall:journal.openingCall(market.ticker),lockedCount:locked?.length??0,distance:spot!==null&&K!==null?spot-K:null};
     }
     state.calibration=calibration;state.loopMs=performance.now()-started;const message=JSON.stringify(state);for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
