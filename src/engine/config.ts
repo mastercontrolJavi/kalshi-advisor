@@ -1,7 +1,7 @@
 export const defaults = {
   minEdge: .04, earlyEdge: .08, sweetMinSeconds: 60, sweetMaxSeconds: 300,
   maxSpread: .06, minDepth: 20, makerMargin: .03, minMakerEdge: .02, makerMinSeconds: 120,
-  exitMargin: .02, kellyFraction: .25, maxRiskPerTrade: .02, maxContracts: 25,
+  exitMargin: .02, signalBelowMinSize: true, kellyFraction: .25, maxRiskPerTrade: .02, maxContracts: 25,
   dailyLossLimit: .10, consecutiveLossLimit: 3, cooldownMinutes: 30, maxTradesPerHour: 4,
   chaseMove: .15, chaseSeconds: 60, halfLifeSeconds: 300, realizedBlend: .25,
   basisCorrection: 0, allowEstimatedK: false, staleMs: 2000, bookStaleMs: 5000, accountStaleMs: 60000, minVolSamples: 120,

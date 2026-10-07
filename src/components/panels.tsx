@@ -1,6 +1,6 @@
 'use client';
 import {useEffect,useRef,type ReactNode} from 'react';
-import {Check,X,ChevronRight,ArrowUpRight,ArrowDownRight,Minus,Radio,Gauge,Wallet,BookOpen,Layers,ShieldCheck,Activity,TriangleAlert,Crosshair} from 'lucide-react';
+import {Check,X,Info,ChevronRight,ArrowUpRight,ArrowDownRight,Minus,Radio,Gauge,Wallet,BookOpen,Layers,ShieldCheck,Activity,TriangleAlert,Crosshair} from 'lucide-react';
 import {Card} from './ui/card';
 import {cn} from '@/lib/utils';
 import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,ago} from './format';
@@ -45,18 +45,18 @@ export function WindowBar({s}:{s:any}){
 
 export function SignalPanel({s,fresh}:{s:any;fresh:boolean}){
   const ev=s?.evaluation,idea=fresh?ev?.idea:null,action=fresh?ev?.action??'NO TRADE':'NO TRADE',tone=actionTone(action),tau=Math.max(0,s?.tau??0);
-  const gates:any[]=fresh?ev?.gates??[]:[],failed=gates.filter(g=>!g.ok).length;
+  const gates:any[]=fresh?ev?.gates??[]:[],failed=gates.filter(g=>!g.ok&&!g.advisory).length,paperOnly=!!idea?.belowMinSize;
   return <Card className={cn('rise relative overflow-hidden',toneBorder[tone])}>
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div><div className="label">Time to close</div><div className={cn('num mt-1 text-5xl font-bold sm:text-6xl',tau<=60&&s?.market?'text-warn':'')}>{s?.market?mmss(tau):'--:--'}</div>{tau<=60&&s?.market?<div className="mt-1 text-xs text-warn">Final minute · settlement average locking</div>:null}</div>
-      <div className="flex gap-6 text-right"><div><div className="label">Net edge</div><div className={cn('num mt-1 text-3xl font-semibold',idea?toneText[tone]:'text-muted')}>{idea?signedCents(idea.edge):'—'}</div></div><div><div className="label">Contracts</div><div className="num mt-1 text-3xl font-semibold">{idea?.contracts??0}</div></div></div>
+      <div className="flex gap-6 text-right"><div><div className="label">Net edge</div><div className={cn('num mt-1 text-3xl font-semibold',idea?toneText[tone]:'text-muted')}>{idea?signedCents(idea.edge):'—'}</div></div><div><div className="label">Contracts</div><div className="num mt-1 text-3xl font-semibold">{idea?.contracts??0}</div>{paperOnly?<div className="text-xs text-info">paper only</div>:null}</div></div>
     </div>
     <div className={cn('font-display mt-4 text-6xl leading-none font-bold tracking-tight uppercase sm:text-8xl',toneText[tone])} aria-live="polite">{action}</div>
     <p className="mt-3 max-w-3xl text-[15px] text-fg/90">{fresh?(idea?ev.reason:failed?`${failed} of ${gates.length} checks failing`:ev?.reason??'Warming up'):'Live state unavailable — advice suppressed'}</p>
-    {idea?<p className="mt-1 text-sm text-muted">Spend / max loss {dollars(idea.maxLoss)} · ask {cents(idea.price)} + {cents(idea.fee,2)} fee</p>:null}
-    {gates.length?<ul className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" aria-label="Trade checks">{gates.length-failed?<li className="flex items-center gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2 text-sm text-muted sm:hidden"><Check aria-hidden className="size-4 text-yes"/>{gates.length-failed} passing</li>:null}{gates.map(g=><li key={g.key} className={cn('items-start gap-2 rounded-xl border px-3 py-2',g.ok?'hidden border-line bg-surface-2/60 sm:flex':'flex border-warn/35 bg-warn-dim/40')}>
-      {g.ok?<Check aria-label="pass" className="mt-0.5 size-4 shrink-0 text-yes"/>:<X aria-label="fail" className="mt-0.5 size-4 shrink-0 text-warn"/>}
-      <div className="min-w-0"><div className="text-sm font-medium">{g.label}</div><div className={cn('text-xs leading-snug',g.ok?'text-faint':'text-warn')}>{g.detail}</div></div></li>)}</ul>:null}
+    {idea?<p className="mt-1 text-sm text-muted">{paperOnly?<><span className="text-info">Below 1 contract at your risk settings — logged as a paper trade.</span> One contract would cost {dollars(idea.price+idea.fee)}.</>:<>Spend / max loss {dollars(idea.maxLoss)} · ask {cents(idea.price)} + {cents(idea.fee,2)} fee</>}</p>:null}
+    {gates.length?<ul className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" aria-label="Trade checks">{gates.some(g=>g.ok)?<li className="flex items-center gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2 text-sm text-muted sm:hidden"><Check aria-hidden className="size-4 text-yes"/>{gates.filter(g=>g.ok).length} passing</li>:null}{gates.map(g=>{const info=!g.ok&&g.advisory;return <li key={g.key} className={cn('items-start gap-2 rounded-xl border px-3 py-2',g.ok?'hidden border-line bg-surface-2/60 sm:flex':info?'flex border-info/35 bg-info/10':'flex border-warn/35 bg-warn-dim/40')}>
+      {g.ok?<Check aria-label="pass" className="mt-0.5 size-4 shrink-0 text-yes"/>:info?<Info aria-label="information" className="mt-0.5 size-4 shrink-0 text-info"/>:<X aria-label="fail" className="mt-0.5 size-4 shrink-0 text-warn"/>}
+      <div className="min-w-0"><div className="text-sm font-medium">{g.label}</div><div className={cn('text-xs leading-snug',g.ok?'text-faint':info?'text-info':'text-warn')}>{g.detail}</div></div></li>;})}</ul>:null}
     <p className="mt-4 text-xs text-faint">Model is a proxy diffusion estimate — check Calibration before relying on edge. YES edge {signedCents(s?.model?ev?.edges?.yes:null)} · NO edge {signedCents(s?.model?ev?.edges?.no:null)}</p>
   </Card>;
 }

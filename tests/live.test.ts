@@ -20,10 +20,15 @@ it('data quality blocks on warming model, too few feeds or estimated K; degrades
   expect(dataQuality({...ok,healthyFeeds:1}).level).toBe('unreliable');expect(dataQuality({...ok,modelReady:false}).level).toBe('unreliable');expect(dataQuality({...ok,kConfirmed:false}).level).toBe('unreliable');});
 it('gate checklist agrees with the decision: all pass on BUY, at least one fails on NO TRADE',()=>{
   const b=new Orderbook();b.snapshot([['.49','40']],[['.49','40']]);
-  const buy=evaluate(.65,180,b,market,1000,defaults,baseFees,ready);expect(buy.action).toBe('BUY YES');expect(buy.gates!.every(g=>g.ok)).toBe(true);
+  const buy=evaluate(.65,180,b,market,1000,defaults,baseFees,ready);expect(buy.action).toBe('BUY YES');expect(buy.gates!.every(g=>g.ok)).toBe(true);expect(buy.idea!.belowMinSize).toBe(false);
   for(const [p,tau,cond] of [[.52,180,ready],[.55,600,ready],[.65,180,{...ready,feedsHealthy:false,healthyFeeds:3}],[.65,180,{...ready,lock:'Hourly trade limit reached'}]] as const){
     const e=evaluate(p,tau,b,market,1000,defaults,baseFees,cond);expect(e.action).toBe('NO TRADE');expect(e.gates!.some(g=>!g.ok)).toBe(true);}
-  const small=evaluate(.65,180,b,market,5,defaults,baseFees,ready);expect(small.action).toBe('NO TRADE');expect(small.gates!.find(g=>g.key==='size')!.ok).toBe(false);});
+  // A tiny balance no longer hides the signal: it fires as paper-only with 0 contracts, and the size check is advisory.
+  const small=evaluate(.65,180,b,market,5,defaults,baseFees,ready);expect(small.action).toBe('BUY YES');expect(small.idea!.contracts).toBe(0);expect(small.idea!.belowMinSize).toBe(true);expect(small.reason).toContain('paper only');
+  const sizeGate=small.gates!.find(g=>g.key==='size')!;expect(sizeGate.ok).toBe(false);expect(sizeGate.advisory).toBe(true);expect(small.gates!.filter(g=>!g.ok&&!g.advisory)).toHaveLength(0);
+  const strict=evaluate(.65,180,b,market,5,{...defaults,signalBelowMinSize:false},baseFees,ready);expect(strict.action).toBe('NO TRADE');expect(strict.reason).toContain('Risk budget below one contract');expect(strict.gates!.find(g=>g.key==='size')!.advisory).toBe(false);
+  // Size never overrides the edge/timing gates.
+  expect(evaluate(.52,180,b,market,5,defaults,baseFees,ready).action).toBe('NO TRADE');});
 it('live snapshots are kept once per market and horizon',()=>{const j=new Journal(':memory:');const c=openingCall({modelP:.6,sigma:.0002,momentum30s:0,momentum120s:0,imbalance:0,tradeFlow30s:0});
   j.saveLiveCall('M',300,1,299,c,.55);j.saveLiveCall('M',300,2,290,{...c,p:.1},.2);j.saveLiveCall('M',120,3,119,c,null);expect([...j.liveHorizons('M')].sort()).toEqual([120,300]);
   expect((j.db.prepare('SELECT p FROM live_calls WHERE ticker=? AND horizon=300').get('M') as any).p).toBeCloseTo(.6);});
