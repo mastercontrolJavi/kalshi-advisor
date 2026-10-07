@@ -1,14 +1,19 @@
 import {ReconnectingSocket} from './socket';
 import type {Sample} from '../model/math';
-export interface Venue {name:string;mid:number|null;spread:number|null;updated:number;lag:number|null;status:string}
+export interface Venue {name:string;mid:number|null;spread:number|null;updated:number;alive:number;lag:number|null;status:string}
 export function median(values:number[]){const s=[...values].sort((a,b)=>a-b);return s.length?s.length%2?s[(s.length-1)/2]:(s[s.length/2-1]+s[s.length/2])/2:null;}
-export function healthy(v:Venue,now:number,staleMs=2000){return v.status==='connected'&&v.mid!==null&&now-v.updated<=staleMs&&now-v.updated>=0;}
+/**
+ * Venues push quotes only when their book/trades change, so a quiet quote is not a stale one.
+ * Healthy = connected, link alive (any frame or pong) within staleMs, and the last quote no older than maxQuoteMs.
+ * Pings run every second, so a dead link is still detected within ~2 s.
+ */
+export function healthy(v:Venue,now:number,staleMs=2000,maxQuoteMs=15000){return v.status==='connected'&&v.mid!==null&&now-v.alive<=staleMs&&now-v.updated<=maxQuoteMs&&now-v.updated>=0;}
 export class ProxyFeed {
   venues:Record<string,Venue>={};history:Sample[]=[];private sockets:ReconnectingSocket[]=[];
   constructor(private log:(event:string,data:unknown)=>void=()=>{}){}
   private add(name:string,url:string,subscribe:()=>unknown[],parse:(m:any)=>[number,number,number|null]|null){
-    const venue:Venue=this.venues[name]={name,mid:null,spread:null,updated:0,lag:null,status:'disconnected'};
-    this.sockets.push(new ReconnectingSocket(url,subscribe,m=>{const p=parse(m);if(!p)return;const [bid,ask,ts]=p;if(!Number.isFinite(bid)||!Number.isFinite(ask)||bid<=0||ask<bid)return;venue.mid=(bid+ask)/2;venue.spread=ask-bid;venue.updated=Date.now();venue.lag=ts===null?null:Math.max(0,Date.now()-ts);},status=>{venue.status=status;this.log('feed-status',{name,status});}));
+    const venue:Venue=this.venues[name]={name,mid:null,spread:null,updated:0,alive:0,lag:null,status:'disconnected'};
+    this.sockets.push(new ReconnectingSocket(url,subscribe,m=>{const p=parse(m);if(!p)return;const [bid,ask,ts]=p;if(!Number.isFinite(bid)||!Number.isFinite(ask)||bid<=0||ask<bid)return;venue.mid=(bid+ask)/2;venue.spread=ask-bid;venue.updated=Date.now();venue.lag=ts===null?null:Math.max(0,Date.now()-ts);},status=>{venue.status=status;this.log('feed-status',{name,status});},undefined,{pingMs:1000,onAlive:()=>{venue.alive=Date.now();}}));
   }
   start(){
     this.add('Coinbase','wss://ws-feed.exchange.coinbase.com',()=>[{type:'subscribe',product_ids:['BTC-USD'],channels:['ticker','heartbeat']}],m=>m.type==='ticker'?[+m.best_bid,+m.best_ask,Date.parse(m.time)]:null);

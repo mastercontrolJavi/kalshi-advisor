@@ -17,10 +17,34 @@ export function roundDownTick(price:number,market:Market){
   for(const r of ranges){const lo=Number(r.start),hi=Number(r.end),step=Number(r.step);if(step<=0||price<lo)continue;const p=lo+Math.floor((Math.min(price,hi)-lo+1e-10)/step)*step;if(p<=price+1e-9)candidate=Math.max(candidate,p);}
   return Math.round(Math.min(.999,Math.max(0,candidate))*10000)/10000;
 }
-export interface Evaluation {action:string;reason:string;idea:Idea|null;makers:Idea[];edges:{yes:number|null;no:number|null}}
-export function evaluate(p:number,tau:number,book:Orderbook,market:Market,balance:number|null,config:Config,schedule:FeeSchedule,conditions:{feedsHealthy:boolean;kConfirmed:boolean;lock:string|null;modelReady:boolean;accountReady:boolean;now:number}):Evaluation {
+export interface Gate {key:string;label:string;ok:boolean;detail:string}
+export interface Evaluation {action:string;reason:string;idea:Idea|null;makers:Idea[];edges:{yes:number|null;no:number|null};gates?:Gate[]}
+type Conditions={feedsHealthy:boolean;kConfirmed:boolean;lock:string|null;modelReady:boolean;accountReady:boolean;now:number;healthyFeeds?:number;totalFeeds?:number};
+const cents=(x:number)=>`${(x*100).toFixed(1)}¢`;
+/** Every taker gate for the better-edge side, pass/fail with the observed value, so NO TRADE is explainable at a glance. */
+export function gateChecklist(p:number,tau:number,book:Orderbook,market:Market,balance:number|null,config:Config,schedule:FeeSchedule,c:Conditions):Gate[]{
+  const v=book.view(),yes=v.yesAsk===null?-Infinity:p-v.yesAsk-fee(v.yesAsk,1,'taker',schedule),no=v.noAsk===null?-Infinity:1-p-v.noAsk-fee(v.noAsk,1,'taker',schedule);
+  const side=yes>=no?'yes':'no',edge=Math.max(yes,no),price=side==='yes'?v.yesAsk:v.noAsk,bid=side==='yes'?v.yesBid:v.noBid,depth=side==='yes'?v.yesDepth:v.noDepth;
+  const inSweet=tau>=config.sweetMinSeconds&&tau<=config.sweetMaxSeconds,sizing=price!==null&&balance!==null?size(side==='yes'?p:1-p,price,balance,config,schedule):{contracts:0};
+  const bookLive=book.valid&&c.now-book.updated<=config.bookStaleMs;
+  return [
+    {key:'market',label:'Market open',ok:market.status==='active',detail:market.status},
+    {key:'feeds',label:'Price feeds',ok:c.feedsHealthy,detail:c.totalFeeds?`${c.healthyFeeds}/${c.totalFeeds} live`:c.feedsHealthy?'live':'stale'},
+    {key:'book',label:'Kalshi book',ok:bookLive&&schedule.verified,detail:!schedule.verified?'fees unverified':bookLive?v.source==='ws'?'live':'REST fallback':'stale'},
+    {key:'k',label:'Opening K',ok:c.kConfirmed||config.allowEstimatedK,detail:c.kConfirmed?'confirmed':'estimated'},
+    {key:'model',label:'Model',ok:c.modelReady,detail:c.modelReady?'warm':'warming'},
+    {key:'account',label:'Account',ok:c.accountReady&&balance!==null,detail:c.accountReady?'synced':'unavailable'},
+    {key:'guards',label:'Guardrails',ok:!c.lock,detail:c.lock??'clear'},
+    {key:'edge',label:'Edge',ok:Number.isFinite(edge)&&edge>=config.minEdge,detail:Number.isFinite(edge)?`${side.toUpperCase()} ${cents(edge)} vs ${cents(config.minEdge)} min`:'no ask'},
+    {key:'timing',label:'Timing',ok:tau>=60&&(inSweet||edge>=config.earlyEdge),detail:tau<60?'final minute':inSweet?'in window':`opens at ${Math.round(config.sweetMaxSeconds/60)}:00 left${edge>=config.earlyEdge?'':` (or ${cents(config.earlyEdge)}+ edge)`}`},
+    {key:'spread',label:'Spread',ok:price!==null&&bid!==null&&price-bid<=config.maxSpread+1e-8,detail:price!==null&&bid!==null?`${cents(price-bid)} vs ${cents(config.maxSpread)} max`:'one-sided'},
+    {key:'depth',label:'Depth',ok:depth>=config.minDepth,detail:`${Math.floor(depth)} vs ${config.minDepth} min`},
+    {key:'size',label:'Size',ok:sizing.contracts>=1,detail:sizing.contracts>=1?`${sizing.contracts} contracts`:'budget < 1 contract'}
+  ];
+}
+export function evaluate(p:number,tau:number,book:Orderbook,market:Market,balance:number|null,config:Config,schedule:FeeSchedule,conditions:Conditions):Evaluation {
   const v=book.view(),edges={yes:v.yesAsk===null?null:p-v.yesAsk-fee(v.yesAsk,1,'taker',schedule),no:v.noAsk===null?null:1-p-v.noAsk-fee(v.noAsk,1,'taker',schedule)};
-  const result:Evaluation={action:'NO TRADE',reason:'No positive edge',idea:null,makers:[],edges};
+  const result:Evaluation={action:'NO TRADE',reason:'No positive edge',idea:null,makers:[],edges,gates:gateChecklist(p,tau,book,market,balance,config,schedule,conditions)};
   const common=market.status!=='active'?'Market not active':!conditions.modelReady?'Model warming or incomplete average':!schedule.verified?'Fee schedule unsupported':!book.valid||conditions.now-book.updated>config.bookStaleMs?'Orderbook unavailable or stale':!conditions.feedsHealthy?'One or more price feeds stale':!conditions.kConfirmed&&!config.allowEstimatedK?'K estimated or unavailable':conditions.lock;
   if(!common&&tau>=config.makerMinSeconds){for(const side of ['yes','no'] as const){const fair=side==='yes'?p:1-p,ask=side==='yes'?v.yesAsk:v.noAsk;if(ask===null)continue;const price=roundDownTick(Math.min(fair-config.makerMargin,ask-.001),market);if(price<=0)continue;const f=fee(price,1,'maker',schedule),edge=fair-price-f;if(edge>=config.minMakerEdge)result.makers.push({side,kind:'maker',price,fee:f,edge,queue:book.queue(side,price),...size(fair,price,balance??0,config,schedule,'maker'),reason:'Resting estimate; queue ahead includes better prices, adverse selection uncalibrated'});}}
   if(common){result.reason=common;return result;}

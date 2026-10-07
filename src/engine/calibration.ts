@@ -1,6 +1,7 @@
 import type {Journal} from './journal';
 import {mean} from './model/math';
 import {wilson} from './model/opening';
+import {LIVE_HORIZONS} from './model/live';
 export function clusterCI(rows:{ticker:string;pnl:number}[]){
   if(!rows.length)return {mean:null,low:null,high:null,markets:0,count:0};
   const clusters=new Map<string,number[]>();for(const r of rows)clusters.set(r.ticker,[...(clusters.get(r.ticker)??[]),r.pnl]);
@@ -42,5 +43,7 @@ export function buildCalibration(journal:Journal){
   const errors=outcomes.map(o=>o.basis_error).filter(x=>x!==null) as number[];
   const hist=new Map<string,number>();for(const error of errors){const bin=Math.floor(error/5)*5,label=`${bin} to ${bin+5}`;hist.set(label,(hist.get(label)??0)+1);}
   const opening=openingScore(journal.db.prepare('SELECT o.ticker,o.direction,o.p,o.base_p,o.mid,r.result FROM opening_calls o LEFT JOIN outcomes r ON r.ticker=o.ticker ORDER BY o.time').all() as any[]);
-  return {updated:Date.now(),opening,...rel,taker:byKind('taker'),maker:byKind('maker'),curve:[...curveMap.values()],breakdown:[...breakdown('Time remaining',r=>r.tau<=120?'60–120s':r.tau<=300?'121–300s':'301s+'),...breakdown('Vol regime',r=>r.regime),...breakdown('Net edge',r=>r.edge<.04?'2–4¢':r.edge<.08?'4–8¢':'8¢+')],basis:errors.length?{count:errors.length,mean:mean(errors),histogram:[...hist].map(([bin,count])=>({bin,count}))}:{count:0,mean:null,histogram:[]},outcomes:outcomes.slice(-20).map(o=>({...o,context:undefined})),totalSignals:(journal.db.prepare('SELECT COUNT(*) AS n FROM signals').get() as any).n};
+  const liveRows=journal.db.prepare('SELECT l.horizon,l.ticker,l.direction,l.p,l.base_p,l.mid,r.result FROM live_calls l LEFT JOIN outcomes r ON r.ticker=l.ticker ORDER BY l.time').all() as any[];
+  const live=LIVE_HORIZONS.map(h=>({horizon:h,...openingScore(liveRows.filter(r=>r.horizon===h))}));
+  return {updated:Date.now(),opening,live,...rel,taker:byKind('taker'),maker:byKind('maker'),curve:[...curveMap.values()],breakdown:[...breakdown('Time remaining',r=>r.tau<=120?'60–120s':r.tau<=300?'121–300s':'301s+'),...breakdown('Vol regime',r=>r.regime),...breakdown('Net edge',r=>r.edge<.04?'2–4¢':r.edge<.08?'4–8¢':'8¢+')],basis:errors.length?{count:errors.length,mean:mean(errors),histogram:[...hist].map(([bin,count])=>({bin,count}))}:{count:0,mean:null,histogram:[]},outcomes:outcomes.slice(-20).map(o=>({...o,context:undefined})),totalSignals:(journal.db.prepare('SELECT COUNT(*) AS n FROM signals').get() as any).n};
 }

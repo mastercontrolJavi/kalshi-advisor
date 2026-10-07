@@ -15,6 +15,7 @@ import {createExecutor} from './executor';
 import {buildCalibration} from './calibration';
 import {openingCall,OPENING_WINDOW_SECONDS} from './model/opening';
 import {exitAdvice} from './exits';
+import {nextDirection,confidence,dueHorizon,dataQuality,type Direction} from './model/live';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
 let calibration=buildCalibration(journal);
@@ -24,6 +25,7 @@ const client=new KalshiClient(),account=new Account(client,journal);
 const kalshi=new KalshiFeed(client,log,t=>journal.throughTrade(t),()=>void account.sync());
 const known=new Map<string,Market>();let state:any={status:'Starting',config,engineTime:Date.now(),evaluation:{action:'NO TRADE',reason:'Warming feeds',makers:[]}};
 const seriesHistory:{time:number;model:number|null;market:number|null}[]=[];
+let live:{ticker:string;direction:Direction|null;since:number;flips:number}={ticker:'',direction:null,since:0,flips:0};
 let previousTicker='',lastLoop=Date.now(),lastSecond=0,lastPublish=0,settling=false,refreshing=false;
 const safe=(name:string,fn:()=>Promise<void>)=>void fn().catch(e=>log(name,{message:e.message}));
 async function refresh(){if(refreshing)return;refreshing=true;try{await kalshi.refresh();for(const m of kalshi.markets){known.set(m.ticker,m);journal.set('market:'+m.ticker,m);}await kalshi.fallback();}finally{refreshing=false;}}
@@ -98,7 +100,7 @@ const loop=setInterval(()=>{
       let model:any=null;
       if(spot!==null&&K!==null&&locked!==null&&vol.count>=config.minVolSamples&&vol.sigma>0)model=probability(spot,K,vol.sigma,tau,locked,config.basisCorrection);
       const schedule={...kalshi.fees,precision:config.feePrecision};
-      const evaluation=evaluate(model?.p??.5,tau,book,market,account.balance,config,schedule,{feedsHealthy:venueStates.every(v=>v.healthy),kConfirmed:confirmed,lock:guards.reason,modelReady:!!model,accountReady:account.ready&&now-account.updated<config.accountStaleMs,now});
+      const evaluation=evaluate(model?.p??.5,tau,book,market,account.balance,config,schedule,{feedsHealthy:venueStates.every(v=>v.healthy),healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kConfirmed:confirmed,lock:guards.reason,modelReady:!!model,accountReady:account.ready&&now-account.updated<config.accountStaleMs,now});
       const bv=book.view(),mid=bv.yesBid!==null&&bv.yesAsk!==null?(bv.yesBid+bv.yesAsk)/2:null;
       const momentum=(seconds:number)=>{const prior=proxy.history.find(s=>s.time===time-seconds*1000);return prior&&spot?Math.log(spot/prior.price):null;};
       const y=bv.yes.slice(0,3).reduce((s,[,q])=>s+q,0),n=bv.no.slice(0,3).reduce((s,[,q])=>s+q,0);
@@ -109,11 +111,22 @@ const loop=setInterval(()=>{
         try{const call=openingCall({modelP:model.p,sigma:vol.sigma,momentum30s:features.momentum30s,momentum120s:features.momentum120s,imbalance:features.imbalance,tradeFlow30s:features.tradeFlow30s,tradeVolume30s:features.tradeVolume30s});journal.saveOpeningCall(market.ticker,time,tau,call,mid);log('opening-call',{ticker:market.ticker,direction:call.direction,p:call.p,tau});}
         catch(e){log('opening-call-error',{message:(e as Error).message});}
       }
+      // Live call: same formula as the opening call on current data, with direction hysteresis; scored at fixed horizons.
+      const quality=dataQuality({healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kalshiLive:kalshi.status==='connected',bookLive:bv.valid&&now-bv.updated<=config.bookStaleMs,kConfirmed:confirmed||config.allowEstimatedK,modelReady:!!model,clockSynced:client.clockSynced});
+      if(live.ticker!==market.ticker)live={ticker:market.ticker,direction:null,since:now,flips:0};
+      let liveCall:any=null;
+      if(model&&quality.level!=='unreliable'){
+        try{const raw=openingCall({modelP:model.p,sigma:vol.sigma,momentum30s:features.momentum30s,momentum120s:features.momentum120s,imbalance:features.imbalance,tradeFlow30s:features.tradeFlow30s,tradeVolume30s:features.tradeVolume30s});
+          const direction=nextDirection(live.direction,raw.p);if(live.direction&&direction!==live.direction){live.flips++;live.since=now;}live.direction=direction;
+          liveCall={...raw,direction,confidence:confidence(raw.p),since:live.since,flips:live.flips};
+          const due=newSecond?dueHorizon(tau,journal.liveHorizons(market.ticker)):null;if(due!==null)journal.saveLiveCall(market.ticker,due,time,tau,liveCall,mid);
+        }catch(e){log('live-call-error',{message:(e as Error).message});}
+      }
       const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,mid,regime:vol.regime,model,kConfirmed:confirmed,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation};
       if(newSecond){journal.tick(tick);for(const idea of [...(evaluation.idea?[evaluation.idea]:[]),...evaluation.makers])journal.signal(market.ticker,time,idea,tick,schedule);
       seriesHistory.push({time,model:model?.p??null,market:mid});if(seriesHistory.length>901)seriesHistory.shift();}
       const exits=(account.positions as any[]).map(pos=>exitAdvice(pos,pos.ticker===market.ticker?model?.p??null:null,kalshi.books.get(pos.ticker)?.view()??null,{...kalshi.fees,precision:config.feePrecision},config.exitMargin,config.makerMargin)).filter(Boolean);
-      state={...common,...tick,market,evaluation,exits,openingCall:journal.openingCall(market.ticker),lockedCount:locked?.length??0,distance:spot!==null&&K!==null?spot-K:null};
+      state={...common,...tick,market,evaluation,exits,liveCall,quality,openingCall:journal.openingCall(market.ticker),lockedCount:locked?.length??0,distance:spot!==null&&K!==null?spot-K:null};
     }
     state.calibration=calibration;state.loopMs=performance.now()-started;const message=JSON.stringify(state);for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}

@@ -14,7 +14,7 @@ ok('Live market, positive proxy price and measured engine loop available');
 const denied=await fetch(base+'/api/engine/settings',{method:'POST',headers:{authorization,'Content-Type':'application/json'},body:'{}'});assert.equal(denied.status,403);
 const saved=await fetch(base+'/api/engine/settings',{method:'POST',headers:{authorization,Origin:base,'Content-Type':'application/json'},body:JSON.stringify(state.config)});assert.equal(saved.status,200);
 ok('Settings require same-origin request and persist validated configuration');
-for(const table of ['ticks','signals','paper_trades','outcomes','real_trades','opening_calls']){const r=await fetch(base+'/api/engine/export/'+table,{headers:{authorization}});assert.equal(r.status,200);assert.ok((await r.text()).includes('ticker'));}
+for(const table of ['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls']){const r=await fetch(base+'/api/engine/export/'+table,{headers:{authorization}});assert.equal(r.status,200);assert.ok((await r.text()).includes('ticker'));}
 ok('Every required journal table exports CSV');
 const wsURL=base.replace('http','ws')+'/ws';
 await new Promise<void>((resolve,reject)=>{const ws=new WebSocket(wsURL);const timer=setTimeout(()=>reject(new Error('Unauthenticated WS timeout')),5000);ws.on('unexpected-response',(_req,res)=>{clearTimeout(timer);try{assert.equal(res.statusCode,401);res.destroy();ws.terminate();resolve();}catch(e){reject(e);}});ws.on('open',()=>{ws.terminate();reject(new Error('Unauthenticated WS accepted'));});ws.on('error',()=>{});});

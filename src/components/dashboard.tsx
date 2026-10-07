@@ -1,36 +1,16 @@
 'use client';
 import {useEffect,useRef,useState} from 'react';
 import dynamic from 'next/dynamic';
+import {LineChart as ChartIcon,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,ArrowUpRight,Volume2} from 'lucide-react';
 import {useLive} from './use-live';
 import Settings from './settings';
 import {Button} from './ui/button';
 import {Input} from './ui/input';
 import {Card} from './ui/card';
-const ProbabilityChart=dynamic(()=>import('./probability-chart'),{ssr:false,loading:()=> <div className="chart text-zinc-500">Loading chart…</div>});
-const dollars=(v:number|null|undefined)=>v==null?'—':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(v);
-const cents=(v:number|null|undefined)=>v==null?'—':`${(v*100).toFixed(1)}¢`;
-const pct=(v:number|null|undefined)=>v==null?'—':`${(v*100).toFixed(1)}%`;
-function Panel({title,children,open=false}:{title:string;children:React.ReactNode;open?:boolean}){return <Card><details open={open||undefined}><summary className="font-semibold">{title}</summary><div className="mt-5">{children}</div></details></Card>;}
-function ExitsCard({s,fresh}:{s:any;fresh:boolean}){
-  const exits=fresh?s?.exits??[]:[];
-  if(!exits.length)return <Card><div className="flex flex-wrap justify-between gap-2"><span className="label">Your positions · hold or sell</span><span className="text-xs text-zinc-500">{s?.account?.ready?'No open BTC 15-min position':'Waiting for account'}</span></div></Card>;
-  return <Card><div className="label">Your positions · hold or sell</div>{exits.map((e:any)=><div key={e.ticker} className="mt-4 border-t border-zinc-800 pt-4 first:mt-3 first:border-0 first:pt-0">
-    <div className="flex flex-wrap items-end justify-between gap-4"><div><div className={`text-3xl font-black ${e.action==='SELL NOW'?'text-amber-300':e.action==='HOLD'?'text-emerald-300':'text-zinc-300'}`}>{e.action}</div><div className="mt-1 text-sm text-zinc-300">{e.contracts} {e.side.toUpperCase()} · avg cost {cents(e.avgCost)} · <span className="mono text-xs text-zinc-500">{e.ticker}</span></div></div>
-      <div className="flex flex-wrap gap-6 text-sm"><div><div className="label">Hold value</div><div className="text-lg">{dollars(e.holdValue)}</div><div className="text-xs text-zinc-500">{pct(e.winProb)} to win</div></div><div><div className="label">Sell now</div><div className="text-lg">{dollars(e.sellValue)}</div><div className="text-xs text-zinc-500">bid {cents(e.bid)} − fee {dollars(e.sellFee)}</div></div><div><div className="label">P&L if sold</div><div className={`text-lg ${e.unrealized>0?'text-emerald-300':e.unrealized<0?'text-rose-300':''}`}>{dollars(e.unrealized)}</div></div></div></div>
-    <p className="mt-2 text-sm text-zinc-400">{e.reason}{e.limitPrice!=null?` · Or list a sell at ${cents(e.limitPrice)} and wait for a buyer.`:''}</p></div>)}
-    <p className="mt-3 text-xs text-zinc-500">Based on the model's win probability, which is not yet calibrated. Positions refresh on each fill and every 30 s.</p></Card>;
-}
-function OpeningCallCard({s,fresh}:{s:any;fresh:boolean}){
-  const call=s?.openingCall,record=s?.calibration?.opening,elapsed=s?.market?(Date.parse(s.market.close_time)-Date.parse(s.market.open_time))/1000-(s?.tau??0):null;
-  const up=call?.direction==='UP',tracking=call&&s?.proxy!=null&&s?.K!=null?(s.proxy>=s.K)===up:null;
-  return <Card className={`border-l-4 ${!call?'border-l-zinc-700':up?'border-l-emerald-500':'border-l-rose-500'}`}>
-    <div className="flex flex-wrap items-baseline justify-between gap-2"><span className="label">Opening call · unproven forecast</span><span className="text-xs text-zinc-500">{record?.count?`Record ${record.hits}/${record.count} correct (${pct(record.hitRate)}, 95% CI ${pct(record.low)}–${pct(record.high)})`:`No settled calls yet${record?.pending?` · ${record.pending} pending`:''}`}</span></div>
-    {call?<><div className="mt-3 flex flex-wrap items-end gap-x-6 gap-y-2"><div className={`text-4xl font-black ${up?'text-emerald-300':'text-rose-300'}`}>{call.direction}</div><div className="text-2xl font-semibold">{pct(up?call.p:1-call.p)}</div><div className="text-sm text-zinc-400">P(up) {pct(call.p)} · Kalshi mid at call {pct(call.mid)}</div>{fresh&&tracking!==null?<div className={`text-sm ${tracking?'text-emerald-400':'text-amber-400'}`}>{tracking?'● On track now':'● Behind now'}</div>:null}</div>
-      <ul className="mt-3 space-y-1 text-xs text-zinc-400">{call.reasons.map((r:string)=><li key={r}>{r}</li>)}</ul>
-      <p className="mt-3 text-xs text-zinc-500">Made {Math.round(call.tau)}s before close and frozen. The lean weights are an untested hypothesis; check the Calibration page before trading on it.</p></>
-    :<p className="mt-3 text-sm text-zinc-400">{s?.market&&elapsed!==null&&elapsed<60?'Making the call for this window…':'No call for this window: the engine was not live during its first minute. The next call is made when the next window opens.'}</p>}
-  </Card>;
-}
+import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Session,Feeds,Collapsible,WindowBar,Pill,actionTone} from './panels';
+import {ago,signedDollars} from './format';
+const ProbabilityChart=dynamic(()=>import('./probability-chart'),{ssr:false,loading:()=><div className="chart animate-pulse rounded-xl bg-surface-2"/>});
+
 export default function Dashboard(){
   const {state:s,connected,fresh}=useLive(),[override,setOverride]=useState(''),[error,setError]=useState(''),[audioArmed,setAudioArmed]=useState(false);
   const lastSignal=useRef(''),audio=useRef<AudioContext|null>(null);
@@ -40,17 +20,49 @@ export default function Dashboard(){
   },[s,fresh,audioArmed]);
   useEffect(()=>()=>{void audio.current?.close();},[]);
   async function unlock(){try{const r=await fetch('/api/engine/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:override})});const data=await r.json();if(!r.ok)throw new Error(data.error);setOverride('');}catch(e){setError((e as Error).message);}}
-  const ev=s?.evaluation,idea=fresh?ev?.idea:null,action=fresh?ev?.action??'NO TRADE':'NO TRADE',tau=Math.max(0,s?.tau??0),countdown=`${Math.floor(tau/60).toString().padStart(2,'0')}:${Math.floor(tau%60).toString().padStart(2,'0')}`;
-  return <main className="mx-auto max-w-7xl space-y-4 p-4 pb-12 sm:p-6"><header className="flex flex-wrap items-center justify-between gap-3"><div><div className="text-lg font-semibold tracking-tight">KALSHI <span className="text-emerald-400">/ ADVISOR</span></div><div className="mt-1 text-xs text-zinc-500">BTC 15 MIN · LOCAL · ORDERS DISABLED</div></div><nav className="flex items-center gap-4 text-sm"><span className={fresh?'text-emerald-400':'text-amber-400'}>{fresh?'● Live':connected?'● Stale':'● Reconnecting'}</span><a className="text-zinc-300 hover:text-white" href="/calibration">Calibration ↗</a></nav></header>
-    <Card className="hidden grid-cols-2 gap-5 sm:grid sm:grid-cols-4 lg:grid-cols-6"><div className="col-span-2 sm:col-span-1"><div className="label">Time to close</div><div className="mono mt-1 text-5xl font-bold">{s?.market?countdown:'—'}</div></div><div><div className="label">Opening K {s?.kConfirmed?'✓':'estimated'}</div><div className="mt-2 text-xl">{dollars(s?.K)}</div></div><div><div className="label">Live proxy</div><div className="mt-2 text-xl">{dollars(s?.proxy)}</div></div><div><div className="label">Distance to K</div><div className="mt-2 text-xl">{dollars(s?.distance)}</div><div className="text-xs text-zinc-500">{s?.model?`${s.model.z.toFixed(2)} σ of average`:'—'}</div></div><div><div className="label">Model UP</div><div className="mt-2 text-xl text-emerald-300">{pct(s?.p)}</div><div className="text-xs text-zinc-500">{s?.regime??'warming'} · {s?.lockedCount??0}/60 proxy seconds locked</div></div><div><div className="label">Balance</div><div className="mt-2 text-xl">{dollars(s?.account?.balance)}</div><div className="text-xs text-zinc-500">{s?.account?.ready?'Account synchronized':'Account unavailable'}</div></div></Card>
-    <Card className={`relative overflow-hidden border-l-4 ${action==='BUY YES'?'border-l-emerald-400':action==='BUY NO'?'border-l-rose-400':'border-l-zinc-500'}`}><div className="mb-4 flex items-center justify-between sm:hidden"><span className="label">Time to close</span><span className="mono text-4xl font-bold">{s?.market?countdown:'—'}</span></div><div className="label mono break-all">{s?.market?.ticker??'Waiting for market'}</div><div className="mt-5 flex flex-wrap items-end justify-between gap-5"><div className={`text-5xl font-black sm:text-6xl ${action==='BUY YES'?'text-emerald-300':action==='BUY NO'?'text-rose-300':'text-zinc-200'}`}>{action}</div><div className="flex gap-8"><div><div className="label">Net edge</div><div className="text-3xl font-semibold">{cents(idea?.edge)}</div></div><div><div className="label">Contracts</div><div className="text-3xl font-semibold">{idea?.contracts??0}</div></div></div></div><p className="mt-5 text-sm text-zinc-300" role="status">{fresh?ev?.reason??'Warming up':'Live state unavailable; advice suppressed'}</p><div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-xs text-zinc-500"><span>Spend / max loss: {dollars(idea?.maxLoss)}</span><span>YES edge: {cents(s?.model?ev?.edges?.yes:null)}</span><span>NO edge: {cents(s?.model?ev?.edges?.no:null)}</span><span>Proxy diffusion estimate · calibrate before relying on edge</span></div></Card>
-    <div className="sm:hidden"><Panel title="Market reference & model"><div className="grid grid-cols-2 gap-4 text-sm"><div>K {s?.kConfirmed?'✓':'estimated'}<div className="mt-1 text-lg">{dollars(s?.K)}</div></div><div>Proxy<div className="mt-1 text-lg">{dollars(s?.proxy)}</div></div><div>Distance<div className="mt-1">{dollars(s?.distance)} · {s?.model?.z?.toFixed(2)??'—'} σ</div></div><div>Model UP<div className="mt-1 text-emerald-300">{pct(s?.p)} · {s?.regime??'warming'}</div></div><div>Balance<div className="mt-1">{dollars(s?.account?.balance)}</div></div><div>Proxy seconds locked<div className="mt-1">{s?.lockedCount??0}/60</div></div></div></Panel></div><Card className={s?.guards?.locked?'border-amber-600':'border-zinc-800'}><div className="flex flex-wrap items-center justify-between gap-3"><span className={s?.guards?.locked?'font-semibold text-amber-300':'text-zinc-300'}>{s?.guards?.reason??(s?.account?.ready?'Guardrails ready':'Guardrails awaiting account')}{s?.guards?.cooldownUntil>Date.now()?` · until ${new Date(s.guards.cooldownUntil).toLocaleTimeString()}`:''}</span><div className="flex flex-wrap gap-5 text-sm"><span>Today <b>{dollars(s?.guards?.pnl)}</b></span><span>Trades <b>{s?.guards?.trades??0}</b></span><span>Win <b>{pct(s?.guards?.winRate)}</b></span><span>Streak <b>{s?.guards?.streak??0}</b></span></div></div>{s?.realWarnings?.map((w:any)=><p key={w.id} className="mt-2 text-sm text-amber-300">{w.warnings.join(' · ')}</p>)}</Card>
-    <ExitsCard s={s} fresh={fresh}/>
-    <OpeningCallCard s={s} fresh={fresh}/>
-    <div className="grid gap-4 lg:grid-cols-2"><Panel title="Maker ideas" open>{fresh&&ev?.makers?.length?ev.makers.map((m:any)=><div key={m.side} className="mb-4 flex items-center justify-between rounded-lg bg-zinc-950 p-4"><div><div className="font-semibold">BUY {m.side.toUpperCase()} @ {cents(m.price)}</div><div className="mt-1 text-xs text-zinc-500">~{Math.round(m.queue).toLocaleString()} contracts ahead · {m.contracts} suggested</div></div><div className="text-right text-emerald-300">+{cents(m.edge)}<div className="text-xs text-zinc-500">after maker fee</div></div></div>):<p className="text-sm text-zinc-500">No eligible maker ideas</p>}<p className="text-xs text-zinc-500">Queue is an estimate including better bids. Edge conditional on fill; adverse selection uncalibrated. Maker simulations require a trade strictly through the limit.</p></Panel><Panel title="Probability over this window" open><div className="mb-3 flex gap-5 text-xs"><span className="text-emerald-300">— Model</span><span className="text-indigo-300">— Kalshi midpoint</span></div><ProbabilityChart data={s?.history??[]}/></Panel></div>
-    <div className="grid gap-4 lg:grid-cols-2"><Panel title="Orderbook · top 10 bids"><div className="grid grid-cols-2 gap-4">{(['yes','no'] as const).map(side=><div key={side}><div className="mb-3 text-sm font-semibold">{side.toUpperCase()} · ask {cents(s?.book?.[side==='yes'?'yesAsk':'noAsk'])}</div><table className="w-full text-right text-sm"><thead className="text-xs text-zinc-500"><tr><th scope="col">Bid</th><th scope="col">Contracts</th></tr></thead><tbody>{s?.book?.[side]?.map(([price,q]:number[])=><tr key={price} className="border-b border-zinc-800"><td className="py-2 text-zinc-300">{cents(price)}</td><td>{q.toLocaleString(undefined,{maximumFractionDigits:2})}</td></tr>)}</tbody></table></div>)}</div><p className="mt-4 text-xs text-zinc-500">Source: {s?.book?.source??'unavailable'} · invalid books suppress advice</p></Panel><Panel title="Feeds & latency"><div className="space-y-4">{s?.venues?.map((v:any)=><div key={v.name} className="flex items-center justify-between text-sm"><span className="flex items-center gap-2"><span className={v.healthy?'text-emerald-400':'text-amber-400'}>●</span>{v.name}</span><span>{dollars(v.mid)}<span className="ml-3 text-xs text-zinc-500">age {Math.round(v.age)}ms · lag {v.lag==null?'n/a':`${Math.round(v.lag)}ms`}</span></span></div>)}</div><div className="mt-6 space-y-2 text-xs text-zinc-400"><p>Kalshi: {s?.kalshi?.status??'connecting'} · lag {s?.kalshi?.lag==null?'n/a':`${Math.round(s.kalshi.lag)}ms`}</p><p>Engine loop: {s?.loopMs?.toFixed(1)??'—'}ms · server clock offset {s?.kalshi?.clockOffset?.toFixed(0)??'—'}ms</p><p>Volatility: {s?.sigma?(s.sigma*100).toFixed(5):'—'}% / √second · {s?.vol?.count??0} returns</p><p>{s?.account?.error}</p><p>All four venue quotes must be younger than {s?.config?.staleMs??2000}ms for signals.</p></div></Panel></div>
-    <Panel title="Settings & alerts">{s?.config?<Settings config={s.config}/>:<p>Waiting for engine</p>}<div className="mt-6"><Button variant="outline" onClick={()=>{audio.current??=new AudioContext();void audio.current.resume();setAudioArmed(true);}}>{audioArmed?'Audio armed for this browser':'Enable browser audio'}</Button></div></Panel>
-    <footer className="flex flex-wrap justify-between gap-3 text-xs text-zinc-600"><span>Next: {s?.next?.ticker??'discovering'} · All journal data stays in ./data/advisor.db</span><a href="/api/engine/export/signals">Export signals CSV ↓</a></footer>
-    {s?.guards?.dailyLocked?<div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/95 p-5"><div className="max-w-md space-y-5"><div className="label text-rose-400">Daily discipline lock</div><h1 className="text-6xl font-black text-rose-300">LOCKED</h1><p className="text-zinc-300">Daily loss limit reached. Signals stay suppressed for the rest of the local day.</p><p className="text-sm text-zinc-500">Override requires typing “I accept the risk”. This action is logged.</p><label className="block"><span className="label">Risk acknowledgement</span><Input value={override} onChange={e=>setOverride(e.target.value)}/></label><Button disabled={override!=='I accept the risk'} onClick={unlock}>Override daily lock</Button><p role="alert" className="text-rose-300">{error}</p></div></div>:null}
-  </main>;
+  const action=fresh?s?.evaluation?.action??'NO TRADE':'NO TRADE',tone=actionTone(action),healthy=s?.venues?.filter((v:any)=>v.healthy).length??0;
+  const ambient=!fresh?'warn':tone==='yes'||tone==='no'?tone:'none';
+  return <>
+    <div aria-hidden className="ambient" data-tone={ambient}/>
+    <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md">
+      <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:px-6">
+        <div className="font-display text-xl font-bold tracking-wide">KALSHI<span className="text-yes">/ADVISOR</span></div>
+        <span className="num hidden truncate text-xs text-muted sm:inline">{s?.market?.ticker??'waiting for market'}</span>
+        <nav className="ml-auto flex items-center gap-2 text-sm">
+          <Pill tone={fresh?'yes':'warn'}><span className={fresh?'pulse size-1.5 rounded-full bg-yes':'size-1.5 rounded-full bg-warn'}/>{fresh?'Live':connected?'Stale':'Reconnecting'}</Pill>
+          <Pill tone={healthy===4?'neutral':'warn'} title="Exchange price feeds live">{healthy}/4 feeds</Pill>
+          <span className="num hidden text-xs text-muted md:inline" title="Age of data on screen">{s?ago(Math.max(0,Date.now()-s.engineTime)):'—'}</span>
+          <a className="inline-flex min-h-11 items-center gap-1 rounded-xl px-3 text-muted transition-colors hover:text-fg" href="/calibration">Calibration<ArrowUpRight aria-hidden className="size-4"/></a>
+        </nav>
+      </div>
+      <WindowBar s={s}/>
+    </header>
+    <main className="mx-auto max-w-[1400px] space-y-4 px-4 pt-4 pb-16 sm:px-6">
+      <div className="grid gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-8"><SignalPanel s={s} fresh={fresh}/></div>
+        <div className="lg:col-span-4"><ForecastPanel s={s} fresh={fresh}/></div>
+      </div>
+      <Positions s={s} fresh={fresh}/>
+      <Instruments s={s}/>
+      <div className="grid gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-8"><Collapsible open title="Probability over this window" icon={<ChartIcon aria-hidden className="size-4 text-info"/>} aside={<span className="flex gap-3"><span className="text-yes">— Model</span><span className="text-info">— Kalshi mid</span></span>}><ProbabilityChart data={s?.history??[]}/></Collapsible></div>
+        <div className="lg:col-span-4"><Collapsible open title="Order book" icon={<BookOpen aria-hidden className="size-4 text-info"/>} aside="top 10 bids"><BookLadder s={s}/></Collapsible></div>
+      </div>
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Collapsible open title="Session & guardrails" icon={<ShieldCheck aria-hidden className="size-4 text-info"/>} aside={<span className="num">{signedDollars(s?.guards?.pnl)}</span>}><Session s={s}/></Collapsible>
+        <Collapsible open title="Resting-bid ideas" icon={<Layers aria-hidden className="size-4 text-info"/>} aside={`${fresh?s?.evaluation?.makers?.length??0:0} now`}><MakerIdeas s={s} fresh={fresh}/></Collapsible>
+        <Collapsible open title="Feeds & latency" icon={<Activity aria-hidden className="size-4 text-info"/>} aside={s?.quality?.level}><Feeds s={s}/></Collapsible>
+      </div>
+      <Collapsible title="Settings & alerts" icon={<SlidersHorizontal aria-hidden className="size-4 text-info"/>} aside="thresholds, sizing, guardrails">
+        {s?.config?<Settings config={s.config}/>:<p className="text-muted">Waiting for engine</p>}
+        <Button className="mt-5" variant="outline" onClick={()=>{audio.current??=new AudioContext();void audio.current.resume();setAudioArmed(true);}}><Volume2 aria-hidden className="size-4"/>{audioArmed?'Audio armed for this browser':'Enable browser audio'}</Button>
+      </Collapsible>
+      <footer className="flex flex-wrap justify-between gap-3 pt-2 text-xs text-faint"><span>Next: <span className="num">{s?.next?.ticker??'discovering'}</span> · journal stays in ./data/advisor.db · orders disabled</span><a className="underline-offset-4 hover:text-fg hover:underline" href="/api/engine/export/signals">Export signals CSV</a></footer>
+    </main>
+    {s?.guards?.dailyLocked?<div role="dialog" aria-modal="true" aria-labelledby="lock-title" className="fixed inset-0 z-50 flex items-center justify-center bg-bg/95 p-5 backdrop-blur"><Card className="max-w-md space-y-5 border-no/40">
+      <div className="label text-no">Daily discipline lock</div><h1 id="lock-title" className="font-display text-7xl font-bold text-no">LOCKED</h1>
+      <p className="text-fg/90">Daily loss limit reached. Signals stay suppressed for the rest of the local day.</p><p className="text-sm text-muted">Override requires typing “I accept the risk”. This action is logged.</p>
+      <label className="block space-y-2"><span className="label">Risk acknowledgement</span><Input value={override} onChange={e=>setOverride(e.target.value)} autoComplete="off"/></label>
+      <Button disabled={override!=='I accept the risk'} onClick={unlock}>Override daily lock</Button><p role="alert" className="text-sm text-no">{error}</p></Card></div>:null}
+  </>;
 }

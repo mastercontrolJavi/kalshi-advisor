@@ -37,7 +37,8 @@ export function openingCall(inputs: OpeningInputs): OpeningCall {
     lean += contribution;
     reasons.push(`${part.label(part.value)} → ${contribution >= 0 ? 'UP' : 'DOWN'} ${Math.abs(contribution * MAX_LEAN * 100).toFixed(1)}pp`);
   }
-  const p = Math.min(.95, Math.max(.05, modelP + MAX_LEAN * lean));
+  // Same 1–99% clip as the diffusion model, so a live call late in the window is not capped below the model itself.
+  const p = Math.min(.99, Math.max(.01, modelP + MAX_LEAN * lean));
   reasons.unshift(`Model at open ${(modelP * 100).toFixed(1)}%`);
   return {direction: p >= .5 ? 'UP' : 'DOWN', p, baseP: modelP, lean, reasons, inputs};
 }

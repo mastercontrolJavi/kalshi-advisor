@@ -1,8 +1,72 @@
 @import "tailwindcss";
-:root{color-scheme:dark;--background:240 6% 4%;--foreground:0 0% 96%}
-body{margin:0;background:#090b0d;color:#f4f4f5;font-family:Arial,Helvetica,sans-serif;font-variant-numeric:tabular-nums}
-summary{cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}summary:after{content:'＋';float:right;color:#71717a}details[open]>summary:after{content:'−'}
-input[type=checkbox]{accent-color:#34d399;min-width:20px;min-height:20px}
-.chart{height:250px;min-width:0}.label{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#a1a1aa}
-a{color:inherit}button,a,summary{touch-action:manipulation}.mono{font-family:Consolas,monospace}
-@media(max-width:640px){.chart{height:200px}}
+
+/* Night-ops instrument panel. Semantic tokens only; components never use raw hex. */
+@theme inline {
+  --color-bg: #06080b;
+  --color-surface: #0c1015;
+  --color-surface-2: #121820;
+  --color-line: #1c242e;
+  --color-line-strong: #2a3542;
+  --color-fg: #e8edf2;
+  --color-muted: #94a1b0;   /* 6.9:1 on surface */
+  --color-faint: #6b7886;   /* 4.5:1 on surface — meta text only */
+  --color-yes: #3ee08f;
+  --color-yes-dim: #0f3b27;
+  --color-no: #ff6b86;
+  --color-no-dim: #45131f;
+  --color-warn: #f5b942;
+  --color-warn-dim: #3d2c0a;
+  --color-info: #74adff;
+  --font-display: var(--font-barlow), 'Arial Narrow', sans-serif;
+  --font-sans: var(--font-plex), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+}
+
+:root { color-scheme: dark; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; min-height: 100dvh;
+  background-color: var(--color-bg);
+  background-image:
+    linear-gradient(var(--color-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-line) 1px, transparent 1px);
+  background-size: 48px 48px;
+  background-position: -1px -1px;
+  background-attachment: fixed;
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+/* Fade the grid so it reads as texture, not content. */
+body::before { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: radial-gradient(120% 80% at 50% 0%, transparent 0%, var(--color-bg) 70%); }
+
+/* Ambient signal light: the page glows with the current call. */
+.ambient { position: fixed; inset: -20% -10% auto; height: 70vh; z-index: -1; pointer-events: none; opacity: 0; transition: opacity .6s ease, background .6s ease; }
+.ambient[data-tone="yes"] { opacity: 1; background: radial-gradient(50% 60% at 50% 0%, rgb(62 224 143 / .16), transparent 70%); }
+.ambient[data-tone="no"] { opacity: 1; background: radial-gradient(50% 60% at 50% 0%, rgb(255 107 134 / .16), transparent 70%); }
+.ambient[data-tone="warn"] { opacity: .8; background: radial-gradient(50% 60% at 50% 0%, rgb(245 185 66 / .10), transparent 70%); }
+
+.label { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .14em; color: var(--color-muted); }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.chart { height: 260px; min-width: 0; }
+@media (max-width: 640px) { .chart { height: 210px; } }
+
+summary { cursor: pointer; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+details > summary .chev { transition: transform .2s ease; }
+details[open] > summary .chev { transform: rotate(90deg); }
+button, a, summary, label { touch-action: manipulation; }
+:focus-visible { outline: 2px solid var(--color-info); outline-offset: 2px; border-radius: 6px; }
+input[type=checkbox] { accent-color: var(--color-yes); width: 20px; height: 20px; }
+
+/* One orchestrated entrance; live updates never animate layout. */
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise .45s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+.pulse { animation: pulse-dot 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .rise, .pulse { animation: none; }
+  .ambient, details > summary .chev, .bar-fill { transition: none !important; }
+}
+.bar-fill { transition: width .3s ease, left .3s ease; }
