@@ -18,9 +18,16 @@ Full lifecycle observed: KXBTC15M-26OCT062315-15, 20:00–20:15 PDT. Opening was
 
 No actual taker signal or maker paper fill was observed without credentials. Maker ideas were journaled and expired; fixture tests validate trade-through fills, taker fees and settlement profit. The app intentionally suppresses taker recommendations when account state cannot be authenticated.
 
+## Authenticated verification — 2026-10-06 22:00 PDT
+
+- Ed25519 key signed requests accepted by production REST (`/portfolio/balance` 200) and WS. Clock offset to server under 1s.
+- Live WS exposed a shared per-sid sequence across markets (see DECISIONS 5) and a REST-fallback race; both fixed with regression tests replaying the recorded message order. After restart: one connect, zero gaps over several minutes.
+- Account sync ready: balance, positions, 391 KXBTC15M fills and 65 settlements normalized after fixing sell-direction parsing (DECISIONS 11). Guardrails computed from real fills: 107 trades today, P&L −$9.26 vs first-observed baseline $23.17 → daily loss lock active, which correctly suppresses signals until local midnight.
+- `scripts/verify-live.ts` passes all 7 checks with Kalshi WS connected.
+
 ## Not verified / limitations
 
-- No local Kalshi API key ID or PEM was supplied during the build. Authenticated Kalshi WS, account tier/endpoint costs, actual balance/positions/fills/settlements and real-account guardrail reconciliation remain unverified. Unit tests cover signing and normalization; taker signals and sizing remain suppressed without account state. WS orderbook recovery is tested with fixtures, not a live authenticated stream.
+- Realized P&L from fills has not been reconciled line-by-line against Kalshi's own P&L statement. No live taker signal has yet fired with an unlocked account.
 - Tailscale is not installed and no tailnet login was supplied. Serve syntax and the free personal plan were verified against current official docs; actual phone HTTPS/WSS login and mobile notification delivery remain unverified.
 - macOS caffeinate and Linux systemd-inhibit branches are implemented but untested on this Windows machine. Physical sleep/wake was not forced. Wake detection and reconnect logic are implemented; production engine restart was tested.
 - Profitability, execution quality and confidence intervals require a larger independent sample. REST fallback cannot validate live maker trade-through fills. Fixtures cover fill/expiry/settlement behavior. Proxy seconds are never confirmed BRTI seconds.

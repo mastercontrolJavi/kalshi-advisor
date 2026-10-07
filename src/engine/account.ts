@@ -6,18 +6,18 @@ export function normalizeAccount(fills:any[],settlements:any[]):RealEvent[]{
   const lots=new Map<string,{count:number;cost:number}[]>(),events:RealEvent[]=[],cashFlows=new Map<string,number>();
   for(const f of [...fills].sort((a,b)=>Date.parse(a.created_time)-Date.parse(b.created_time))){
     const ticker=f.ticker??f.market_ticker;if(!ticker?.startsWith('KXBTC15M'))continue;
-    const legacy=!!f.action&&!!f.side;
-    const side=legacy?f.side:f.outcome_side??(f.book_side==='bid'?'yes':f.book_side==='ask'?'no':undefined),action=legacy?f.action:'buy',count=Number(f.count_fp),price=Number(side==='yes'?f.yes_price_dollars:f.no_price_dollars),fees=Number(f.fee_cost),time=f.created_time?Date.parse(f.created_time):f.ts*1000;
+    // Direction comes from outcome_side/book_side: yes = buy YES or sell NO. Live fills mirror it into the
+    // deprecated side field, so action/side are only interpreted the legacy way when canonical fields are absent.
+    // Every fill is then a purchase in its direction, netted FIFO against the complementary side.
+    const opposite=(s:string)=>s==='yes'?'no':'yes',action=f.action??'buy';
+    const side=f.outcome_side??(f.book_side==='bid'?'yes':f.book_side==='ask'?'no':action==='sell'?opposite(f.side):f.side);
+    const yes=Number(f.yes_price_dollars??1-Number(f.no_price_dollars)),count=Number(f.count_fp),price=side==='yes'?yes:Number(f.no_price_dollars??1-yes),fees=Number(f.fee_cost),time=f.created_time?Date.parse(f.created_time):f.ts*1000;
     if(![count,price,fees,time].every(Number.isFinite)||!['yes','no'].includes(side)||!['buy','sell'].includes(action)||count<=0||price<0||price>1||fees<0)throw new Error('Unsupported fill schema or missing actual fee');
-    const prefix=ticker+':'+(f.subaccount_number??f.subaccount??0)+':',key=prefix+side,list=lots.get(key)??[];let pnl=0,closedContracts=0,cashFlow=0;
-    if(action==='buy'){
-      const oppositeKey=prefix+(side==='yes'?'no':'yes'),opposite=lots.get(oppositeKey)??[];let remaining=count;
-      while(remaining>1e-8&&opposite.length){const n=Math.min(remaining,opposite[0].count);pnl+=n*(1-price-fees/count-opposite[0].cost);closedContracts+=n;opposite[0].count-=n;remaining-=n;if(opposite[0].count<1e-8)opposite.shift();}
-      lots.set(oppositeKey,opposite);if(remaining>1e-8)list.push({count:remaining,cost:price+fees/count});
-      cashFlow=closedContracts-count*price-fees;
-    }else {
-      let remaining=count,cost=0;while(remaining>1e-8&&list.length){const n=Math.min(remaining,list[0].count);cost+=n*list[0].cost;list[0].count-=n;remaining-=n;if(list[0].count<1e-8)list.shift();}if(remaining>1e-8)throw new Error('Sell cost basis unavailable; historical fills needed');pnl=count*price-fees-cost;closedContracts=count;cashFlow=count*price-fees;
-    }
+    const prefix=ticker+':'+(f.subaccount_number??f.subaccount??0)+':',key=prefix+side,list=lots.get(key)??[],oppositeKey=prefix+opposite(side),against=lots.get(oppositeKey)??[];
+    let pnl=0,closedContracts=0,remaining=count;
+    while(remaining>1e-8&&against.length){const n=Math.min(remaining,against[0].count);pnl+=n*(1-price-fees/count-against[0].cost);closedContracts+=n;against[0].count-=n;remaining-=n;if(against[0].count<1e-8)against.shift();}
+    lots.set(oppositeKey,against);if(remaining>1e-8)list.push({count:remaining,cost:price+fees/count});
+    const cashFlow=closedContracts-count*price-fees;
     cashFlows.set(ticker,(cashFlows.get(ticker)??0)+cashFlow);
     lots.set(key,list);events.push({id:'fill:'+(f.fill_id??f.trade_id),ticker,type:'fill',time,pnl,closedContracts,contracts:count,side,price,action,orderId:f.order_id});
   }
