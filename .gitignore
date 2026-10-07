@@ -1,0 +1,10 @@
+keys/
+.env*
+!.env.example
+*.db
+*.db-*
+node_modules/
+.next/
+logs/
+coverage/
+*.tsbuildinfo

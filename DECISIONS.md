@@ -1,0 +1,9 @@
+# Decisions
+
+1. Use dedicated production Kalshi hosts; official recommendation supersedes old elections hostname. Only fixed allowlisted HTTPS/WSS hosts receive signatures; redirects disabled. HTTP API client only implements GET. Executor is disabled and throws even if enabled in v1.
+2. Fee rounding uses the current API specification over legacy cent-rounded examples. Account precision defaults to direct member 0.0001 dollars; settings allow conservative cent precision. Series and event fee metadata gate recommendations if unsupported.
+3. Arithmetic settlement average uses exact Brownian integral mean/variance in price space with sigma from log returns; probability uses a moment-matched lognormal approximation. The arithmetic average of correlated lognormal prices has no closed-form lognormal law. This is a diffusion approximation, not an exact BRTI distribution. Exact locked observations and variance weights are tested.
+4. No imputation across missing seconds for locked averages or opening reference; suppress when coverage is incomplete. Restore two-hour proxy history from SQLite on restart. All-four feed health required for signals by default, as requested, even if it suppresses most opportunities.
+5. One WS orderbook subscription per market avoids mixing market and subscription sequence counters. REST cannot reseed the WS sequence; on a gap invalidate and reconnect while using independent REST fallback.
+6. Paper signals deduplicated per market/side/type and price to avoid one-second pseudo-replication. Maker paper orders expire at close; only opposite aggressor trades strictly through a resting price can fill, never quote touches. Results are conservative simulations, with adverse-selection uncertainty.
+7. Guardrails use local calendar day America/Los_Angeles and realized net account cashflows with actual fees, not hypothetical paper outcomes. Missing authenticated account history suppresses sizing and taker signals.
