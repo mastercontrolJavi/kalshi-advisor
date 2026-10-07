@@ -1,0 +1,17 @@
+import {it,expect} from 'vitest';
+import {defaults,validateConfig} from '../src/engine/config';
+import {size,evaluate,roundDownTick} from '../src/engine/signals';
+import {baseFees} from '../src/engine/model/fees';
+import {Orderbook} from '../src/engine/feeds/orderbook';
+import {guardrails,fillWarnings,dayKey,type RealEvent} from '../src/engine/guardrails';
+const market={ticker:'BTC',event_ticker:'BTC',open_time:'',close_time:'',status:'active'};
+const ready={feedsHealthy:true,kConfirmed:true,lock:null,modelReady:true,accountReady:true,now:Date.now()};
+it('Kelly caps contracts and dollars including fees',()=>{expect(size(.9,.5,10000,defaults,baseFees).contracts).toBe(25);expect(size(.9,.5,100,defaults,baseFees).maxLoss).toBeLessThanOrEqual(2);expect(size(.4,.5,100,defaults,baseFees).contracts).toBe(0);});
+it('fires both sides symmetrically with gate reasons',()=>{const b=new Orderbook();b.snapshot([['.49','40']],[['.49','40']],1);expect(evaluate(.65,180,b,market,1000,defaults,baseFees,ready).action).toBe('BUY YES');expect(evaluate(.35,180,b,market,1000,defaults,baseFees,ready).action).toBe('BUY NO');expect(evaluate(.65,180,b,market,1000,defaults,baseFees,{...ready,feedsHealthy:false}).reason).toContain('stale');expect(evaluate(.65,180,b,market,1000,defaults,baseFees,{...ready,kConfirmed:false}).action).toBe('NO TRADE');expect(evaluate(.65,59,b,market,1000,defaults,baseFees,ready).action).toBe('NO TRADE');});
+it('maker respects tick ranges',()=>expect(roundDownTick(.0875,{...market,price_ranges:[{start:'0',end:'.1',step:'.001'}]})).toBe(.087));
+const event=(id:string,time:number,pnl:number,type:'fill'|'settlement'='settlement'):RealEvent=>({id,time,pnl,type,ticker:id,contracts:1});
+it('daily loss lock and explicit same-day override',()=>{const now=Date.now(),events=[event('1',now,-11)];expect(guardrails(events,100,defaults,now).dailyLocked).toBe(true);expect(guardrails(events,100,defaults,now,dayKey(now)).dailyLocked).toBe(false);});
+it('three consecutive losses trigger cooldown, expires',()=>{const now=Date.now(),events=[event('1',now-3,-1),event('2',now-2,-1),event('3',now-1,-1)];expect(guardrails(events,100,defaults,now).reason).toContain('cooldown');expect(guardrails(events,100,defaults,now+1800001).locked).toBe(false);});
+it('hourly cap counts orders once across partial fills',()=>{const now=Date.now();const events=Array.from({length:4},(_,i)=>({...event(String(i),now-100,-.01,'fill'),orderId:String(i)}));events.push(events[0]);expect(guardrails(events,100,defaults,now).hourly).toBe(4);expect(guardrails(events,100,defaults,now).reason).toContain('Hourly');});
+it('chase and oversize warnings',()=>expect(fillWarnings({...event('1',100000,0,'fill'),price:.7,contracts:30},25,[{time:50000,price:.5}],defaults)).toHaveLength(2));
+it('invalid settings rejected',()=>{expect(()=>validateConfig({minEdge:-1})).toThrow();expect(()=>validateConfig({maxContracts:2.5})).toThrow();expect(()=>validateConfig({feePrecision:0})).toThrow();});
