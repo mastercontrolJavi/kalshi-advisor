@@ -4,7 +4,7 @@ Local, read-only research and trading discipline dashboard for KXBTC15M. It does
 
 ## Setup
 
-Requires Node.js 22.12+ (tested with 24), npm, and an RSA Kalshi API key. Windows needs network access for the better-sqlite3 prebuilt binary; if unavailable, npm needs local C++ build tools.
+Requires Node.js 22.12+ (tested with 24), npm, and a Kalshi API key (Ed25519 or RSA PEM saved under keys/). Windows needs network access for the better-sqlite3 prebuilt binary; if unavailable, npm needs local C++ build tools.
 
 ```powershell
 npm install

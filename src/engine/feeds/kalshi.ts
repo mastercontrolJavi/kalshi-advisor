@@ -13,13 +13,15 @@ export function effectiveFees(series:any,changes:any[],event:string,now:number):
 }
 export function signedHeaders(key:KeyObject,id:string,path:string,timestamp:number){
   const ts=String(Math.round(timestamp));
-  return {'KALSHI-ACCESS-KEY':id,'KALSHI-ACCESS-TIMESTAMP':ts,'KALSHI-ACCESS-SIGNATURE':sign('sha256',Buffer.from(ts+'GET'+path.split('?')[0]),{key,padding:constants.RSA_PKCS1_PSS_PADDING,saltLength:32}).toString('base64')};
+  const text=Buffer.from(ts+'GET'+path.split('?')[0]);
+  const signature=key.asymmetricKeyType==='ed25519'?sign(null,text,key):sign('sha256',text,{key,padding:constants.RSA_PKCS1_PSS_PADDING,saltLength:32});
+  return {'KALSHI-ACCESS-KEY':id,'KALSHI-ACCESS-TIMESTAMP':ts,'KALSHI-ACCESS-SIGNATURE':signature.toString('base64')};
 }
 export interface Market {ticker:string;event_ticker:string;open_time:string;close_time:string;floor_strike?:number;status:string;result?:string;expiration_value?:string;rules_primary?:string;rules_secondary?:string;price_ranges?:{start:string;end:string;step:string}[]}
 export class KalshiClient {
   private key?:KeyObject;clockOffset=0;clockSynced=false;private tail:Promise<unknown>=Promise.resolve();limits:unknown=null;
   constructor(private id=process.env.KALSHI_API_KEY_ID??'',private keyPath=process.env.KALSHI_PRIVATE_KEY_PATH??''){
-    if(id&&keyPath&&existsSync(keyPath)){this.key=createPrivateKey(readFileSync(keyPath));if(this.key.asymmetricKeyType!=='rsa')throw new Error('This v1 expects an RSA PEM key');}
+    if(id&&keyPath&&existsSync(keyPath)){this.key=createPrivateKey(readFileSync(keyPath));if(!['rsa','ed25519'].includes(this.key.asymmetricKeyType??''))throw new Error('Kalshi keys must be Ed25519 or RSA PEM');}
   }
   get authenticated(){return !!this.key&&!!this.id;}
   headers(path:string){if(!this.key)throw new Error('Kalshi key unavailable');return signedHeaders(this.key,this.id,path,Date.now()+this.clockOffset);}
