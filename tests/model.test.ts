@@ -31,3 +31,12 @@ it('after a restart the saved σ carries the model until enough fresh returns ar
   expect(warmVolatility({sigma:.00004,count:200,regime:'calm'},saved,120,now)).toMatchObject({sigma:.00004,source:'live'});
   expect(warmVolatility({sigma:0,count:5,regime:'warming'},{sigma:.00003,time:now-13*3600000},120,now).source).toBe('warming');
   expect(warmVolatility({sigma:0,count:5,regime:'warming'},null,120,now).count).toBe(5);});
+import {varianceRatio,volatility as vol2,VR_PRIOR} from '../src/engine/model/math';
+it('variance ratio: prior 1.5 without data, rises for trending paths, ~1 for a random walk, and scales sigma',()=>{
+  expect(varianceRatio([]).ratio).toBe(VR_PRIOR);
+  let seed=5;const rnd=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296-.5;};
+  const walk=[{time:0,price:100}];for(let i=1;i<3600;i++)walk.push({time:i*1000,price:walk[i-1].price*Math.exp(rnd()*.0002)});
+  const w=varianceRatio(walk,60,1.5,0);expect(w.live!).toBeGreaterThan(.6);expect(w.live!).toBeLessThan(1.5);
+  const trend=[{time:0,price:100}];let drift=0;for(let i=1;i<3600;i++){if(i%60===0)drift=rnd()*.0004;trend.push({time:i*1000,price:trend[i-1].price*Math.exp(drift+rnd()*.0001)});}
+  expect(varianceRatio(trend,60,1.5,0).live!).toBeGreaterThan(2);
+  const v=vol2(walk,300,.25);expect(v.sigma).toBeCloseTo(v.sigma1s*Math.sqrt(v.varianceRatio),12);expect(v.varianceRatio).toBeGreaterThanOrEqual(1);});

@@ -2,6 +2,8 @@ import type {Journal} from './journal';
 import {mean} from './model/math';
 import {wilson} from './model/opening';
 import {LIVE_HORIZONS} from './model/live';
+import {NEXT_HORIZONS} from './quant/forecast';
+import {buildRounds} from './rounds';
 import {describe,effectiveWeights,type StackFit} from './quant/stack';
 export function clusterCI(rows:{ticker:string;pnl:number}[]){
   if(!rows.length)return {mean:null,low:null,high:null,markets:0,count:0};
@@ -47,7 +49,8 @@ export function buildCalibration(journal:Journal,stack?:StackFit,basis?:{correct
   const liveRows=journal.db.prepare('SELECT l.horizon,l.ticker,l.direction,l.p,l.base_p,l.mid,r.result FROM live_calls l LEFT JOIN outcomes r ON r.ticker=l.ticker ORDER BY l.time').all() as any[];
   const live=LIVE_HORIZONS.map(h=>({horizon:h,...openingScore(liveRows.filter(r=>r.horizon===h))}));
   const nextRows=journal.db.prepare('SELECT n.horizon,n.ticker,n.direction,n.p,n.base_p,NULL AS mid,r.result FROM next_calls n LEFT JOIN outcomes r ON r.ticker=n.ticker ORDER BY n.time').all() as any[];
-  const next=[60,10].map(h=>({horizon:h,...openingScore(nextRows.filter(r=>r.horizon===h))}));
+  const next=NEXT_HORIZONS.map(h=>({horizon:h,...openingScore(nextRows.filter(r=>r.horizon===h))}));
   const quant=stack?{active:stack.active,n:stack.n,markets:stack.markets,cv:stack.cv,weights:describe(stack),effective:effectiveWeights(stack),fittedEffective:effectiveWeights(stack,'fittedWeights'),basis,history:journal.get<any[]>('quantHistory',[]).map(h=>({time:h.time,markets:h.markets,stack:h.cv?.stack,prior:h.cv?.prior,model:h.cv?.model,kalshi:h.cv?.kalshi}))}:null;
-  return {updated:Date.now(),opening,live,next,quant,scalp:byKind('scalp'),dip:byKind('dip'),...rel,taker:byKind('taker'),maker:byKind('maker'),curve:[...curveMap.values()],breakdown:[...breakdown('Time remaining',r=>r.tau<=120?'60–120s':r.tau<=300?'121–300s':'301s+'),...breakdown('Vol regime',r=>r.regime),...breakdown('Net edge',r=>r.edge<.04?'2–4¢':r.edge<.08?'4–8¢':'8¢+')],basis:errors.length?{count:errors.length,mean:mean(errors),histogram:[...hist].map(([bin,count])=>({bin,count}))}:{count:0,mean:null,histogram:[]},outcomes:outcomes.slice(-20).map(o=>({...o,context:undefined})),totalSignals:(journal.db.prepare('SELECT COUNT(*) AS n FROM signals').get() as any).n};
+  const {rounds,trends}=buildRounds(journal.db);
+  return {updated:Date.now(),rounds,roundTrends:trends,opening,live,next,quant,scalp:byKind('scalp'),dip:byKind('dip'),hourly:byKind('hourly'),...rel,taker:byKind('taker'),maker:byKind('maker'),curve:[...curveMap.values()],breakdown:[...breakdown('Time remaining',r=>r.tau<=120?'60–120s':r.tau<=300?'121–300s':'301s+'),...breakdown('Vol regime',r=>r.regime),...breakdown('Net edge',r=>r.edge<.04?'2–4¢':r.edge<.08?'4–8¢':'8¢+')],basis:errors.length?{count:errors.length,mean:mean(errors),histogram:[...hist].map(([bin,count])=>({bin,count}))}:{count:0,mean:null,histogram:[]},outcomes:outcomes.slice(-20).map(o=>({...o,context:undefined})),totalSignals:(journal.db.prepare('SELECT COUNT(*) AS n FROM signals').get() as any).n};
 }

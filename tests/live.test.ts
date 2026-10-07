@@ -19,7 +19,7 @@ it('data quality blocks on warming model, too few feeds or estimated K; degrades
   expect(dataQuality(ok).level).toBe('solid');expect(dataQuality({...ok,healthyFeeds:3}).level).toBe('degraded');expect(dataQuality({...ok,kalshiLive:false}).level).toBe('degraded');
   expect(dataQuality({...ok,healthyFeeds:1}).level).toBe('unreliable');expect(dataQuality({...ok,modelReady:false}).level).toBe('unreliable');expect(dataQuality({...ok,kConfirmed:false}).level).toBe('degraded');});
 it('timing shows as waiting (not failing) before the entry window and in the final minute',()=>{const b=new Orderbook();b.snapshot([['.49','40']],[['.49','40']]);
-  const early=evaluate(.52,600,b,market,1000,defaults,baseFees,ready).gates!.find(g=>g.key==='timing')!;expect(early.ok).toBe(false);expect(early.wait).toBe(true);expect(early.detail).toContain('opens in 5:00');
+  const early=evaluate(.52,600,b,market,1000,{...defaults,sweetMaxSeconds:300},baseFees,ready).gates!.find(g=>g.key==='timing')!;expect(early.ok).toBe(false);expect(early.wait).toBe(true);expect(early.detail).toContain('opens in 5:00');
   const inWin=evaluate(.52,200,b,market,1000,defaults,baseFees,ready).gates!.find(g=>g.key==='timing')!;expect(inWin.ok).toBe(true);
   expect(evaluate(.52,30,b,market,1000,defaults,baseFees,ready).gates!.find(g=>g.key==='timing')!.wait).toBe(true);});
 it('gate checklist agrees with the decision: all pass on BUY, at least one fails on NO TRADE',()=>{

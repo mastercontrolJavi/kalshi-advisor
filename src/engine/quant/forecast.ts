@@ -1,4 +1,7 @@
 import {normalCDF} from '../model/math';
+/** Next-window snapshots (seconds before the current window closes). At 60 s the head start is still exactly 0, so
+ *  every 60 s snapshot was a 50% non-call; 30 s and 5 s carry the locked-average information. */
+export const NEXT_HORIZONS=[30,5];
 /**
  * Proxy→BRTI basis learned from settlements. basis_error = proxy closing average − official average, so the
  * correction added to proxy-based averages is −median(recent errors), shrunk toward 0 while evidence is thin.

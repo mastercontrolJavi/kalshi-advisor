@@ -12,3 +12,4 @@ data/*.json
 .playwright-cli/
 output/
 *.log
+.next-verify/

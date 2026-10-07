@@ -15,7 +15,9 @@
 export const FEATURE_NAMES=['bias','confidence','kalshiShift','momentum2m','momentum30s','bookImbalance','tradeFlow'] as const;
 const PRIOR_MEAN=[0,1,.5,0,0,0,0];
 // Prior precision: confidence and bias need strong evidence to move; features need real evidence before they count.
-const PRIOR_PRECISION=[20,30,4,24,24,24,24];
+// Bias is held at 0: fitting it learned the recent YES base rate and was the main source of out-of-sample loss
+// (LOMO Brier 0.1651 with bias vs 0.1607 without, 42 markets).
+const PRIOR_PRECISION=[1e6,30,4,24,24,24,24];
 const CLIP=4.59512; // logit(0.99)
 export const logit=(p:number)=>{const q=Math.min(.99,Math.max(.01,p));return Math.log(q/(1-q));};
 export const sigmoid=(x:number)=>1/(1+Math.exp(-x));

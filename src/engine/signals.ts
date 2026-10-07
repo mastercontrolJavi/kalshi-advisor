@@ -2,7 +2,7 @@ import type {Config} from './config';
 import {fee,type FeeSchedule} from './model/fees';
 import type {Market} from './feeds/kalshi';
 import {Orderbook} from './feeds/orderbook';
-export interface Idea {side:'yes'|'no';kind:'taker'|'maker'|'scalp'|'dip';target?:number;price:number;fee:number;edge:number;contracts:number;cost:number;maxLoss:number;queue:number;reason:string;belowMinSize?:boolean}
+export interface Idea {side:'yes'|'no';kind:'taker'|'maker'|'scalp'|'dip'|'hourly';target?:number;price:number;fee:number;edge:number;contracts:number;cost:number;maxLoss:number;queue:number;reason:string;belowMinSize?:boolean}
 export function size(prob:number,price:number,balance:number,config:Config,schedule:FeeSchedule,kind:'taker'|'maker'='taker'){
   if(!Number.isFinite(balance)||balance<=0||price<=0||price>=1||prob<=price)return {contracts:0,cost:0,maxLoss:0};
   const cost=price+fee(price,1,kind,schedule),fraction=Math.max(0,(prob-cost)/(1-cost))*config.kellyFraction;

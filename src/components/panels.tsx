@@ -116,15 +116,15 @@ export function Instruments({s}:{s:any}){
 export function Positions({s,fresh}:{s:any;fresh:boolean}){
   const exits:any[]=fresh?s?.exits??[]:[];
   if(!exits.length)return <Card className="flex min-h-14 flex-wrap items-center gap-3 py-3"><Wallet aria-hidden className="size-4 text-faint"/><span className="label">Your positions</span><span className="ml-auto text-sm text-muted">{s?.account?.ready?'No open BTC 15-min position':'Waiting for account'}</span></Card>;
-  const tones:Record<string,Tone>={'TAKE PROFIT':'yes','LET IT SETTLE':'yes','CUT LOSS':'no','SELL NOW':'warn','HOLD':'neutral','TOO LATE':'neutral','NO MODEL':'neutral'};
+  const tones:Record<string,Tone>={'RIDE':'yes','TAKE PROFIT':'yes','LET IT SETTLE':'yes','CUT LOSS':'no','SELL NOW':'warn','HOLD':'neutral','TOO LATE':'neutral','NO MODEL':'neutral'};
   const urgent=exits.some(e=>['TAKE PROFIT','CUT LOSS','SELL NOW'].includes(e.action));
-  return <Card className={cn('rise',urgent?'border-warn/50':'border-info/30')}><Heading icon={<Wallet aria-hidden className="size-4 text-info"/>} title="Your positions · exit plan" aside={s?.config?.exitMode==='ev'?'expected-value mode':`take profit +${Math.round((s?.config?.takeProfitPct??.25)*100)}% · stop −${Math.round((s?.config?.stopLossPct??.5)*100)}% or < ${Math.round((s?.config?.stopWinProb??.25)*100)}% win chance`}/>
+  return <Card className={cn('rise',urgent?'border-warn/50':'border-info/30')}><Heading icon={<Wallet aria-hidden className="size-4 text-info"/>} title="Your positions · exit plan" aside={s?.config?.exitMode==='ev'?'expected-value mode':`ride from +${Math.round((s?.config?.takeProfitPct??.25)*100)}% · trail ${Math.round((s?.config?.trailGiveback??.5)*100)}% give-back · stop −${Math.round((s?.config?.stopLossPct??.5)*100)}% or < ${Math.round((s?.config?.stopWinProb??.25)*100)}%`}/>
     {exits.map(e=>{const t=tones[e.action]??'neutral',[why,plan]=String(e.reason).split(' Plan: ');return <div key={e.ticker} className="mt-4 grid gap-4 border-t border-line pt-4 first-of-type:border-0 first-of-type:pt-0 lg:grid-cols-[1fr_auto]">
       <div><div className={cn('font-display text-5xl leading-none font-bold uppercase',toneText[t],e.action==='TOO LATE'&&'text-muted')}>{e.action}</div><div className="mt-2 text-sm"><span className="num">{qty(e.contracts)}</span> {e.side.toUpperCase()} · avg cost <span className="num">{cents(e.avgCost)}</span> · win chance <span className="num">{pct(e.winProb,0)}</span> <span className="num ml-1 text-xs text-faint">{e.ticker}</span></div>
         <p className="mt-2 text-sm text-fg/90">{why}</p>
-        {plan?<div className="mt-2 flex flex-wrap gap-2 text-xs"><Pill tone="yes">Take profit at bid ≥ {cents(e.takeProfitBid)}</Pill><Pill tone="no">Cut loss at bid ≤ {cents(e.stopBid)}</Pill><Pill tone="neutral">or win chance &lt; {Math.round((s?.config?.stopWinProb??.25)*100)}%</Pill></div>:null}</div>
+        {plan?<div className="mt-2 flex flex-wrap gap-2 text-xs">{e.trailBid!=null?<Pill tone="yes">Trailing stop at bid ≤ {cents(e.trailBid)} · peak {e.peakPct>=0?'+':''}{Math.round((e.peakPct??0)*100)}%</Pill>:<><Pill tone="yes">Ride from bid ≥ {cents(e.takeProfitBid)}</Pill><Pill tone="no">Cut loss at bid ≤ {cents(e.stopBid)}</Pill></>}<Pill tone="neutral">or win chance &lt; {Math.round((s?.config?.stopWinProb??.25)*100)}%</Pill></div>:null}</div>
       <div className="grid grid-cols-3 gap-5 self-start text-right"><Stat label="P&L if sold" tone={e.unrealized>0?'yes':e.unrealized<0?'no':'neutral'} sub={e.unrealizedPct!=null?`${e.unrealizedPct>=0?'+':'−'}${Math.abs(e.unrealizedPct*100).toFixed(0)}% of cost`:undefined}>{signedDollars(e.unrealized)}</Stat><Stat label="Sell now" sub={`bid ${cents(e.bid)} − ${dollars(e.sellFee)} fee`}>{dollars(e.sellValue)}</Stat><Stat label="Hold value" sub="forecast × $1">{dollars(e.holdValue)}</Stat></div></div>;})}
-    <p className="mt-4 text-xs text-faint">Exits fire on your real cost after fees and stay up until the position clearly leaves the zone. Backtested on 26 of your trades — a direction, not a guarantee.</p></Card>;
+    <p className="mt-4 text-xs text-faint">Exits use your real cost after fees. RIDE = winning past the arm level; the trailing stop follows your best gain. Exits manage risk — they do not create edge (see Calibration).</p></Card>;
 }
 
 export function BookLadder({s}:{s:any}){
@@ -172,9 +172,34 @@ export function Feeds({s}:{s:any}){
   const age=s?Date.now()-s.engineTime:null;
   return <div className="space-y-3">
     <ul className="space-y-2">{s?.venues?.map((v:any)=><li key={v.name} className="flex items-center justify-between gap-3 text-sm"><span className="flex items-center gap-2"><span className={cn('size-2 rounded-full',v.healthy?'bg-yes':'bg-warn')}/>{v.name}<span className="sr-only">{v.healthy?'live':'stale'}</span></span><span className="num">{dollars(v.mid)}</span><span className="w-28 text-right text-xs text-muted">quote {ago(v.age)}</span></li>)}</ul>
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-line pt-3 text-xs"><dt className="text-muted">Kalshi stream</dt><dd className="num text-right">{s?.kalshi?.status??'—'} · {s?.kalshi?.lag==null?'n/a':`${Math.round(s.kalshi.lag)}ms`}</dd><dt className="text-muted">Engine loop</dt><dd className="num text-right">{s?.loopMs?.toFixed(1)??'—'}ms</dd><dt className="text-muted">Data age on screen</dt><dd className="num text-right">{age==null?'—':ago(Math.max(0,age))}</dd><dt className="text-muted">Server clock offset</dt><dd className="num text-right">{s?.kalshi?.clockOffset?.toFixed(0)??'—'}ms</dd><dt className="text-muted">σ per √s</dt><dd className="num text-right">{s?.sigma?(s.sigma*100).toFixed(5)+'%':'—'}</dd></dl>
+    <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-line pt-3 text-xs"><dt className="text-muted">Kalshi stream</dt><dd className="num text-right">{s?.kalshi?.status??'—'} · {s?.kalshi?.lag==null?'n/a':`${Math.round(s.kalshi.lag)}ms`}</dd><dt className="text-muted">Engine loop</dt><dd className="num text-right">{s?.loopMs?.toFixed(1)??'—'}ms</dd><dt className="text-muted">Data age on screen</dt><dd className="num text-right">{age==null?'—':ago(Math.max(0,age))}</dd><dt className="text-muted">Server clock offset</dt><dd className="num text-right">{s?.kalshi?.clockOffset?.toFixed(0)??'—'}ms</dd><dt className="text-muted">σ per √s (horizon-scaled)</dt><dd className="num text-right">{s?.sigma?(s.sigma*100).toFixed(5)+'%':'—'}</dd><dt className="text-muted">Variance ratio</dt><dd className="num text-right">×{s?.vol?.varianceRatio?.toFixed(2)??'—'}{s?.vol?.varianceRatioLive!=null?` (last hour ${s.vol.varianceRatioLive.toFixed(2)})`:''}</dd></dl>
     <p className="text-xs text-faint">A venue is live while its link answers within {s?.config?.staleMs??2000}ms (pinged every second) and its last quote is under 15 s old. Venues only send quotes when prices change.</p>
     {s?.account?.error?<p className="text-xs text-warn">{s.account.error}</p>:null}</div>;
 }
 
 export const icons={Gauge,BookOpen,Layers,Activity,ShieldCheck};
+
+/** Tiny dependency-free sparkline for 0–1 series (rolling hit rates). */
+function Spark({values,tone}:{values:(number|null)[];tone:string}){
+  const pts=values.map((v,i)=>v==null?null:[i/(Math.max(1,values.length-1))*100,(1-v)*24] as const).filter(Boolean) as (readonly [number,number])[];
+  if(pts.length<2)return null;
+  return <svg viewBox="0 0 100 24" preserveAspectRatio="none" className="h-6 w-24" aria-hidden><line x1="0" x2="100" y1="12" y2="12" className="stroke-line-strong" strokeDasharray="2 2" strokeWidth="1"/><polyline points={pts.map(p=>p.join(',')).join(' ')} fill="none" className={tone} strokeWidth="1.75" vectorEffect="non-scaling-stroke"/></svg>;
+}
+const mark=(c:any,result:string|null)=>{if(!c)return <span className="text-faint">—</span>;const ok=result?(c.direction==='UP')===(result==='yes'):null;
+  return <span className="inline-flex items-center gap-1"><span className={c.direction==='UP'?'text-yes':'text-no'}>{c.direction==='UP'?'▲':'▼'}{pct(c.direction==='UP'?c.p:1-c.p,0)}</span>{ok===null?null:ok?<Check aria-label="right" className="size-3.5 text-yes"/>:<X aria-label="wrong" className="size-3.5 text-no"/>}</span>;};
+export function RecentRounds({s}:{s:any}){
+  const rounds:any[]=s?.calibration?.rounds??[],t=s?.calibration?.roundTrends,cur=s?.market?.ticker;
+  const chips=[{key:'opening',label:'Opening call',tone:'stroke-info'},{key:'live300',label:'Call at 5:00',tone:'stroke-yes'},{key:'live60',label:'Call at 1:00',tone:'stroke-yes'},{key:'next5',label:'Next-window preview',tone:'stroke-warn'}];
+  if(!rounds.length)return <p className="text-sm text-muted">Rounds appear here as they are called and settled.</p>;
+  return <div className="space-y-4">
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{chips.map(c=>{const tot=t?.totals?.[c.key];return <div key={c.key} className="rounded-xl border border-line bg-surface-2/50 p-3">
+      <div className="label">{c.label}</div><div className="mt-1 flex items-end justify-between gap-2"><div><span className="num text-xl">{tot?.n?pct(tot.rate,0):'—'}</span><span className="ml-1.5 text-xs text-muted">{tot?.hits??0}/{tot?.n??0} right</span></div><Spark values={(t?.rolling??[]).map((r:any)=>r[c.key])} tone={c.tone}/></div>
+      <div className="mt-0.5 text-xs text-muted">last 10: <span className="num text-fg">{pct(tot?.last10,0)}</span>{tot?.brier!=null?<> · Brier <span className="num">{tot.brier.toFixed(3)}</span></>:null}</div></div>;})}</div>
+    <div className="overflow-x-auto"><table className="w-full min-w-[680px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['Round','Result','Opening call','At 5:00','At 1:00','Preview (from prior round)','Your P&L'].map(h=><th key={h} scope="col" className="pb-2 pr-3 font-medium">{h}</th>)}</tr></thead>
+      <tbody>{rounds.slice(0,16).map(r=><tr key={r.ticker} className={cn('border-t border-line',r.ticker===cur&&'bg-info/5')}>
+        <td className="py-2 pr-3"><div className="num">{r.open?new Date(r.open).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):r.ticker.slice(-13)}</div>{r.ticker===cur?<div className="text-xs text-info">live now</div>:null}</td>
+        <td className="pr-3">{r.result?<Pill tone={r.result==='yes'?'yes':'no'}>{r.result==='yes'?'UP':'DOWN'}</Pill>:<span className="text-xs text-muted">{r.ticker===cur?'running':'pending'}</span>}</td>
+        <td className="pr-3">{mark(r.opening,r.result)}</td><td className="pr-3">{mark(r.live['300'],r.result)}</td><td className="pr-3">{mark(r.live['60'],r.result)}</td><td className="pr-3">{mark(r.next['5']??r.next['10'],r.result)}</td>
+        <td className={cn('num',r.userPnl>0?'text-yes':r.userPnl<0?'text-no':'text-faint')}>{r.userPnl==null?'—':signedDollars(r.userPnl)}</td></tr>)}</tbody></table></div>
+    <p className="text-xs text-faint">✓/✗ compare each call's direction with Kalshi's official result. Sparklines show the rolling 10-round hit rate (dashed line = 50%). Opening calls are near coin flips by design; late calls know most of the settlement average.</p></div>;
+}

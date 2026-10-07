@@ -13,7 +13,7 @@ const Curves=dynamic(()=>import('./calibration-charts').then(m=>m.CurveChart),{s
 const Basis=dynamic(()=>import('./calibration-charts').then(m=>m.BasisChart),{ssr:false});
 const money=(n:number|null|undefined)=>n==null?'—':`$${n.toFixed(3)}`;
 const num=(n:number|null|undefined)=>n==null?'—':n.toFixed(4);
-const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances'];
+const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances','hourly_calls','hourly_outcomes'];
 function Metric({label,children,sub,className}:{label:string;children:ReactNode;sub?:ReactNode;className?:string}){return <div><div className="label">{label}</div><div className={cn('num mt-1.5 text-2xl',className)}>{children}</div>{sub?<div className="mt-0.5 text-xs text-muted">{sub}</div>:null}</div>;}
 function Empty({children}:{children:ReactNode}){return <p className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-muted">{children}</p>;}
 /** Forecast scorecard row: hit rate with CI and Brier vs coin flip / model-only / Kalshi. Lower Brier is better. */
@@ -48,7 +48,7 @@ export default function Calibration(){
         <Card><h2 className="mb-4 font-semibold">Cumulative net P&L</h2>{c?.curve?.length?<Curves data={c.curve}/>:<Empty>No settled paper or real P&L yet.</Empty>}</Card>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">{['taker','maker','scalp','dip'].map(kind=><Card key={kind}><h2 className="font-semibold">Paper {({taker:'taker (buy at ask)',maker:'resting bid',scalp:'scalp (exit at target)',dip:'buy-the-dip (exit at target)'} as Record<string,string>)[kind]} · 1 contract per signal</h2>
+      <div className="grid gap-4 md:grid-cols-2">{['taker','scalp','dip','hourly','maker'].map(kind=><Card key={kind}><h2 className="font-semibold">Paper {({taker:'taker (buy at ask)',maker:'resting bid',scalp:'scalp (exit at target)',dip:'buy-the-dip (exit at target)',hourly:'hourly strike (buy at ask)'} as Record<string,string>)[kind]} · 1 contract per signal</h2>
         <div className="mt-4 grid grid-cols-2 gap-4"><Metric label="Net profit" className={(c?.[kind]?.totalPnl??0)>=0?'text-yes':'text-no'}>{money(c?.[kind]?.totalPnl)}</Metric><Metric label="Realized EV / fill">{money(c?.[kind]?.mean)}</Metric><Metric label="95% interval" className="text-base">{money(c?.[kind]?.low)} to {money(c?.[kind]?.high)}</Metric><Metric label="Predicted EV / fill" className="text-base">{money(c?.[kind]?.predictedEV)}</Metric></div>
         <p className="mt-4 text-xs text-faint">{c?.[kind]?.count??0} settled fills · {c?.[kind]?.markets??0} markets · {c?.[kind]?.resting??0} resting · {c?.[kind]?.expired??0} expired</p></Card>)}</div>
 

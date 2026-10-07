@@ -1,15 +1,17 @@
 import Database from 'better-sqlite3';
 import {mkdirSync} from 'node:fs';
+import {dirname} from 'node:path';
 import {defaults,validateConfig,type Config} from './config';
 import type {Idea} from './signals';
 import {fee,type FeeSchedule} from './model/fees';
 import type {RealEvent} from './guardrails';
 import type {OpeningCall} from './model/opening';
-export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances'] as const;
+export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances','hourly_calls','hourly_outcomes'] as const;
 export class Journal {
   db:Database.Database;
-  constructor(path='./data/advisor.db'){
-    if(path!==':memory:')mkdirSync('data',{recursive:true});this.db=new Database(path);this.db.pragma('journal_mode = WAL');this.db.pragma('synchronous = NORMAL');this.db.pragma('busy_timeout = 5000');
+  // ADVISOR_DB lets a verification instance run against a copy of the journal without touching the live one.
+  constructor(path=process.env.ADVISOR_DB??'./data/advisor.db'){
+    if(path!==':memory:')mkdirSync(dirname(path),{recursive:true});this.db=new Database(path);this.db.pragma('journal_mode = WAL');this.db.pragma('synchronous = NORMAL');this.db.pragma('busy_timeout = 5000');
     this.db.exec(`CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS ticks(id INTEGER PRIMARY KEY, time INTEGER NOT NULL,ticker TEXT NOT NULL,proxy REAL,k REAL,tau REAL,sigma REAL,p REAL,mid REAL,regime TEXT,context TEXT NOT NULL,UNIQUE(time,ticker));
       CREATE INDEX IF NOT EXISTS ticks_time ON ticks(time);CREATE INDEX IF NOT EXISTS ticks_market ON ticks(ticker);CREATE INDEX IF NOT EXISTS ticks_market_tau ON ticks(ticker,tau);
@@ -21,6 +23,8 @@ export class Journal {
       CREATE TABLE IF NOT EXISTS opening_calls(ticker TEXT PRIMARY KEY,time INTEGER NOT NULL,tau REAL NOT NULL,direction TEXT NOT NULL,p REAL NOT NULL,base_p REAL NOT NULL,lean REAL NOT NULL,mid REAL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS live_calls(ticker TEXT NOT NULL,horizon INTEGER NOT NULL,time INTEGER NOT NULL,tau REAL NOT NULL,direction TEXT NOT NULL,p REAL NOT NULL,base_p REAL NOT NULL,mid REAL,context TEXT NOT NULL,PRIMARY KEY(ticker,horizon));
       CREATE TABLE IF NOT EXISTS next_calls(ticker TEXT NOT NULL,horizon INTEGER NOT NULL,from_ticker TEXT NOT NULL,time INTEGER NOT NULL,tau REAL NOT NULL,direction TEXT NOT NULL,p REAL NOT NULL,base_p REAL NOT NULL,head_start REAL,expected_k REAL,context TEXT NOT NULL,PRIMARY KEY(ticker,horizon));
+      CREATE TABLE IF NOT EXISTS hourly_calls(event TEXT NOT NULL,horizon INTEGER NOT NULL,time INTEGER NOT NULL,tau REAL NOT NULL,k_hour REAL NOT NULL,direction TEXT NOT NULL,p REAL NOT NULL,base_p REAL NOT NULL,kalshi REAL,context TEXT NOT NULL,PRIMARY KEY(event,horizon));
+      CREATE TABLE IF NOT EXISTS hourly_outcomes(event TEXT PRIMARY KEY,time INTEGER NOT NULL,settle REAL NOT NULL,k_hour REAL,up INTEGER,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS balances(time INTEGER PRIMARY KEY,balance REAL NOT NULL,portfolio_value REAL);
       CREATE TABLE IF NOT EXISTS account_raw(id TEXT PRIMARY KEY,type TEXT NOT NULL,time INTEGER NOT NULL,context TEXT NOT NULL);`);
   }
@@ -70,6 +74,15 @@ export class Journal {
   saveNextCall(ticker:string,horizon:number,fromTicker:string,time:number,tau:number,call:{direction:string;p:number;baseP:number;headStart:number;expectedK:number},context:unknown){
     this.db.prepare('INSERT OR IGNORE INTO next_calls VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(ticker,horizon,fromTicker,time,tau,call.direction,call.p,call.baseP,call.headStart,call.expectedK,JSON.stringify(context));}
   nextHorizons(ticker:string){return new Set((this.db.prepare('SELECT horizon FROM next_calls WHERE ticker=?').all(ticker) as {horizon:number}[]).map(r=>r.horizon));}
+  saveHourlyCall(event:string,horizon:number,time:number,tau:number,kHour:number,call:{direction:string;p:number;baseP:number;kalshi:number|null},context:unknown){
+    this.db.prepare('INSERT OR IGNORE INTO hourly_calls VALUES(?,?,?,?,?,?,?,?,?,?)').run(event,horizon,time,tau,kHour,call.direction,call.p,call.baseP,call.kalshi,JSON.stringify(context));}
+  hourlyHorizons(event:string){return new Set((this.db.prepare('SELECT horizon FROM hourly_calls WHERE event=?').all(event) as {horizon:number}[]).map(r=>r.horizon));}
+  /** Hours with calls but no recorded settlement, oldest first, with one strike ticker to look the result up by. */
+  pendingHours(now:number){return this.db.prepare("SELECT event,MAX(k_hour) k_hour,MIN(json_extract(context,'$.ticker')) ticker,MAX(json_extract(context,'$.close')) close FROM hourly_calls WHERE event NOT IN (SELECT event FROM hourly_outcomes) GROUP BY event HAVING close<?").all(now) as {event:string;k_hour:number;ticker:string;close:number}[];}
+  settleHourly(event:string,time:number,settle:number,kHour:number|null,context:unknown){this.db.prepare('INSERT OR REPLACE INTO hourly_outcomes VALUES(?,?,?,?,?,?)').run(event,time,settle,kHour,kHour===null?null:settle>=kHour?1:0,JSON.stringify(context));}
+  /** Paper trades on markets that are not 15-minute windows (hourly strikes): settle by ticker only. */
+  unsettledPaper(kind:string,now:number){return (this.db.prepare("SELECT DISTINCT ticker FROM paper_trades WHERE kind=? AND status='filled' AND json_extract(context,'$.close')<?").all(kind,now) as {ticker:string}[]).map(r=>r.ticker);}
+  settlePaper(ticker:string,result:string,time:number){if(!['yes','no'].includes(result))return;this.db.prepare("UPDATE paper_trades SET status='settled',settled_time=?,pnl=CASE WHEN side=? THEN 1 ELSE 0 END-price-fee WHERE ticker=? AND status='filled'").run(time,result,ticker);}
   /** Balance history for the equity curve: on change, or every 5 minutes. */
   balance(time:number,balance:number,portfolio:number|null){const last=this.db.prepare('SELECT time,balance,portfolio_value FROM balances ORDER BY time DESC LIMIT 1').get() as any;
     if(!last||last.balance!==balance||last.portfolio_value!==portfolio||time-last.time>=300000)this.db.prepare('INSERT OR REPLACE INTO balances VALUES(?,?,?)').run(time,balance,portfolio);}
