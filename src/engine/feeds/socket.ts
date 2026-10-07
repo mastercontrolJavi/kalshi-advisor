@@ -6,7 +6,8 @@ export class ReconnectingSocket {
   start(){this.stopped=false;this.connect();}
   private connect(){
     if(this.stopped)return;
-    this.status('connecting');
+    // Reset the watchdog clock per attempt; otherwise a slow handshake is killed using the previous connection's silence.
+    this.status('connecting');this.lastMessage=Date.now();
     try {
       const ws=this.socket=new WebSocket(this.url,{headers:this.headers?.(),handshakeTimeout:10000,followRedirects:false});
       ws.on('open',()=>{this.lastMessage=Date.now();this.status('connected');for(const msg of this.subscribe())ws.send(JSON.stringify(msg));});
