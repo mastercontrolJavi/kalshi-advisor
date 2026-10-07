@@ -12,8 +12,10 @@ import {evaluate} from './signals';
 import {validateConfig} from './config';
 import {authorized,requireDashboardCredentials} from './auth';
 import {createExecutor} from './executor';
+import {buildCalibration} from './calibration';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
+let calibration=buildCalibration(journal);
 const log=(event:string,data:unknown)=>{journal.log(event,data);console.log(JSON.stringify({time:new Date().toISOString(),event,data}));};
 const proxy=new ProxyFeed(log);proxy.history=journal.restoreHistory();
 const client=new KalshiClient(),account=new Account(client,journal);
@@ -67,6 +69,7 @@ const fallbackTimer=setInterval(()=>safe('book-fallback-error',()=>kalshi.fallba
 const accountTimer=setInterval(()=>safe('account-sync-error',()=>account.sync()),30000);
 const settlementTimer=setInterval(()=>safe('settlement-error',settlements),10000);
 const pruneTimer=setInterval(()=>journal.prune(),3600000);journal.prune();
+const calibrationTimer=setInterval(()=>{try{calibration=buildCalibration(journal);}catch(e){log('calibration-error',{message:(e as Error).message});}},30000);
 const loop=setInterval(()=>{
   const started=performance.now(),now=Date.now(),time=Math.floor((now+client.clockOffset)/1000)*1000;
   if(now-lastLoop>5000||now<lastLoop){log('wake-or-clock-jump',{gap:now-lastLoop});proxy.restart();kalshi.recover();client.clockSynced=false;safe('wake-refresh-error',async()=>{await refresh();await account.sync();});}
@@ -101,8 +104,8 @@ const loop=setInterval(()=>{
       seriesHistory.push({time,model:model?.p??null,market:mid});if(seriesHistory.length>901)seriesHistory.shift();
       state={...common,...tick,market,evaluation,lockedCount:locked?.length??0,distance:spot!==null&&K!==null?spot-K:null};
     }
-    state.loopMs=performance.now()-started;const message=JSON.stringify(state);for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
+    state.calibration=calibration;state.loopMs=performance.now()-started;const message=JSON.stringify(state);for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
-const shutdown=()=>{for(const t of [loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
+const shutdown=()=>{for(const t of [loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,calibrationTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
