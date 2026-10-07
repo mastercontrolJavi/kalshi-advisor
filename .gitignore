@@ -9,3 +9,6 @@ logs/
 coverage/
 *.tsbuildinfo
 data/*.json
+.playwright-cli/
+output/
+*.log

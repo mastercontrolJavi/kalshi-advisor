@@ -16,7 +16,12 @@ export function normalizeAccount(fills:any[],settlements:any[]):RealEvent[]{
   for(const s of settlements){if(!s.ticker?.startsWith('KXBTC15M'))continue;
     const revenue=Number(s.revenue)/100,cost=Number(s.yes_total_cost_dollars)+Number(s.no_total_cost_dollars),fees=Number(s.fee_cost??0),time=Date.parse(s.settled_time);
     if(![revenue,cost,fees,time].every(Number.isFinite))throw new Error('Unsupported settlement schema');
-    events.push({id:'settlement:'+s.ticker,ticker:s.ticker,type:'settlement',time,pnl:revenue-cost-fees,contracts:Number(s.yes_count_fp)+Number(s.no_count_fp)});
+    const marketFills=events.filter(e=>e.ticker===s.ticker&&e.type==='fill');
+    const matchingFills=fills.filter(f=>(f.ticker??f.market_ticker)===s.ticker);
+    const cashFlow=matchingFills.reduce((sum,f)=>{const side=f.outcome_side??f.side,action=f.action??(f.book_side===(side==='yes'?'bid':'ask')?'buy':'sell'),price=Number(side==='yes'?f.yes_price_dollars:f.no_price_dollars);return sum+(action==='buy'?-1:1)*Number(f.count_fp)*price-Number(f.fee_cost??0);},0);
+    const outcomePnl=matchingFills.length?revenue+cashFlow:revenue-cost-fees;
+    const alreadyRealized=marketFills.reduce((sum,f)=>sum+f.pnl,0);
+    events.push({id:'settlement:'+s.ticker,ticker:s.ticker,type:'settlement',time,pnl:outcomePnl-alreadyRealized,outcomePnl,contracts:Number(s.yes_count_fp)+Number(s.no_count_fp)});
   }return events.sort((a,b)=>a.time-b.time);
 }
 export class Account {
@@ -30,7 +35,7 @@ export class Account {
       this.positions=await this.client.pages('/portfolio/positions','market_positions');
       // Persist every raw record. Refresh live pages; archived fills backfill only on first run.
       const fills=await this.client.pages('/portfolio/fills','fills');
-      if(!this.journal.get('historicalBackfill',false)){const old=await this.client.pages('/historical/fills','fills');fills.push(...old);this.journal.set('historicalBackfill',true);}
+      if(!this.journal.get('historicalBackfill',false)){const old=await this.client.pages('/historical/fills','fills');fills.push(...old);}
       const settlements=await this.client.pages('/portfolio/settlements','settlements');
       const put=this.journal.db.prepare('INSERT OR REPLACE INTO account_raw VALUES(?,?,?,?)');
       this.journal.db.transaction(()=>{for(const f of fills)put.run('fill:'+(f.fill_id??f.trade_id),'fill',Date.parse(f.created_time),JSON.stringify(f));for(const s of settlements)put.run('settlement:'+s.ticker,'settlement',Date.parse(s.settled_time),JSON.stringify(s));})();
@@ -39,9 +44,10 @@ export class Account {
       for(const e of events.filter(e=>e.type==='fill')){
         const signal=this.journal.db.prepare('SELECT context FROM signals WHERE ticker=? AND side=? AND time<=? ORDER BY time DESC LIMIT 1').get(e.ticker,e.side,e.time) as {context:string}|undefined;
         const prior=this.journal.db.prepare('SELECT time,context FROM ticks WHERE ticker=? AND time BETWEEN ? AND ? ORDER BY time').all(e.ticker,e.time-60000,e.time) as {time:number;context:string}[];
-        e.warnings=fillWarnings(e,signal?JSON.parse(signal.context).idea.contracts:null,prior.map(r=>({time:r.time,price:JSON.parse(r.context).book?.[e.side==='yes'?'yesAsk':'noAsk']})).filter(p=>Number.isFinite(p.price)),this.journal.config());
+        const orderCount=events.filter(f=>f.type==='fill'&&f.orderId===e.orderId&&f.time<=e.time).reduce((sum,f)=>sum+f.contracts,0);
+        e.warnings=fillWarnings({...e,contracts:orderCount},signal?JSON.parse(signal.context).idea.contracts:null,prior.map(r=>({time:r.time,price:JSON.parse(r.context).book?.[e.side==='yes'?'yesAsk':'noAsk']})).filter(p=>Number.isFinite(p.price)),this.journal.config());
       }
-      this.journal.real(events);this.ready=true;this.updated=Date.now();this.error='';
+      this.journal.real(events);this.journal.set('historicalBackfill',true);this.ready=true;this.updated=Date.now();this.error='';
     }catch(e){this.ready=false;this.error=(e as Error).message;this.journal.log('account-error',{message:this.error});}finally{this.busy=false;}
   }
 }

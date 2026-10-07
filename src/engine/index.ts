@@ -75,6 +75,7 @@ const loop=setInterval(()=>{
   if(now-lastLoop>5000||now<lastLoop){log('wake-or-clock-jump',{gap:now-lastLoop});proxy.restart();kalshi.recover();client.clockSynced=false;safe('wake-refresh-error',async()=>{await refresh();await account.sync();});}
   lastLoop=now;if(time===lastSecond)return;lastSecond=time;
   try{
+    journal.expire(time);
     const spot=proxy.sample(time,config.staleMs),market=kalshi.markets.find(m=>Date.parse(m.open_time)<=time&&Date.parse(m.close_time)>time);
     const events=journal.realEvents(),today=dayKey(now),baselineKey='startBalance:'+today;
     const baseline=journal.get<number|null>(baselineKey,null);
@@ -94,12 +95,12 @@ const loop=setInterval(()=>{
       let model:any=null;
       if(spot!==null&&K!==null&&locked!==null&&vol.count>=config.minVolSamples&&vol.sigma>0)model=probability(spot,K,vol.sigma,tau,locked,config.basisCorrection);
       const schedule={...kalshi.fees,precision:config.feePrecision};
-      const evaluation=evaluate(model?.p??.5,tau,book,market,account.balance,config,schedule,{feedsHealthy:venueStates.every(v=>v.healthy),kConfirmed:confirmed,lock:guards.reason,modelReady:!!model,accountReady:account.ready&&now-account.updated<60000,now});
+      const evaluation=evaluate(model?.p??.5,tau,book,market,account.balance,config,schedule,{feedsHealthy:venueStates.every(v=>v.healthy),kConfirmed:confirmed,lock:guards.reason,modelReady:!!model,accountReady:account.ready&&now-account.updated<config.accountStaleMs,now});
       const bv=book.view(),mid=bv.yesBid!==null&&bv.yesAsk!==null?(bv.yesBid+bv.yesAsk)/2:null;
       const momentum=(seconds:number)=>{const prior=proxy.history.find(s=>s.time===time-seconds*1000);return prior&&spot?Math.log(spot/prior.price):null;};
       const y=bv.yes.slice(0,3).reduce((s,[,q])=>s+q,0),n=bv.no.slice(0,3).reduce((s,[,q])=>s+q,0);
-      const features={imbalance:y+n?(y-n)/(y+n):null,tradeFlow30s:kalshi.trades.filter(t=>t.ticker===market.ticker&&t.time>time-30000).reduce((s,t)=>s+(t.takerSide==='yes'?t.count:-t.count),0),momentum30s:momentum(30),momentum120s:momentum(120),midModelGap:model&&mid!==null?mid-model.p:null};
-      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,mid,regime:vol.regime,model,kConfirmed:confirmed,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close};
+      const features={imbalance:y+n?(y-n)/(y+n):null,tradeFlow30s:kalshi.status==='connected'?kalshi.trades.filter(t=>t.ticker===market.ticker&&t.time>time-30000).reduce((s,t)=>s+(t.takerSide==='yes'?t.count:-t.count),0):null,momentum30s:momentum(30),momentum120s:momentum(120),midModelGap:model&&mid!==null?mid-model.p:null};
+      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,mid,regime:vol.regime,model,kConfirmed:confirmed,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation};
       journal.tick(tick);for(const idea of [...(evaluation.idea?[evaluation.idea]:[]),...evaluation.makers])journal.signal(market.ticker,time,idea,tick,schedule);
       seriesHistory.push({time,model:model?.p??null,market:mid});if(seriesHistory.length>901)seriesHistory.shift();
       state={...common,...tick,market,evaluation,lockedCount:locked?.length??0,distance:spot!==null&&K!==null?spot-K:null};

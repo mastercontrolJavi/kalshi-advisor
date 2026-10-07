@@ -16,8 +16,10 @@ export function reliability(rows:{p:number;mid:number;y:number;ticker:string}[])
 }
 export function buildCalibration(journal:Journal){
   // Fixed-horizon sampling: one paired prediction per settled market, nearest 180s within ±30s.
-  const ticks=journal.db.prepare(`SELECT t.ticker,t.p,t.mid,t.tau,o.result FROM ticks t JOIN outcomes o ON t.ticker=o.ticker WHERE t.p IS NOT NULL AND t.mid IS NOT NULL AND t.tau BETWEEN 150 AND 210 ORDER BY ABS(t.tau-180),t.time`).all() as any[];
-  const chosen=new Map<string,any>();for(const t of ticks)if(!chosen.has(t.ticker))chosen.set(t.ticker,t);
+  const chosen=new Map<string,any>();
+  const saved=journal.db.prepare('SELECT ticker,result,context FROM outcomes').all() as any[];
+  const fallback=journal.db.prepare('SELECT p,mid,tau FROM ticks WHERE ticker=? AND p IS NOT NULL AND mid IS NOT NULL AND tau BETWEEN 150 AND 210 ORDER BY ABS(tau-180),time LIMIT 1');
+  for(const o of saved){const p=JSON.parse(o.context).pairedPrediction??fallback.get(o.ticker);if(p)chosen.set(o.ticker,{...p,ticker:o.ticker,result:o.result});}
   const rel=reliability([...chosen.values()].map(t=>({ticker:t.ticker,p:t.p,mid:t.mid,y:t.result==='yes'?1:0})));
   const paper=journal.db.prepare(`SELECT p.*,s.tau,s.regime,s.edge FROM paper_trades p JOIN signals s ON p.signal_id=s.id ORDER BY COALESCE(p.settled_time,p.time),p.id`).all() as any[];
   const settled=paper.filter(t=>t.status==='settled');

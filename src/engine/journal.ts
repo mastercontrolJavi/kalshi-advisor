@@ -11,7 +11,7 @@ export class Journal {
     if(path!==':memory:')mkdirSync('data',{recursive:true});this.db=new Database(path);this.db.pragma('journal_mode = WAL');this.db.pragma('busy_timeout = 5000');
     this.db.exec(`CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS ticks(id INTEGER PRIMARY KEY, time INTEGER NOT NULL,ticker TEXT NOT NULL,proxy REAL,k REAL,tau REAL,sigma REAL,p REAL,mid REAL,regime TEXT,context TEXT NOT NULL,UNIQUE(time,ticker));
-      CREATE INDEX IF NOT EXISTS ticks_time ON ticks(time);CREATE INDEX IF NOT EXISTS ticks_market ON ticks(ticker);
+      CREATE INDEX IF NOT EXISTS ticks_time ON ticks(time);CREATE INDEX IF NOT EXISTS ticks_market ON ticks(ticker);CREATE INDEX IF NOT EXISTS ticks_market_tau ON ticks(ticker,tau);
       CREATE TABLE IF NOT EXISTS signals(id INTEGER PRIMARY KEY,time INTEGER NOT NULL,ticker TEXT NOT NULL,kind TEXT NOT NULL,side TEXT NOT NULL,price REAL NOT NULL,edge REAL NOT NULL,p REAL NOT NULL,tau REAL,regime TEXT,context TEXT NOT NULL,UNIQUE(ticker,kind,side,price));
       CREATE TABLE IF NOT EXISTS paper_trades(id INTEGER PRIMARY KEY,signal_id INTEGER UNIQUE,time INTEGER NOT NULL,ticker TEXT NOT NULL,kind TEXT NOT NULL,side TEXT NOT NULL,price REAL NOT NULL,fee REAL NOT NULL,status TEXT NOT NULL,filled_time INTEGER,settled_time INTEGER,pnl REAL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS outcomes(ticker TEXT PRIMARY KEY,time INTEGER NOT NULL,result TEXT NOT NULL,actual_average REAL,proxy_average REAL,proxy_result TEXT,basis_error REAL,context TEXT NOT NULL);
@@ -40,7 +40,8 @@ export class Journal {
   settle(ticker:string,result:string,time:number,actual:number|null,proxy:number|null,K:number|null,context:unknown){
     if(!['yes','no'].includes(result))return;
     this.db.transaction(()=>{
-      this.db.prepare('INSERT OR REPLACE INTO outcomes VALUES(?,?,?,?,?,?,?,?)').run(ticker,time,result,actual,proxy,proxy!==null&&K!==null?(Math.round(proxy*100)/100>=K?'yes':'no'):null,actual!==null&&proxy!==null?proxy-actual:null,JSON.stringify(context));
+      const paired=this.db.prepare('SELECT p,mid,tau FROM ticks WHERE ticker=? AND p IS NOT NULL AND mid IS NOT NULL AND tau BETWEEN 150 AND 210 ORDER BY ABS(tau-180),time LIMIT 1').get(ticker)??null;
+      this.db.prepare('INSERT OR REPLACE INTO outcomes VALUES(?,?,?,?,?,?,?,?)').run(ticker,time,result,actual,proxy,proxy!==null&&K!==null?(Math.round(proxy*100)/100>=K?'yes':'no'):null,actual!==null&&proxy!==null?proxy-actual:null,JSON.stringify({market:context,pairedPrediction:paired}));
       this.db.prepare("UPDATE paper_trades SET status='settled',settled_time=?,pnl=CASE WHEN side=? THEN 1 ELSE 0 END-price-fee WHERE ticker=? AND status='filled'").run(time,result,ticker);
       this.db.prepare("UPDATE paper_trades SET status='expired',settled_time=? WHERE ticker=? AND status='resting'").run(time,ticker);
       this.log('settlement-logged',{ticker,result,actual,proxy});
@@ -51,6 +52,7 @@ export class Journal {
   restoreHistory(){return this.db.prepare('SELECT time,proxy AS price FROM ticks WHERE proxy IS NOT NULL AND time>? GROUP BY time ORDER BY time').all(Date.now()-7200000) as {time:number;price:number}[];}
   pendingMarkets(){return this.db.prepare('SELECT ticker,MAX(time) AS time FROM ticks WHERE ticker NOT IN (SELECT ticker FROM outcomes) GROUP BY ticker').all() as {ticker:string;time:number}[];}
   prune(now=Date.now()){this.db.prepare('DELETE FROM ticks WHERE time<?').run(now-30*86400000);}
+  expire(now:number){this.db.prepare("UPDATE paper_trades SET status='expired',settled_time=? WHERE status='resting' AND json_extract(context,'$.close')<=?").run(now,now);}
   export(table:string){if(!tables.includes(table as any))throw new Error('Unknown journal table');const rows=this.db.prepare(`SELECT * FROM ${table}`).all() as Record<string,unknown>[];
     const columns=(this.db.prepare(`PRAGMA table_info(${table})`).all() as {name:string}[]).map(r=>r.name);
     const cell=(v:unknown)=>'"'+String(v??'').replace(/"/g,'""')+'"';return [columns.join(','),...rows.map(r=>columns.map(k=>cell(r[k])).join(','))].join('\r\n');}

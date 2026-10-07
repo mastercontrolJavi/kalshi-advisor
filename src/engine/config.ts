@@ -4,7 +4,7 @@ export const defaults = {
   kellyFraction: .25, maxRiskPerTrade: .02, maxContracts: 25,
   dailyLossLimit: .10, consecutiveLossLimit: 3, cooldownMinutes: 30, maxTradesPerHour: 4,
   chaseMove: .15, chaseSeconds: 60, halfLifeSeconds: 300, realizedBlend: .25,
-  basisCorrection: 0, allowEstimatedK: false, staleMs: 2000, minVolSamples: 120,
+  basisCorrection: 0, allowEstimatedK: false, staleMs: 2000, bookStaleMs: 5000, accountStaleMs: 60000, minVolSamples: 120,
   feePrecision: .0001, audio: false, notifications: false
 };
 export type Config = typeof defaults;
