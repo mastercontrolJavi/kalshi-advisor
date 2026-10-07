@@ -24,7 +24,7 @@ export default function Calibration(){
   const {state,fresh}=useLive(),c=state?.calibration;
   return <>
     <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md"><div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-4 px-4 py-3 sm:px-6">
-      <div className="font-display text-xl font-bold tracking-wide">KALSHI<span className="text-yes">/ADVISOR</span></div><span className="text-sm text-muted">Evidence & calibration</span>
+      <a href="/" className="flex items-center gap-2.5"><img src="/icon.svg" alt="" width={28} height={28} className="size-7"/><span className="font-display text-xl font-bold tracking-wide">KALSHI<span className="text-yes">/ADVISOR</span></span></a><span className="text-sm text-muted">Evidence & calibration</span>
       <a className="ml-auto inline-flex min-h-11 items-center gap-1 rounded-xl px-3 text-muted transition-colors hover:text-fg" href="/"><ArrowLeft aria-hidden className="size-4"/>Advisor</a></div></header>
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 pt-4 pb-16 sm:px-6">
       <Card className="rise"><div className="flex flex-wrap items-center gap-3"><h1 className="font-display text-4xl font-bold">Does the model have an edge?</h1><Pill tone={fresh?'yes':'warn'}>{fresh?'Journal live':'Connecting'}</Pill></div>

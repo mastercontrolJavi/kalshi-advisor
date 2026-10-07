@@ -26,7 +26,7 @@ export default function Dashboard(){
     <div aria-hidden className="ambient" data-tone={ambient}/>
     <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md">
       <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:px-6">
-        <div className="font-display text-xl font-bold tracking-wide">KALSHI<span className="text-yes">/ADVISOR</span></div>
+        <a href="/" className="flex items-center gap-2.5"><img src="/icon.svg" alt="" width={28} height={28} className="size-7"/><span className="font-display text-xl font-bold tracking-wide">KALSHI<span className="text-yes">/ADVISOR</span></span></a>
         <span className="num hidden truncate text-xs text-muted sm:inline">{s?.market?.ticker??'waiting for market'}</span>
         <nav className="ml-auto flex items-center gap-2 text-sm">
           <Pill tone={fresh?'yes':'warn'}><span className={fresh?'pulse size-1.5 rounded-full bg-yes':'size-1.5 rounded-full bg-warn'}/>{fresh?'Live':connected?'Stale':'Reconnecting'}</Pill>

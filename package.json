@@ -7,6 +7,8 @@
     "engine": "tsx src/engine/index.ts",
     "build": "next build",
     "trade": "node scripts/trade.mjs",
+    "launch": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/launch.ps1",
+    "shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-shortcut.ps1",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check": "npm run test && npm run typecheck"
