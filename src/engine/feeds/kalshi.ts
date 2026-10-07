@@ -57,7 +57,9 @@ export class KalshiFeed {
     try{
       const [open,next]=await Promise.all([this.client.get('/markets?series_ticker=KXBTC15M&status=open&limit=100'),this.client.get('/markets?series_ticker=KXBTC15M&status=unopened&limit=100')]);
       const now=Date.now()+this.client.clockOffset;
-      const unique=new Map<string,Market>();for(const m of [...next.markets,...open.markets])unique.set(m.ticker,m);
+      // Keep markets we already know until they close: around the open Kalshi briefly lists the new market as neither
+      // 'open' nor 'unopened', and replacing the list dropped the live market for 12–28 s at 3 of 7 rollovers.
+      const unique=new Map<string,Market>();for(const m of [...this.markets,...next.markets,...open.markets])unique.set(m.ticker,m);
       this.markets=[...unique.values()].filter((m:Market)=>Date.parse(m.close_time)>now).sort((a:Market,b:Market)=>Date.parse(a.open_time)-Date.parse(b.open_time)).slice(0,2);
       const sig=this.markets.map(m=>m.ticker).join(',');
       if(sig!==this.signature){this.signature=sig;for(const m of this.markets){this.books.set(m.ticker,new Orderbook());this.log('market-discovered',m);}this.fees.verified=false;this.feesUpdated=0;this.connect();}
