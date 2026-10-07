@@ -239,7 +239,13 @@ const loop=setInterval(()=>{
       const exits=(account.positions as any[]).filter(pos=>String(pos.ticker).startsWith('KXBTC15M')).map(pos=>{
         // Memory is keyed by the position itself, so adding to or flipping a position restarts its trailing stop.
         const key=`${pos.ticker}:${pos.position_fp}:${pos.market_exposure_dollars}`,mem=exitMemory.get(key)??{action:null,peak:null};
-        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,kalshi.books.get(pos.ticker)?.view()??null,schedule,config,mem);
+        // A position in a round that has already closed is settling, not unpriced.
+        const posMarket=known.get(pos.ticker)??journal.get<Market|null>('market:'+pos.ticker,null),posClose=posMarket?Date.parse(posMarket.close_time):null;
+        let closed:{result:'yes'|'no'|null;estimate:'yes'|'no'|null}|null=null;
+        if(posClose!==null&&posClose<=time){const official=journal.db.prepare('SELECT result FROM outcomes WHERE ticker=?').get(pos.ticker) as {result:'yes'|'no'}|undefined;
+          const avg=filledSeconds(proxy.history,posClose-60000,posClose),k=Number(posMarket!.floor_strike);
+          closed={result:official?.result??null,estimate:avg&&Number.isFinite(k)&&k>0?(mean(avg.values)+basis>=k?'yes':'no'):null};}
+        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,kalshi.books.get(pos.ticker)?.view()??null,schedule,config,mem,closed);
         if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,peakPct:e.peakPct});exitMemory.set(key,{action:e.action,peak:e.peakPct});}
         return e;}).filter(Boolean);
       state={...common,...tick,market,evaluation,exits,liveCall,nextCall,quality,openingCall:journal.openingCall(market.ticker),

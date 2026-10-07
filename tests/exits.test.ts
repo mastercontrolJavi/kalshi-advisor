@@ -34,3 +34,11 @@ it('risk mode no longer issues the noisy expected-value SELL NOW; EV mode keeps 
 it('negative positions are NO contracts; no model means no estimate; flat is nothing',()=>{
   const e=exitAdvice(no('5','1.50'),.3,book(.25,.6),baseFees,risk)!;expect(e.side).toBe('no');expect(e.winProb).toBeCloseTo(.7);
   expect(exitAdvice(yes('3','1'),null,book(.5,.4),baseFees,risk)!.action).toBe('NO MODEL');expect(exitAdvice(yes('0.00','0'),.6,null,baseFees,risk)).toBeNull();});
+it('a closed round shows SETTLING with the official result, or the closing-average estimate before it lands',()=>{
+  const e=exitAdvice(yes('17.25','13.80'),null,book(.999,.001),baseFees,risk,mem(),{result:null,estimate:'yes'})!;expect(e.action).toBe('SETTLING');expect(e.reason).toContain('won');expect(e.reason).toContain('$17.25 pays out');
+  const lost=exitAdvice(yes('10','6'),null,book(.01,.99),baseFees,risk,mem(),{result:'no',estimate:'yes'})!;expect(lost.reason).toContain('Kalshi settled it lost');expect(lost.holdValue).toBe(0);
+  expect(exitAdvice(yes('10','6'),null,null,baseFees,risk,mem(),{result:null,estimate:null})!.reason).toContain('waiting for Kalshi');});
+it('expensive contracts still get a reachable ride level (half the maximum possible gain)',()=>{
+  const e=exitAdvice(yes('17.25','13.80'),.85,book(.84,.15),baseFees,risk)!;expect(e.takeProfitBid).not.toBeNull();expect(e.takeProfitBid!).toBeLessThan(.99);expect(e.takeProfitBid!).toBeGreaterThan(.84);
+  const ride=exitAdvice(yes('17.25','13.80'),.95,book(.92,.07),baseFees,risk)!;expect(ride.action).toBe('RIDE');
+  expect(exitAdvice(yes('10','4.00'),.55,book(.45,.53),baseFees,risk)!.takeProfitBid).toBe(exitAdvice(yes('10','4.00'),.55,book(.45,.53),baseFees,{...risk,takeProfitPct:.25})!.takeProfitBid);});

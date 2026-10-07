@@ -15,7 +15,9 @@ import {fee,type FeeSchedule} from './model/fees';
  * while still capping blow-ups. EV mode is the original comparison: sell only when the bid beats the forecast.
  */
 export interface Position {ticker:string;position_fp:string;market_exposure_dollars?:string}
-export type ExitAction='TAKE PROFIT'|'RIDE'|'CUT LOSS'|'SELL NOW'|'HOLD'|'LET IT SETTLE'|'TOO LATE'|'NO MODEL';
+export type ExitAction='TAKE PROFIT'|'RIDE'|'CUT LOSS'|'SELL NOW'|'HOLD'|'LET IT SETTLE'|'TOO LATE'|'NO MODEL'|'SETTLING';
+/** A position whose round has already closed: Kalshi's official result if known, else the app's closing-average estimate. */
+export interface ClosedRound {result:'yes'|'no'|null;estimate:'yes'|'no'|null}
 export interface ExitConfig {exitMode:'risk'|'ev';exitMargin:number;makerMargin:number;takeProfitPct:number;stopLossPct:number;stopWinProb:number;trailGiveback:number;trailFloor:number}
 /** Per-position memory between evaluations: last action (hysteresis) and best gain since entry (trailing stop). */
 export interface ExitMemory {action:ExitAction|null;peak:number|null}
@@ -32,7 +34,7 @@ function bidFor(target:number,contracts:number,s:FeeSchedule,dir:'atLeast'|'atMo
   if(dir==='atLeast'){for(let b=.01;b<1;b=+(b+.01).toFixed(2))if(netPer(b,contracts,s)>=target-1e-9)return b;return null;}
   for(let b=.99;b>=MIN_SELLABLE_BID;b=+(b-.01).toFixed(2))if(netPer(b,contracts,s)<=target+1e-9)return b;return null;
 }
-export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|null;noBid:number|null}|null,schedule:FeeSchedule,cfg:ExitConfig,memory:ExitMemory={action:null,peak:null}):ExitAdvice|null{
+export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|null;noBid:number|null}|null,schedule:FeeSchedule,cfg:ExitConfig,memory:ExitMemory={action:null,peak:null},closed:ClosedRound|null=null):ExitAdvice|null{
   const signed=Number(position.position_fp);if(!Number.isFinite(signed)||Math.abs(signed)<1e-9)return null;
   // Kalshi convention: positive position = YES contracts, negative = NO contracts.
   const side=signed>0?'yes':'no',contracts=Math.abs(signed),exposure=Number(position.market_exposure_dollars);
@@ -41,14 +43,22 @@ export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|n
   const sellFee=bid!==null?fee(bid,contracts,'taker',schedule):null,sellValue=bid!==null&&sellFee!==null?contracts*bid-sellFee:null;
   const unrealized=sellValue!==null&&avgCost!==null?sellValue-contracts*avgCost:null,unrealizedPct=unrealized!==null&&avgCost?unrealized/(contracts*avgCost):null;
   const risk=cfg.exitMode==='risk'&&avgCost!==null;
-  const peakPct=risk?Math.max(memory.peak??-Infinity,unrealizedPct??-Infinity):null,armed=risk&&peakPct!==null&&peakPct>=cfg.takeProfitPct;
+  // The arm level must be reachable: a contract bought at 80¢ can gain at most ~24% before fees, so a fixed +25% would
+  // never arm. Arm at the smaller of takeProfitPct and half the maximum possible gain (selling at 99¢).
+  const maxGain=avgCost?(netPer(.99,contracts,schedule)-avgCost)/avgCost:null,armPct=maxGain!==null&&maxGain>0?Math.min(cfg.takeProfitPct,maxGain/2):null;
+  const peakPct=risk?Math.max(memory.peak??-Infinity,unrealizedPct??-Infinity):null,armed=risk&&armPct!==null&&peakPct!==null&&peakPct>=armPct;
   const trailLevel=armed?Math.max(cfg.trailFloor,peakPct!*(1-cfg.trailGiveback)):null;
-  const takeProfitBid=risk?bidFor(avgCost!*(1+cfg.takeProfitPct),contracts,schedule,'atLeast'):null;
+  const takeProfitBid=risk&&armPct!==null?bidFor(avgCost!*(1+armPct),contracts,schedule,'atLeast'):null;
   const stopBid=risk?bidFor(avgCost!*(1-cfg.stopLossPct),contracts,schedule,'atMost'):null;
   const trailBid=trailLevel!==null?bidFor(avgCost!*(1+trailLevel),contracts,schedule,'atMost'):null;
   const base={ticker:position.ticker,side,contracts,avgCost,bid,sellFee,sellValue,unrealized,unrealizedPct,takeProfitBid,stopBid,trailBid,peakPct:Number.isFinite(peakPct??NaN)?peakPct:null} as const;
   const plan=risk?(armed?` Plan: trailing stop at bid ≤ ${trailBid!==null?c(trailBid):'—'} (gain ${pctTxt(trailLevel!)}) · cut loss if win chance < ${(cfg.stopWinProb*100).toFixed(0)}%.`
-    :` Plan: ride from bid ≥ ${takeProfitBid!==null?c(takeProfitBid):'—'} (${pctTxt(cfg.takeProfitPct)}) · cut loss at bid ≤ ${stopBid!==null?c(stopBid):'—'} (${pctTxt(-cfg.stopLossPct)}) or if win chance < ${(cfg.stopWinProb*100).toFixed(0)}%.`):'';
+    :` Plan: ride from bid ≥ ${takeProfitBid!==null?c(takeProfitBid):'—'} (${armPct!==null?pctTxt(armPct):'—'}) · cut loss at bid ≤ ${stopBid!==null?c(stopBid):'—'} (${pctTxt(-cfg.stopLossPct)}) or if win chance < ${(cfg.stopWinProb*100).toFixed(0)}%.`):'';
+  if(closed){
+    const outcome=closed.result??closed.estimate,won=outcome===side,cost=avgCost!==null?contracts*avgCost:null;
+    const reason=outcome===null?'Round closed — waiting for Kalshi to settle it.':`Round closed — ${closed.result?'Kalshi settled it':'the closing average says it'} ${won?'won':'lost'}: ${won?`$${contracts.toFixed(2)} pays out`:'pays $0'}${cost!==null?` (${won?'+':'−'}$${Math.abs(won?contracts-cost:cost).toFixed(2)} vs your cost)`:''}. Payout usually lands within a few minutes; nothing to do.`;
+    return {...base,winProb:outcome===null?null:won?1:0,holdValue:outcome===null?null:won?contracts:0,action:'SETTLING',limitPrice:null,reason};
+  }
   if(p===null||!Number.isFinite(p))return {...base,winProb:null,holdValue:null,action:'NO MODEL',limitPrice:null,reason:'Model not ready for this market; no exit estimate.'+plan};
   const winProb=side==='yes'?p:1-p,holdValue=contracts*winProb;
   const limit=Math.ceil((winProb+cfg.makerMargin)*100-1e-9)/100,limitPrice=limit<1&&(bid===null||limit>bid)?limit:null;
