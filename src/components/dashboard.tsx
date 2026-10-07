@@ -1,7 +1,9 @@
 'use client';
-import {useEffect,useRef,useState} from 'react';
+import {useState} from 'react';
 import dynamic from 'next/dynamic';
-import {LineChart as ChartIcon,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,ArrowUpRight,Volume2} from 'lucide-react';
+import {LineChart as ChartIcon,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,ArrowUpRight,BellRing} from 'lucide-react';
+import {useSoundAlerts} from './use-sound-alerts';
+import {SoundPanel,SoundToggle} from './sound-panel';
 import {useLive} from './use-live';
 import Settings from './settings';
 import {Button} from './ui/button';
@@ -12,13 +14,7 @@ import {ago,signedDollars} from './format';
 const ProbabilityChart=dynamic(()=>import('./probability-chart'),{ssr:false,loading:()=><div className="chart animate-pulse rounded-xl bg-surface-2"/>});
 
 export default function Dashboard(){
-  const {state:s,connected,fresh}=useLive(),[override,setOverride]=useState(''),[error,setError]=useState(''),[audioArmed,setAudioArmed]=useState(false);
-  const lastSignal=useRef(''),audio=useRef<AudioContext|null>(null);
-  useEffect(()=>{if(!s?.evaluation?.idea||!fresh)return;const i=s.evaluation.idea,key=[s.ticker,i.side,i.price].join(':');if(key===lastSignal.current)return;lastSignal.current=key;
-    if(s.config.audio&&audioArmed&&audio.current){const ctx=audio.current,osc=ctx.createOscillator(),gain=ctx.createGain();osc.frequency.value=880;gain.gain.setValueAtTime(.07,ctx.currentTime);gain.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.25);osc.connect(gain).connect(ctx.destination);osc.start();osc.stop(ctx.currentTime+.25);}
-    if(s.config.notifications&&'Notification' in window&&Notification.permission==='granted')new Notification(s.evaluation.action,{body:s.evaluation.reason});
-  },[s,fresh,audioArmed]);
-  useEffect(()=>()=>{void audio.current?.close();},[]);
+  const {state:s,connected,fresh}=useLive(),[override,setOverride]=useState(''),[error,setError]=useState(''),sound=useSoundAlerts(s,fresh);
   async function unlock(){try{const r=await fetch('/api/engine/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:override})});const data=await r.json();if(!r.ok)throw new Error(data.error);setOverride('');}catch(e){setError((e as Error).message);}}
   const action=fresh?s?.evaluation?.action??'NO TRADE':'NO TRADE',tone=actionTone(action),healthy=s?.venues?.filter((v:any)=>v.healthy).length??0;
   const ambient=!fresh?'warn':tone==='yes'||tone==='no'?tone:'none';
@@ -29,6 +25,7 @@ export default function Dashboard(){
         <a href="/" className="flex items-center gap-2.5"><img src="/icon.svg" alt="" width={28} height={28} className="size-7"/><span className="font-display text-xl font-bold tracking-wide">KALSHI<span className="text-yes">/ADVISOR</span></span></a>
         <span className="num hidden truncate text-xs text-muted sm:inline">{s?.market?.ticker??'waiting for market'}</span>
         <nav className="ml-auto flex items-center gap-2 text-sm">
+          <SoundToggle prefs={sound.prefs} setPrefs={sound.setPrefs} ready={sound.ready}/>
           <Pill tone={fresh?'yes':'warn'}><span className={fresh?'pulse size-1.5 rounded-full bg-yes':'size-1.5 rounded-full bg-warn'}/>{fresh?'Live':connected?'Stale':'Reconnecting'}</Pill>
           <Pill tone={healthy===4?'neutral':'warn'} title="Exchange price feeds live">{healthy}/4 feeds</Pill>
           <span className="num hidden text-xs text-muted md:inline" title="Age of data on screen">{s?ago(Math.max(0,Date.now()-s.engineTime)):'—'}</span>
@@ -55,8 +52,8 @@ export default function Dashboard(){
       </div>
       <Collapsible title="Settings & alerts" icon={<SlidersHorizontal aria-hidden className="size-4 text-info"/>} aside="thresholds, sizing, guardrails">
         {s?.config?<Settings config={s.config}/>:<p className="text-muted">Waiting for engine</p>}
-        <Button className="mt-5" variant="outline" onClick={()=>{audio.current??=new AudioContext();void audio.current.resume();setAudioArmed(true);}}><Volume2 aria-hidden className="size-4"/>{audioArmed?'Audio armed for this browser':'Enable browser audio'}</Button>
       </Collapsible>
+      <Collapsible title="Sound alerts" icon={<BellRing aria-hidden className="size-4 text-info"/>} aside={sound.prefs.enabled?(sound.ready?'on':'click page to arm'):'muted'}><SoundPanel {...sound}/></Collapsible>
       <footer className="flex flex-wrap justify-between gap-3 pt-2 text-xs text-faint"><span>Next: <span className="num">{s?.next?.ticker??'discovering'}</span> · journal stays in ./data/advisor.db · orders disabled</span><a className="underline-offset-4 hover:text-fg hover:underline" href="/api/engine/export/signals">Export signals CSV</a></footer>
     </main>
     {s?.guards?.dailyLocked?<div role="dialog" aria-modal="true" aria-labelledby="lock-title" className="fixed inset-0 z-50 flex items-center justify-center bg-bg/95 p-5 backdrop-blur"><Card className="max-w-md space-y-5 border-no/40">
