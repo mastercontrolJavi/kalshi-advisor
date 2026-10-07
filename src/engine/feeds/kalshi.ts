@@ -5,6 +5,12 @@ import {Orderbook} from './orderbook';
 import {baseFees,type FeeSchedule} from '../model/fees';
 export const REST='https://external-api.kalshi.com/trade-api/v2';
 export const WS='wss://external-api-ws.kalshi.com/trade-api/ws/v2';
+export const bookPrice=(side:'yes'|'no',yesPrice:number)=>side==='no'?1-yesPrice:yesPrice;
+export function effectiveFees(series:any,changes:any[],event:string,now:number):FeeSchedule {
+  const change=changes.filter(c=>c.event_ticker===event&&Date.parse(c.scheduled_ts)<=now).sort((a,b)=>Date.parse(b.scheduled_ts)-Date.parse(a.scheduled_ts))[0];
+  const type=change?.fee_type_override??series.fee_type,m=Number(change?.fee_multiplier_override??series.fee_multiplier??1);
+  return {...baseFees,takerMultiplier:m,makerMultiplier:type==='quadratic_with_maker_fees'?m:0,verified:['quadratic','quadratic_with_maker_fees'].includes(type)&&Number.isFinite(m)&&m>=0};
+}
 export function signedHeaders(key:KeyObject,id:string,path:string,timestamp:number){
   const ts=String(Math.round(timestamp));
   return {'KALSHI-ACCESS-KEY':id,'KALSHI-ACCESS-TIMESTAMP':ts,'KALSHI-ACCESS-SIGNATURE':sign('sha256',Buffer.from(ts+'GET'+path.split('?')[0]),{key,padding:constants.RSA_PKCS1_PSS_PADDING,saltLength:32}).toString('base64')};
@@ -34,15 +40,15 @@ export class KalshiClient {
   }
   async pages(path:string,field:string){const result:any[]=[];let cursor='';const seen=new Set<string>();do{const page=await this.get(path+(path.includes('?')?'&':'?')+'limit=1000'+(cursor?'&cursor='+encodeURIComponent(cursor):''),true);result.push(...(page[field]??[]));cursor=page.cursor??'';if(cursor&&seen.has(cursor))throw new Error('Repeated pagination cursor');seen.add(cursor);}while(cursor);return result;}
   async schedule(event:string):Promise<FeeSchedule>{
-    const {series}=await this.get('/series/KXBTC15M');const {event:ev}=await this.get('/events/'+encodeURIComponent(event));
-    const type=ev.fee_type??ev.fee_type_override??series.fee_type,m=Number(ev.fee_multiplier??ev.fee_multiplier_override??series.fee_multiplier??1);
-    return {...baseFees,takerMultiplier:m,makerMultiplier:type==='quadratic_with_maker_fees'?m:0,verified:['quadratic','quadratic_with_maker_fees'].includes(type)&&Number.isFinite(m)&&m>=0};
+    const {series}=await this.get('/series/KXBTC15M');let cursor='';const changes:any[]=[];
+    do {const page=await this.get('/events/fee_changes?limit=1000'+(cursor?'&cursor='+encodeURIComponent(cursor):''));changes.push(...(page.event_fee_changes??[]));cursor=page.cursor??'';}while(cursor);
+    return effectiveFees(series,changes,event,Date.now()+this.clockOffset);
   }
 }
 export class KalshiFeed {
   markets:Market[]=[];books=new Map<string,Orderbook>();status='disconnected';lag:number|null=null;lastMessage=0;fees:FeeSchedule={...baseFees,verified:false};
   trades:{ticker:string;time:number;yesPrice:number;count:number;takerSide:string}[]=[];
-  private socket?:ReconnectingSocket;private signature='';private refreshing=false;private polling=false;
+  private socket?:ReconnectingSocket;private signature='';private refreshing=false;private polling=false;private feesUpdated=0;
   constructor(public client:KalshiClient,private log:(event:string,data:unknown)=>void,private onTrade:(t:any)=>void=()=>{},private onFill:()=>void=()=>{}){}
   async refresh(){
     if(this.refreshing)return;this.refreshing=true;
@@ -52,19 +58,20 @@ export class KalshiFeed {
       const unique=new Map<string,Market>();for(const m of [...next.markets,...open.markets])unique.set(m.ticker,m);
       this.markets=[...unique.values()].filter((m:Market)=>Date.parse(m.close_time)>now).sort((a:Market,b:Market)=>Date.parse(a.open_time)-Date.parse(b.open_time)).slice(0,2);
       const sig=this.markets.map(m=>m.ticker).join(',');
-      if(sig!==this.signature){this.signature=sig;for(const m of this.markets){this.books.set(m.ticker,new Orderbook());this.log('market-discovered',m);}if(this.markets[0])this.fees=await this.client.schedule(this.markets[0].event_ticker);this.connect();}
+      if(sig!==this.signature){this.signature=sig;for(const m of this.markets){this.books.set(m.ticker,new Orderbook());this.log('market-discovered',m);}this.fees.verified=false;this.feesUpdated=0;this.connect();}
+      if(this.markets[0]&&Date.now()-this.feesUpdated>30000){try{this.fees=await this.client.schedule(this.markets[0].event_ticker);this.feesUpdated=Date.now();}catch(e){this.fees.verified=false;throw e;}}
     }finally{this.refreshing=false;}
   }
   private connect(){
     this.socket?.stop();this.status=this.client.authenticated?'connecting':'REST fallback — missing credentials';
     if(!this.client.authenticated||!this.markets.length)return;
-    const subscribe=()=>[...this.markets.map((m,i)=>({id:i+1,cmd:'subscribe',params:{channels:['orderbook_delta'],market_tickers:[m.ticker]}})),{id:3,cmd:'subscribe',params:{channels:['ticker','trade'],market_tickers:this.markets.map(m=>m.ticker)}},{id:4,cmd:'subscribe',params:{channels:['fill']}}];
+    const subscribe=()=>[...this.markets.map((m,i)=>({id:i+1,cmd:'subscribe',params:{channels:['orderbook_delta'],market_tickers:[m.ticker],use_yes_price:true}})),{id:3,cmd:'subscribe',params:{channels:['ticker','trade'],market_tickers:this.markets.map(m=>m.ticker)}},{id:4,cmd:'subscribe',params:{channels:['fill']}}];
     this.socket=new ReconnectingSocket(WS,subscribe,m=>{
       this.lastMessage=Date.now();this.lag=m.sending_ts_ms?Math.max(0,Date.now()+this.client.clockOffset-m.sending_ts_ms):null;
       const d=m.msg??{};const book=this.books.get(d.market_ticker);
       if(m.type==='error'){this.log('kalshi-ws-error',d);this.status='subscription error';return;}
-      if(m.type==='orderbook_snapshot'&&book)book.snapshot(d.yes_dollars_fp??[],d.no_dollars_fp??[],m.seq);
-      if(m.type==='orderbook_delta'&&book){if(!book.delta(m.seq,d.side,Number(d.price_dollars),Number(d.delta_fp))){this.log('book-gap',{ticker:d.market_ticker,seq:m.seq});this.recover();}}
+      if(m.type==='orderbook_snapshot'&&book)book.snapshot(d.yes_dollars_fp??[],(d.no_dollars_fp??[]).map(([p,q]:string[])=>[String(bookPrice('no',Number(p))),q]),m.seq);
+      if(m.type==='orderbook_delta'&&book){if(!book.delta(m.seq,d.side,bookPrice(d.side,Number(d.price_dollars)),Number(d.delta_fp))){this.log('book-gap',{ticker:d.market_ticker,seq:m.seq});this.recover();}}
       if(m.type==='trade'){const t={ticker:d.market_ticker,time:d.ts_ms??d.ts*1000,yesPrice:Number(d.yes_price_dollars),count:Number(d.count_fp),takerSide:d.taker_outcome_side??d.taker_side};this.trades.push(t);this.trades=this.trades.filter(t=>t.time>this.lastMessage+this.client.clockOffset-120000);this.onTrade(t);}
       if(m.type==='fill')this.onFill();
     },status=>{this.status=status;if(status!=='connected')for(const b of this.books.values())b.valid=false;this.log('kalshi-status',{status});},()=>this.client.headers('/trade-api/ws/v2'));

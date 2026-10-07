@@ -1,24 +1,32 @@
 import type {KalshiClient} from './feeds/kalshi';
 import type {Journal} from './journal';
 import {fillWarnings,type RealEvent} from './guardrails';
-/** Settlement endpoint cost basis is authoritative; sell P&L uses FIFO fills when history is complete. */
+/** FIFO realized accounting, including canonical directional fills and complementary-side netting. */
 export function normalizeAccount(fills:any[],settlements:any[]):RealEvent[]{
-  const lots=new Map<string,{count:number;cost:number}[]>(),events:RealEvent[]=[];
+  const lots=new Map<string,{count:number;cost:number}[]>(),events:RealEvent[]=[],cashFlows=new Map<string,number>();
   for(const f of [...fills].sort((a,b)=>Date.parse(a.created_time)-Date.parse(b.created_time))){
     const ticker=f.ticker??f.market_ticker;if(!ticker?.startsWith('KXBTC15M'))continue;
-    const side=f.outcome_side??f.side,action=f.action??(f.book_side===(side==='yes'?'bid':'ask')?'buy':'sell'),count=Number(f.count_fp),price=Number(side==='yes'?f.yes_price_dollars:f.no_price_dollars),fees=Number(f.fee_cost??0),time=f.created_time?Date.parse(f.created_time):f.ts*1000;
-    if(![count,price,fees,time].every(Number.isFinite)||!['yes','no'].includes(side)||count<=0)throw new Error('Unsupported fill schema');
-    const key=ticker+':'+side,list=lots.get(key)??[];let pnl=0;
-    if(action==='buy')list.push({count,cost:price+fees/count});
-    else {let remaining=count,cost=0;while(remaining>1e-8&&list.length){const n=Math.min(remaining,list[0].count);cost+=n*list[0].cost;list[0].count-=n;remaining-=n;if(list[0].count<1e-8)list.shift();}if(remaining>1e-8)throw new Error('Sell cost basis unavailable; historical fills needed');pnl=count*price-fees-cost;}
-    lots.set(key,list);events.push({id:'fill:'+(f.fill_id??f.trade_id),ticker,type:'fill',time,pnl,contracts:count,side,price,action,orderId:f.order_id});
+    const legacy=!!f.action&&!!f.side;
+    const side=legacy?f.side:f.outcome_side??(f.book_side==='bid'?'yes':f.book_side==='ask'?'no':undefined),action=legacy?f.action:'buy',count=Number(f.count_fp),price=Number(side==='yes'?f.yes_price_dollars:f.no_price_dollars),fees=Number(f.fee_cost),time=f.created_time?Date.parse(f.created_time):f.ts*1000;
+    if(![count,price,fees,time].every(Number.isFinite)||!['yes','no'].includes(side)||!['buy','sell'].includes(action)||count<=0||price<0||price>1||fees<0)throw new Error('Unsupported fill schema or missing actual fee');
+    const prefix=ticker+':'+(f.subaccount_number??f.subaccount??0)+':',key=prefix+side,list=lots.get(key)??[];let pnl=0,closedContracts=0,cashFlow=0;
+    if(action==='buy'){
+      const oppositeKey=prefix+(side==='yes'?'no':'yes'),opposite=lots.get(oppositeKey)??[];let remaining=count;
+      while(remaining>1e-8&&opposite.length){const n=Math.min(remaining,opposite[0].count);pnl+=n*(1-price-fees/count-opposite[0].cost);closedContracts+=n;opposite[0].count-=n;remaining-=n;if(opposite[0].count<1e-8)opposite.shift();}
+      lots.set(oppositeKey,opposite);if(remaining>1e-8)list.push({count:remaining,cost:price+fees/count});
+      cashFlow=closedContracts-count*price-fees;
+    }else {
+      let remaining=count,cost=0;while(remaining>1e-8&&list.length){const n=Math.min(remaining,list[0].count);cost+=n*list[0].cost;list[0].count-=n;remaining-=n;if(list[0].count<1e-8)list.shift();}if(remaining>1e-8)throw new Error('Sell cost basis unavailable; historical fills needed');pnl=count*price-fees-cost;closedContracts=count;cashFlow=count*price-fees;
+    }
+    cashFlows.set(ticker,(cashFlows.get(ticker)??0)+cashFlow);
+    lots.set(key,list);events.push({id:'fill:'+(f.fill_id??f.trade_id),ticker,type:'fill',time,pnl,closedContracts,contracts:count,side,price,action,orderId:f.order_id});
   }
   for(const s of settlements){if(!s.ticker?.startsWith('KXBTC15M'))continue;
-    const revenue=Number(s.revenue)/100,cost=Number(s.yes_total_cost_dollars)+Number(s.no_total_cost_dollars),fees=Number(s.fee_cost??0),time=Date.parse(s.settled_time);
+    const revenue=Number(s.revenue)/100,cost=Number(s.yes_total_cost_dollars)+Number(s.no_total_cost_dollars),fees=Number(s.fee_cost),time=Date.parse(s.settled_time);
     if(![revenue,cost,fees,time].every(Number.isFinite))throw new Error('Unsupported settlement schema');
     const marketFills=events.filter(e=>e.ticker===s.ticker&&e.type==='fill');
     const matchingFills=fills.filter(f=>(f.ticker??f.market_ticker)===s.ticker);
-    const cashFlow=matchingFills.reduce((sum,f)=>{const side=f.outcome_side??f.side,action=f.action??(f.book_side===(side==='yes'?'bid':'ask')?'buy':'sell'),price=Number(side==='yes'?f.yes_price_dollars:f.no_price_dollars);return sum+(action==='buy'?-1:1)*Number(f.count_fp)*price-Number(f.fee_cost??0);},0);
+    const cashFlow=cashFlows.get(s.ticker)??0;
     const outcomePnl=matchingFills.length?revenue+cashFlow:revenue-cost-fees;
     const alreadyRealized=marketFills.reduce((sum,f)=>sum+f.pnl,0);
     events.push({id:'settlement:'+s.ticker,ticker:s.ticker,type:'settlement',time,pnl:outcomePnl-alreadyRealized,outcomePnl,contracts:Number(s.yes_count_fp)+Number(s.no_count_fp)});
@@ -31,6 +39,7 @@ export class Account {
     if(this.busy||!this.client.authenticated)return;this.busy=true;
     try{
       const b=await this.client.get('/portfolio/balance',true);this.balance=Number(b.balance)/100;
+      if(!Number.isFinite(this.balance)||this.balance<0)throw new Error('Unsupported account balance');
       this.client.limits=(await this.client.get('/account/limits',true));
       this.positions=await this.client.pages('/portfolio/positions','market_positions');
       // Persist every raw record. Refresh live pages; archived fills backfill only on first run.

@@ -2,11 +2,11 @@
 
 ## Automated and local integration
 
-- 40 Vitest tests passing; TypeScript checks passing; Next.js 15.5.27 production build passing. `npm audit` reports zero vulnerabilities after patched dependency updates.
+- 46 Vitest tests passing; TypeScript checks passing; Next.js 15.5.27 production build passing. `npm audit` reports zero vulnerabilities after patched dependency updates.
 - `npm run trade` was launched on Windows. Keep-awake helper reported `Windows keep-awake active` after a successful SetThreadExecutionState call.
 - Engine was intentionally terminated at 20:08:27 PDT and restarted by the supervisor at 20:08:29. The new process restored SQLite price history, reconnected all four venues, and served live state. A transient 503 during intentional downtime was observed; the UI recovered through its reconnect loop.
 - `node --import tsx scripts/verify-live.ts` passes: unauthenticated pages/assets/API return 401; authenticated pages return 200; market/proxy/loop values available; settings reject absent Origin and accept same-origin validated updates; all five tables export; unauthenticated WS returns 401; authenticated WS sends consecutive updates.
-- Browser: Microsoft Edge via Playwright CLI, 390×844 mobile viewport. Dashboard and calibration have document width exactly 390px (no horizontal overflow). Live model/book/WS state rendered, collapsibles and calibration navigation checked. Desktop inspection and additional lifecycle evidence recorded below when completed.
+- Browser: Microsoft Edge via Playwright CLI, 390×844 mobile viewport and 1440×1000 desktop. Dashboard and calibration have mobile document width exactly 390px (no horizontal overflow). Live model/book/WS state rendered, collapsibles and calibration navigation checked. Mobile signal/countdown/edge appear first; market details collapse below. Temporary console errors during planned server/build restarts ceased after reload/reconnect.
 
 ## Observed exchange data
 
@@ -14,7 +14,9 @@ All four venue feeds connected to public WS with actual BTC/USD mids. Public Kal
 
 First observed market: KXBTC15M-26OCT062300-00 (19:45–20:00 PDT). Engine started partway through the window. It evaluated the model, collected all sixty closing seconds, rolled to the next market, then persisted official YES result. Closing average official 83,852.84 USD; proxy 83,848.62745833336 USD; basis error −4.21254166664 USD. This is partial-window observation, not a full uninterrupted cycle.
 
-The following 20:00–20:15 PDT market was observed at opening; planned build/restart and intentional crash checks occurred during the window. Final close/settlement evidence is added after it completes.
+Full lifecycle observed: KXBTC15M-26OCT062315-15, 20:00–20:15 PDT. Opening was observed with tau=900 and K=83,852.84. Model/signal evaluations were journaled through tau=1. SQLite has 834 seconds for this window: 66 earlier seconds were deliberately lost to production build/restart/crash verification, and no fabricated observations were inserted. All sixty final-minute observations are present; locked count advanced through 57, 58, 59 as tau fell through 3, 2, 1. The engine rolled to KXBTC15M-26OCT062330-30 and persisted official YES. Closing average official 83,934.62 USD; proxy 83,929.670375 USD; basis error −4.949625 USD. This confirms open → evaluation → closing average → rollover → official settlement with disclosed restart gaps, not uninterrupted collection.
+
+No actual taker signal or maker paper fill was observed without credentials. Maker ideas were journaled and expired; fixture tests validate trade-through fills, taker fees and settlement profit. The app intentionally suppresses taker recommendations when account state cannot be authenticated.
 
 ## Not verified / limitations
 
