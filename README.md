@@ -17,7 +17,7 @@ npm run dev:all
 npm run trade
 ```
 
-Open http://localhost:3000 and use the credentials from .env.local. Engine binds 127.0.0.1:3001; dashboard binds 127.0.0.1:3000. Basic auth is enforced before every HTTP request and WebSocket upgrade. Use the custom launcher, not `next start`, which bypasses that wrapper. Do not forward raw HTTP outside this computer; [phone setup](docs/PHONE.md) uses Tailscale HTTPS.
+Open http://localhost:3000 and use the credentials from .env.local. Engine binds 127.0.0.1:3001; dashboard binds 127.0.0.1:3000. Basic auth is enforced before every HTTP request and WebSocket upgrade, unless `DASHBOARD_AUTH=off`: then requests made on this PC skip it. A request counts as local only if it arrives on loopback, is addressed to localhost/127.0.0.1/[::1] (which refuses DNS-rebinding hostnames) and has no X-Forwarded-For / Forwarded / Tailscale-* headers. Tailscale and phone access still use the password. Use the custom launcher, not `next start`, which bypasses that wrapper. Do not forward raw HTTP outside this computer; [phone setup](docs/PHONE.md) uses Tailscale HTTPS.
 
 `.env.example` contains all environment variables. Credentials are server-only and requests carrying signatures go exclusively to fixed official Kalshi hosts; redirects fail. Public venue connections receive no credentials. v1 refuses `ENABLE_EXECUTOR=true`. `Executor` defines the future integration boundary, but this version has no API write method. keys/, .env.local and SQLite files are Git-ignored.
 
