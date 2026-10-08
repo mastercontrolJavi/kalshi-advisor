@@ -13,9 +13,15 @@ export const soundCatalog:{name:SoundName;label:string;category:Category}[]=[
 export const categoryLabels:Record<Category,string>={signals:'Trade signals',positions:'Hold / sell',results:'Wins & losses',calls:'Live call flips',timing:'Window timing',warnings:'Warnings'};
 export interface SoundPrefs {enabled:boolean;volume:number;categories:Record<Category,boolean>;repeatSell:boolean}
 export const defaultPrefs:SoundPrefs={enabled:true,volume:.6,categories:{signals:true,positions:true,results:true,calls:true,timing:true,warnings:true},repeatSell:true};
-const KEY='kalshi-advisor-sounds';
-export function loadPrefs():SoundPrefs{try{const raw=localStorage.getItem(KEY);if(!raw)return defaultPrefs;const p=JSON.parse(raw);return {...defaultPrefs,...p,categories:{...defaultPrefs.categories,...p.categories}};}catch{return defaultPrefs;}}
-export function savePrefs(p:SoundPrefs){try{localStorage.setItem(KEY,JSON.stringify(p));}catch{}}
+const KEY='kalshi-advisor-sounds',VERSION=2;
+export function savePrefs(p:SoundPrefs){try{localStorage.setItem(KEY,JSON.stringify({...p,version:VERSION}));}catch{}}
+/** v2 (user request, 2026-10-07): sound is on by default on every page. Prefs saved before v2 are switched back on once
+ *  (every category, volume kept); anything changed after that is respected. */
+export function migratePrefs(p:any):SoundPrefs{
+  if((p?.version??1)<VERSION)return {...defaultPrefs,volume:Number.isFinite(p?.volume)&&p.volume>0?p.volume:defaultPrefs.volume};
+  const {version:_,...rest}=p;return {...defaultPrefs,...rest,categories:{...defaultPrefs.categories,...p.categories}};
+}
+export function loadPrefs():SoundPrefs{try{const raw=localStorage.getItem(KEY);if(!raw)return defaultPrefs;const p=JSON.parse(raw),m=migratePrefs(p);if((p?.version??1)<VERSION)savePrefs(m);return m;}catch{return defaultPrefs;}}
 
 type Note=[freq:number,start:number,duration:number,type?:OscillatorType,gain?:number,glideTo?:number];
 const C5=523.25,E5=659.25,G5=783.99,C6=1046.5,G4=392,A4=440,E4=329.63,B3=246.94;

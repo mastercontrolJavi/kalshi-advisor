@@ -25,7 +25,11 @@ function Open-Dashboard {
     "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
     "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
   ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-  if ($chrome) { Start-Process -FilePath $chrome -ArgumentList '--new-window', $url }
+  # The dashboard opens in its own Chrome profile started with autoplay allowed, so sound alerts play without a
+  # click first. Chrome only applies that flag to an instance it starts, hence the separate profile; your normal
+  # Chrome profile is untouched. Log in once there (Chrome can remember it).
+  $chromeProfile = Join-Path $env:LOCALAPPDATA 'KalshiAdvisor\Chrome'
+  if ($chrome) { Start-Process -FilePath $chrome -ArgumentList "--user-data-dir=`"$chromeProfile`"", '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--no-default-browser-check', '--new-window', $url }
   else { Write-Host 'Chrome not found; opening your default browser.'; Start-Process $url }
 }
 

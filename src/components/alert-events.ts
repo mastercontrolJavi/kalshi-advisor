@@ -1,7 +1,12 @@
 import type {SoundName} from './sounds';
 /** The slice of live state that alerts react to. Sounds fire on transitions only, never on the first snapshot. */
 export interface AlertSnapshot {ticker:string|null;tau:number|null;entryAt:number;ideaKey:string|null;ideaSide:string|null;setupKey?:string|null;exits:Record<string,string>;pnl:number|null;day:string|null;liveDir:string|null;unreliable:boolean;locked:boolean;coachKey?:string|null}
-export function snapshot(s:any,fresh:boolean):AlertSnapshot{
+/** `page` picks which market the sounds follow: the 15-minute round, or the current hour (KXBTCD) on /hourly. */
+export function snapshot(s:any,fresh:boolean,page:'15m'|'hourly'='15m'):AlertSnapshot{
+  const common={pnl:s?.guards?.pnl??null,day:s?.guards?.today??null,unreliable:!fresh||s?.quality?.level==='unreliable',locked:!!s?.guards?.locked,coachKey:s?.coach?.items?.[0]?.id??null};
+  if(page==='hourly'){const h=fresh?s?.hourly:null,best=h?.ideas?.[0];
+    return {...common,ticker:h?.event??null,tau:h?.event?h.tau:null,entryAt:s?.config?.sweetMaxSeconds??900,ideaKey:best?[best.ticker,best.side,best.price].join(':'):null,ideaSide:best?.side??null,setupKey:null,
+      exits:Object.fromEntries((h?.exits??[]).map((e:any)=>[e.ticker,e.action])),liveDir:h?.up?.direction??null};}
   const idea=fresh?s?.evaluation?.idea:null;
   const setup=fresh?s?.tactics?.ideas?.[0]:null;
   return {ticker:s?.market?.ticker??null,tau:s?.market?s.tau:null,entryAt:s?.config?.sweetMaxSeconds??300,ideaKey:idea?[s.ticker,idea.side,idea.price].join(':'):null,ideaSide:idea?.side??null,setupKey:setup?[s.ticker,setup.kind,setup.side].join(':'):null,

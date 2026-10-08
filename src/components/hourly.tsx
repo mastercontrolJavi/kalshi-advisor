@@ -1,6 +1,8 @@
 'use client';
 import {Check,X,Clock,Layers,History,Wallet,Info} from 'lucide-react';
 import {useLive} from './use-live';
+import {useSoundAlerts} from './use-sound-alerts';
+import {SoundToggle} from './sound-panel';
 import {SiteHeader} from './site-header';
 import {Card} from './ui/card';
 import {Pill,ProbBar,Collapsible,BacktestNote,Coach,type Tone} from './panels';
@@ -12,7 +14,7 @@ const hm=(sec:number)=>sec>=3600?`${Math.floor(sec/3600)}:${mmss(sec%3600)}`:mms
 const HORIZONS:[string,string][]=[['2700','45m'],['1800','30m'],['900','15m'],['300','5m'],['60','1m']];
 function Kpi({label,children,sub,tone}:{label:string;children:React.ReactNode;sub?:React.ReactNode;tone?:string}){return <div className="min-w-0"><div className="label">{label}</div><div className={cn('num mt-1.5 text-xl sm:text-2xl',tone)}>{children}</div>{sub?<div className="mt-0.5 truncate text-xs text-muted">{sub}</div>:null}</div>;}
 export default function Hourly(){
-  const {state:s,connected,fresh}=useLive(),h=fresh?s?.hourly:null,up=h?.up,best=h?.ideas?.[0];
+  const {state:s,connected,fresh}=useLive(),h=fresh?s?.hourly:null,up=h?.up,best=h?.ideas?.[0],sound=useSoundAlerts(s,fresh,'hourly');
   const tone:Tone=best?(best.side==='yes'?'yes':'no'):'neutral';
   const spotStrike=h?.rungs?.length&&h.spot!=null?h.rungs.reduce((b:any,r:any)=>Math.abs(r.strike-h.spot)<Math.abs(b.strike-h.spot)?r:b,h.rungs[0]).ticker:null;
   const refStrike=h?.rungs?.length&&h.kHour!=null?h.rungs.reduce((b:any,r:any)=>Math.abs(r.strike-h.kHour)<Math.abs(b.strike-h.kHour)?r:b,h.rungs[0]).ticker:null;
@@ -22,6 +24,7 @@ export default function Hourly(){
   return <>
     <div aria-hidden className="ambient" data-tone={!fresh?'warn':best?tone:'none'}/>
     <SiteHeader current="/hourly" aside={<span className="num hidden truncate text-xs text-muted xl:inline">{h?.event??'waiting for hourly market'}</span>}>
+      <SoundToggle prefs={sound.prefs} setPrefs={sound.setPrefs} ready={sound.ready}/>
       <Pill tone={fresh?'yes':'warn'}><span className={fresh?'pulse size-1.5 rounded-full bg-yes':'size-1.5 rounded-full bg-warn'}/>{fresh?'Live':connected?'Stale':'Reconnecting'}</Pill>
     </SiteHeader>
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 pt-4 pb-16 sm:px-6">

@@ -1,5 +1,6 @@
 import {it,expect} from 'vitest';
-import {detectEvents,type AlertSnapshot} from '../src/components/alert-events';
+import {detectEvents,snapshot,type AlertSnapshot} from '../src/components/alert-events';
+import {migratePrefs,defaultPrefs} from '../src/components/sounds';
 const base:AlertSnapshot={ticker:'A',tau:400,entryAt:300,ideaKey:null,ideaSide:null,exits:{},pnl:-5,day:'2026-10-07',liveDir:'UP',unreliable:false,locked:false};
 it('first snapshot is a silent baseline',()=>expect(detectEvents(null,{...base,exits:{A:'SELL NOW'}})).toEqual([]));
 it('new trade signal plays its side once',()=>{const yes={...base,ideaKey:'A:yes:0.5',ideaSide:'yes'};expect(detectEvents(base,yes)).toEqual(['buyYes']);expect(detectEvents(yes,yes)).toEqual([]);expect(detectEvents(base,{...base,ideaKey:'A:no:0.4',ideaSide:'no'})).toEqual(['buyNo']);});
@@ -27,3 +28,15 @@ it('a new coach warning plays the coach sound once; the first snapshot stays sil
   expect(detectEvents({...base,coachKey:null},{...base,coachKey:'size:1'})).toEqual(['coach']);
   expect(detectEvents({...base,coachKey:'size:1'},{...base,coachKey:'size:1'})).toEqual([]);
   expect(detectEvents({...base,coachKey:'size:1'},{...base,coachKey:'flip:2'})).toEqual(['coach']);});
+it('the hourly page follows the hour: its best idea, its exits, its up/down call and its timing',()=>{
+  const s=(o:any={})=>({config:{sweetMaxSeconds:900},guards:{pnl:0,today:'2026-10-07',locked:false},quality:{level:'solid'},evaluation:{idea:{side:'yes',price:.5}},ticker:'15M',market:{ticker:'15M'},tau:500,
+    hourly:{event:'KXBTCD-26OCT0720',tau:1000,ideas:[],exits:[],up:{direction:'UP'},...o}});
+  const a=snapshot(s(),true,'hourly');expect(a.ticker).toBe('KXBTCD-26OCT0720');expect(a.ideaKey).toBeNull();expect(a.liveDir).toBe('UP');
+  const b=snapshot(s({tau:890,ideas:[{ticker:'T1',side:'no',price:.3}],up:{direction:'DOWN'}}),true,'hourly');
+  expect(detectEvents(a,b)).toEqual(['buyNo','flipDown','entryWindow']);
+  expect(snapshot(s(),true,'15m').ideaKey).toBe('15M:yes:0.5');});
+it('sound is on by default; prefs saved before v2 are switched back on once, keeping the volume',()=>{
+  expect(defaultPrefs.enabled).toBe(true);expect(Object.values(defaultPrefs.categories).every(Boolean)).toBe(true);
+  const old=migratePrefs({enabled:false,volume:.3,categories:{signals:false,positions:true,results:true,calls:true,timing:true,warnings:false},repeatSell:false});
+  expect(old.enabled).toBe(true);expect(old.volume).toBe(.3);expect(old.categories.signals).toBe(true);expect(old.categories.warnings).toBe(true);
+  const chosen=migratePrefs({version:2,enabled:false,volume:.5,categories:{timing:false},repeatSell:true});expect(chosen.enabled).toBe(false);expect(chosen.categories.timing).toBe(false);expect(chosen.categories.signals).toBe(true);expect((chosen as any).version).toBeUndefined();});
