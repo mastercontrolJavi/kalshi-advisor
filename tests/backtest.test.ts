@@ -63,7 +63,7 @@ it('bankroll: staking everything is wiped out by the first loss; a small stake s
   const t=(pnl:number)=>({cluster:'c',ticker:'c',time:0,tau:600,side:'yes' as const,price:.5,cost:.5175,exitTau:null,exitReason:null,pnl,win:pnl>0});
   const trades=[t(.4825),t(.4825),t(-.5175)];
   expect(bankroll(trades,1,40,50,500).ruined).toBe(1);const small=bankroll(trades,.02,40,50,500);expect(small.ruined).toBe(0);expect(small.median).toBeGreaterThan(40);});
-import {ruleVerdict,exitVerdict,ruinVerdict,type Verdict} from '../src/backtest/verdict';
+import {ruleVerdict,exitVerdict,type Verdict} from '../src/backtest/verdict';
 import {finalMinuteStudy} from '../src/backtest/live';
 import {Journal} from '../src/engine/journal';
 const verdict=(o:Partial<Verdict>={}):Verdict=>({generated:new Date().toISOString(),from:Date.parse('2026-07-10')/1000,to:Date.parse('2026-10-08')/1000,rounds:8529,hours:1407,
@@ -78,7 +78,7 @@ it('the BUY verdict states the backtest result and calls an interval spanning ze
   expect(ruleVerdict(verdict({buy15Model:{n:6765,mean:-.012,ci:[-.021,-.002],early:0,late:0}}),'15m',Date.now(),'model').text).toMatch(/raw model.*−1\.2¢.*it lost money/);
   expect(ruleVerdict(verdict(),'15m',Date.now(),'model').text).toContain('Not backtested');
   expect(ruleVerdict(verdict({generated:'2026-09-01T00:00:00Z'}),'15m',Date.parse('2026-10-08')).text).toContain('over two weeks old');
-  expect(exitVerdict(verdict())).toContain('−1.3¢');expect(ruinVerdict(verdict())).toContain('staking everything fell below $2 in 100% of runs');});
+  expect(exitVerdict(verdict())).toContain('−1.3¢');});
 it('final-minute study reads settled rounds from the live journal, one entry per round',()=>{
   const j=new Journal(':memory:'),close=Date.parse('2026-10-08T00:30:00Z');
   for(const [ticker,result,p] of [['A','yes',.97],['B','no',.95]] as const){

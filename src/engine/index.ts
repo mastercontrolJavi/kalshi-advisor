@@ -25,7 +25,6 @@ import {rollupMarkets,buildAnalytics} from './analytics';
 import {HourlyBoard,HOURLY_SERIES,HOURLY_HORIZONS,ladder,impliedAbove,hourlyIdeas} from './hourly';
 import {buildHourlyHistory} from './rounds';
 import {priorFit} from './quant/stack';
-import {coach,accountLookup,type CoachState} from './coach';
 import {VERDICT_PATH,type Verdict} from '../backtest/verdict';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
@@ -60,22 +59,15 @@ const exitMemory=new Map<string,ExitMemory>();
 let verdict:Verdict|null=null,verdictMtime=-1;
 function loadVerdict(){try{const m=statSync(VERDICT_PATH).mtimeMs;if(m!==verdictMtime){verdict=JSON.parse(readFileSync(VERDICT_PATH,'utf8'));verdictMtime=m;journal.log('backtest-verdict-loaded',{generated:verdict?.generated});}}catch{verdict=null;verdictMtime=-1;}}
 loadVerdict();
-// Trade coach over real fills; recomputed when the account syncs, and every 10 s so warnings age out.
-let coachState:CoachState|null=null,coachKey='';const coachLogged=new Set<string>(),engineStarted=Date.now();
-function coachNow(now:number){
-  const key=`${account.updated}:${account.coachEvents.length}:${Math.floor(now/10000)}`;if(key===coachKey&&coachState)return coachState;coachKey=key;
-  const snapshots=journal.db.prepare('SELECT time,balance+COALESCE(portfolio_value,0) AS value FROM balances ORDER BY time').all() as {time:number;value:number}[];
-  const today=dayKey(now);coachState=coach(account.coachEvents,accountLookup(snapshots),now,t=>dayKey(t)===today);
-  for(const i of coachState.items)if(!coachLogged.has(i.id)){coachLogged.add(i.id);if(i.time>=engineStarted-120000)log('coach-warning',i);}
-  return coachState;
-}
+let settledOnce=false,calibrationKey='',sentCalibration:number|null=null;
 let previousTicker='',lastLoop=Date.now(),lastSecond=0,lastPublish=0,lastFastRefresh=0,settling=false,refreshing=false;
 const safe=(name:string,fn:()=>Promise<void>)=>void fn().catch(e=>log(name,{message:e.message}));
 async function refresh(){if(refreshing)return;refreshing=true;try{await kalshi.refresh();for(const m of kalshi.markets){known.set(m.ticker,m);journal.set('market:'+m.ticker,m);}await kalshi.fallback();}finally{refreshing=false;}}
 async function settlements(){
   if(settling)return;settling=true;
   try{const now=Date.now()+client.clockOffset;
-    for(const pending of journal.pendingMarkets()){
+    // Results normally land minutes after the close; after a restart look back 3 days once, then 3 hours.
+    for(const pending of journal.pendingMarkets(Date.now()-(settledOnce?3*3600000:3*86400000))){
       const cached=known.get(pending.ticker)??journal.get<Market|null>('market:'+pending.ticker,null);if(cached&&Date.parse(cached.close_time)>now)continue;
       const {market:m}=await client.get('/markets/'+encodeURIComponent(pending.ticker));known.set(m.ticker,m);
       const close=Date.parse(m.close_time),locked=filledSeconds(proxy.history,close-60000,close);
@@ -86,6 +78,7 @@ async function settlements(){
         journal.settle(m.ticker,m.result,now,actual,px,Number.isFinite(m.floor_strike)?m.floor_strike:null,m);
       }
     }
+    settledOnce=true;
   }finally{settling=false;}
 }
 const server=createServer(async(req,res)=>{
@@ -175,7 +168,10 @@ function refitQuant(){
   stack=fitStack(samples);const entry={time:Date.now(),n:stack.n,markets:stack.markets,active:stack.active,cv:stack.cv,weights:describe(stack),basis:basisState.correction};
   log('quant-fit',entry);journal.set('quantHistory',[...journal.get<any[]>('quantHistory',[]),entry].slice(-200));
 }
-const calibrationTimer=setInterval(()=>{loadVerdict();try{refitQuant();calibration=buildCalibration(journal,stack,basisState);}catch(e){log('calibration-error',{message:(e as Error).message});}},30000);
+// Rebuild calibration only when its inputs change (a settlement, a new call or paper result, a real trade). Rebuilding
+// every 30 s regardless took 0.5–1 s of the engine loop each time and grew with the journal.
+const calibrationInputs=()=>JSON.stringify(journal.db.prepare("SELECT (SELECT count(*) FROM outcomes) o,(SELECT count(*) FROM paper_trades INDEXED BY paper_status WHERE status='settled') p,(SELECT count(*) FROM opening_calls) oc,(SELECT count(*) FROM live_calls) lc,(SELECT count(*) FROM next_calls) nc,(SELECT count(*) FROM hourly_outcomes) ho,(SELECT count(*) FROM real_trades) rt").get())+':'+stack.fitted;
+const calibrationTimer=setInterval(()=>{loadVerdict();try{refitQuant();const key=calibrationInputs();if(key!==calibrationKey){calibrationKey=key;calibration=buildCalibration(journal,stack,basisState);}}catch(e){log('calibration-error',{message:(e as Error).message});}},30000);
 const loop=setInterval(()=>{
   const started=performance.now(),now=Date.now(),time=Math.floor((now+client.clockOffset)/1000)*1000;
   // Only a long gap means sleep/wake; a busy-machine stall of a few seconds leaves sockets intact, and restarting
@@ -189,14 +185,17 @@ const loop=setInterval(()=>{
     const spot=proxy.sample(time,config.staleMs),market=kalshi.markets.find(m=>Date.parse(m.open_time)<=time&&Date.parse(m.close_time)>time);
     const events=journal.realEvents(),today=dayKey(now),baselineKey='startBalance:'+today;
     const baseline=journal.get<number|null>(baselineKey,null);
-    if(baseline===null&&account.balance!==null){journal.set(baselineKey,account.balance);log('day-baseline',{day:today,balance:account.balance,source:'first observed cash balance; initial partial day'});}
-    const override=journal.get<string|null>('overrideDay',null),guards=guardrails(events,journal.get(baselineKey,account.balance??0),config,now,override);
+    // Baseline = account value (cash + open positions). Cash alone made the 2026-10-07 baseline $5.18 while money sat
+    // in positions, so the 10% daily limit was $0.52 and locked on the first small loss.
+    const accountValue=account.balance!==null?account.balance+(account.portfolioValue??0):null;
+    if(baseline===null&&accountValue!==null){journal.set(baselineKey,accountValue);log('day-baseline',{day:today,balance:accountValue,cash:account.balance,source:'first observed account value (cash + positions)'});}
+    const override=journal.get<string|null>('overrideDay',null),guards=guardrails(events,journal.get(baselineKey,accountValue??0),config,now,override);
     if(guards.dailyLocked)journal.set('lockedDay',today);
     if(journal.get('lockedDay','')===today&&override!==today){guards.dailyLocked=true;guards.locked=true;guards.reason='Daily loss limit reached';}
     const venueStates=Object.values(proxy.venues).map(v=>({...v,healthy:healthy(v,now,config.staleMs),age:now-v.updated}));
     const rawVol=volatility(proxy.history,config.halfLifeSeconds,config.realizedBlend),vol=warmVolatility(rawVol,journal.get<{sigma:number;time:number}|null>('lastSigma',null),config.minVolSamples,now);
     if(newSecond&&rawVol.count>=config.minVolSamples&&rawVol.sigma>0&&time%60000===0)journal.set('lastSigma',{sigma:rawVol.sigma,time:now});
-    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),coach:coachNow(now),backtest:verdict,next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory};
+    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory};
     if(!market){
       // Between windows: poll every second so the next market and its K are picked up immediately.
       if(now-lastFastRefresh>1000){lastFastRefresh=now;safe('market-refresh-error',refresh);}
@@ -279,7 +278,11 @@ const loop=setInterval(()=>{
     // Hourly board: recomputed once per second, reused between the faster publishes.
     if(newSecond){try{hourlyState=computeHourly(time,now,spot,vol,venueStates,guards);}catch(e){log('hourly-error',{message:(e as Error).message});}}
     state.hourly=hourlyState;
-    state.calibration=calibration;state.loopMs=performance.now()-started;const message=JSON.stringify(state);for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
+    // Calibration (~90 KB) goes out only when it changes and the window history (~80 KB) once a second; the page keeps
+    // the last copy. New connections get the full state on connect. This cut the 4 Hz push from ~200 KB to ~30 KB.
+    state.calibration=calibration;state.loopMs=performance.now()-started;
+    const sendCalibration=calibration?.updated!==sentCalibration;sentCalibration=calibration?.updated??null;
+    const message=JSON.stringify(sendCalibration&&newSecond?state:{...state,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
 const shutdown=()=>{for(const t of [loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,calibrationTimer,hourlyTimer,hourlySettleTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};

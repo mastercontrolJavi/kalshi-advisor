@@ -7,11 +7,13 @@ import {buildRounds} from './rounds';
 import {describe,effectiveWeights,type StackFit} from './quant/stack';
 export function clusterCI(rows:{ticker:string;pnl:number}[]){
   if(!rows.length)return {mean:null,low:null,high:null,markets:0,count:0};
-  const clusters=new Map<string,number[]>();for(const r of rows)clusters.set(r.ticker,[...(clusters.get(r.ticker)??[]),r.pnl]);
+  // Per-market sums are computed once; re-summing every market's trades inside each of the 2,000 resamples made
+  // buildCalibration take 0.6–1 s on a day of data and stall the engine loop every 30 s.
+  const clusters=new Map<string,{sum:number;n:number}>();for(const r of rows){const c=clusters.get(r.ticker);if(c){c.sum+=r.pnl;c.n++;}else clusters.set(r.ticker,{sum:r.pnl,n:1});}
   const groups=[...clusters.values()];
   if(groups.length<2)return {mean:mean(rows.map(r=>r.pnl)),low:null,high:null,markets:groups.length,count:rows.length};
   let seed=173;const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};const samples:number[]=[];
-  for(let b=0;b<2000;b++){let sum=0,n=0;for(let i=0;i<groups.length;i++){const g=groups[Math.floor(random()*groups.length)];sum+=g.reduce((s,x)=>s+x,0);n+=g.length;}samples.push(sum/n);}
+  for(let b=0;b<2000;b++){let sum=0,n=0;for(let i=0;i<groups.length;i++){const g=groups[Math.floor(random()*groups.length)];sum+=g.sum;n+=g.n;}samples.push(sum/n);}
   samples.sort((a,b)=>a-b);return {mean:mean(rows.map(r=>r.pnl)),low:samples[50],high:samples[1949],markets:groups.length,count:rows.length};
 }
 export function reliability(rows:{p:number;mid:number;y:number;ticker:string}[]){
@@ -28,6 +30,7 @@ export function openingScore(rows:{ticker:string;direction:string;p:number;base_
     midCount:withMid.length,callBrierMidSubset:brier(withMid,r=>r.p),midBrier:brier(withMid,r=>r.mid),
     recent:rows.slice(-10).reverse().map(r=>({ticker:r.ticker,direction:r.direction,p:r.p,result:r.result}))};
 }
+const paperCache=new WeakMap<Journal,{key:string;kinds:Record<string,any>;curve:any[];breakdown:any[]}>();
 export function buildCalibration(journal:Journal,stack?:StackFit,basis?:{correction:number;n:number}){
   // Fixed-horizon sampling: one paired prediction per settled market, nearest 180s within ±30s.
   const chosen=new Map<string,any>();
@@ -35,13 +38,23 @@ export function buildCalibration(journal:Journal,stack?:StackFit,basis?:{correct
   const fallback=journal.db.prepare('SELECT p,mid,tau FROM ticks WHERE ticker=? AND p IS NOT NULL AND mid IS NOT NULL AND tau BETWEEN 150 AND 210 ORDER BY ABS(tau-180),time LIMIT 1');
   for(const o of saved){const p=JSON.parse(o.context).pairedPrediction??fallback.get(o.ticker);if(p)chosen.set(o.ticker,{...p,ticker:o.ticker,result:o.result});}
   const rel=reliability([...chosen.values()].map(t=>({ticker:t.ticker,p:t.p,mid:t.mid,y:t.result==='yes'?1:0})));
-  const paper=journal.db.prepare(`SELECT p.*,s.tau,s.regime,s.edge FROM paper_trades p JOIN signals s ON p.signal_id=s.id ORDER BY COALESCE(p.settled_time,p.time),p.id`).all() as any[];
-  const settled=paper.filter(t=>t.status==='settled');
-  const byKind=(kind:string)=>{const r=settled.filter(t=>t.kind===kind);return {...clusterCI(r),predictedEV:r.length?mean(r.map(t=>t.edge)):null,totalPnl:r.reduce((s,t)=>s+t.pnl,0),resting:paper.filter(t=>t.kind===kind&&t.status==='resting').length,expired:paper.filter(t=>t.kind===kind&&t.status==='expired').length};};
-  const curveMap=new Map<number,{time:number;taker:number;maker:number;tactics:number;real:number}>();let taker=0,maker=0,tactics=0,real=0;
-  const timeline=[...settled.map(t=>({time:t.settled_time,kind:t.kind,pnl:t.pnl})),...journal.realEvents().filter(e=>e.pnl!==0).map(e=>({time:e.time,kind:'real',pnl:e.pnl}))].sort((a,b)=>a.time-b.time);
-  for(const e of timeline){if(e.kind==='taker')taker+=e.pnl;else if(e.kind==='maker')maker+=e.pnl;else if(e.kind==='scalp'||e.kind==='dip')tactics+=e.pnl;else real+=e.pnl;curveMap.set(e.time,{time:e.time,taker,maker,tactics,real});}
-  const breakdown=(dimension:string,key:(r:any)=>string)=>{const groups=new Map<string,any[]>();for(const r of settled){const bucket=key(r)+' · '+r.kind;groups.set(bucket,[...(groups.get(bucket)??[]),r]);}return [...groups].map(([bucket,rows])=>({dimension,bucket,...clusterCI(rows),pnl:rows.reduce((s,r)=>s+r.pnl,0),predictedEV:mean(rows.map(r=>r.edge))}));};
+  // Settled paper trades change only at settlements, but paper rows grow ~5,000 a day (mostly simulated makers): their
+  // aggregates are cached per journal and recomputed when the settled set or real P&L changes. Resting/expired counts
+  // are cheap and always fresh.
+  const counts=new Map((journal.db.prepare('SELECT kind,status,count(*) n FROM paper_trades GROUP BY kind,status').all() as {kind:string;status:string;n:number}[]).map(r=>[r.kind+':'+r.status,r.n]));
+  const realEvents=journal.realEvents(),settledKey=JSON.stringify(journal.db.prepare("SELECT count(*) n,max(settled_time) t,sum(pnl) p FROM paper_trades INDEXED BY paper_status WHERE status='settled'").get())+':'+realEvents.length+':'+realEvents.reduce((s,e)=>s+e.pnl,0);
+  let heavy=paperCache.get(journal);
+  if(heavy?.key!==settledKey){
+    const settled=journal.db.prepare(`SELECT p.id,p.time,p.ticker,p.kind,p.side,p.price,p.fee,p.status,p.filled_time,p.settled_time,p.pnl,s.tau,s.regime,s.edge FROM paper_trades p INDEXED BY paper_status JOIN signals s INDEXED BY signals_cover ON p.signal_id=s.id WHERE p.status='settled' ORDER BY COALESCE(p.settled_time,p.time),p.id`).all() as any[];
+    const kinds=Object.fromEntries(['scalp','dip','hourly','taker','maker'].map(kind=>{const r=settled.filter(t=>t.kind===kind);return [kind,{...clusterCI(r),predictedEV:r.length?mean(r.map(t=>t.edge)):null,totalPnl:r.reduce((s,t)=>s+t.pnl,0)}];}));
+    const curveMap=new Map<number,{time:number;taker:number;maker:number;tactics:number;real:number}>();let taker=0,maker=0,tactics=0,real=0;
+    const timeline=[...settled.map(t=>({time:t.settled_time,kind:t.kind,pnl:t.pnl})),...realEvents.filter(e=>e.pnl!==0).map(e=>({time:e.time,kind:'real',pnl:e.pnl}))].sort((a,b)=>a.time-b.time);
+    for(const e of timeline){if(e.kind==='taker')taker+=e.pnl;else if(e.kind==='maker')maker+=e.pnl;else if(e.kind==='scalp'||e.kind==='dip')tactics+=e.pnl;else real+=e.pnl;curveMap.set(e.time,{time:e.time,taker,maker,tactics,real});}
+    const breakdown=(dimension:string,key:(r:any)=>string)=>{const groups=new Map<string,any[]>();for(const r of settled){const bucket=key(r)+' · '+r.kind,g=groups.get(bucket);if(g)g.push(r);else groups.set(bucket,[r]);}return [...groups].map(([bucket,rows])=>({dimension,bucket,...clusterCI(rows),pnl:rows.reduce((s,r)=>s+r.pnl,0),predictedEV:mean(rows.map(r=>r.edge))}));};
+    heavy={key:settledKey,kinds,curve:[...curveMap.values()],breakdown:[...breakdown('Time remaining',r=>r.tau<=120?'60–120s':r.tau<=300?'121–300s':'301s+'),...breakdown('Vol regime',r=>r.regime),...breakdown('Net edge',r=>r.edge<.04?'2–4¢':r.edge<.08?'4–8¢':'8¢+')]};
+    paperCache.set(journal,heavy);
+  }
+  const byKind=(kind:string)=>({...heavy!.kinds[kind],resting:counts.get(kind+':resting')??0,expired:counts.get(kind+':expired')??0});
   const outcomes=journal.db.prepare('SELECT * FROM outcomes ORDER BY time').all() as any[];
   const errors=outcomes.map(o=>o.basis_error).filter(x=>x!==null) as number[];
   const hist=new Map<string,number>();for(const error of errors){const bin=Math.floor(error/5)*5,label=`${bin} to ${bin+5}`;hist.set(label,(hist.get(label)??0)+1);}
@@ -52,5 +65,5 @@ export function buildCalibration(journal:Journal,stack?:StackFit,basis?:{correct
   const next=NEXT_HORIZONS.map(h=>({horizon:h,...openingScore(nextRows.filter(r=>r.horizon===h))}));
   const quant=stack?{active:stack.active,n:stack.n,markets:stack.markets,cv:stack.cv,weights:describe(stack),effective:effectiveWeights(stack),fittedEffective:effectiveWeights(stack,'fittedWeights'),basis,history:journal.get<any[]>('quantHistory',[]).map(h=>({time:h.time,markets:h.markets,stack:h.cv?.stack,prior:h.cv?.prior,model:h.cv?.model,kalshi:h.cv?.kalshi}))}:null;
   const {rounds,trends}=buildRounds(journal.db);
-  return {updated:Date.now(),rounds,roundTrends:trends,opening,live,next,quant,scalp:byKind('scalp'),dip:byKind('dip'),hourly:byKind('hourly'),...rel,taker:byKind('taker'),maker:byKind('maker'),curve:[...curveMap.values()],breakdown:[...breakdown('Time remaining',r=>r.tau<=120?'60–120s':r.tau<=300?'121–300s':'301s+'),...breakdown('Vol regime',r=>r.regime),...breakdown('Net edge',r=>r.edge<.04?'2–4¢':r.edge<.08?'4–8¢':'8¢+')],basis:errors.length?{count:errors.length,mean:mean(errors),histogram:[...hist].map(([bin,count])=>({bin,count}))}:{count:0,mean:null,histogram:[]},outcomes:outcomes.slice(-20).map(o=>({...o,context:undefined})),totalSignals:(journal.db.prepare('SELECT COUNT(*) AS n FROM signals').get() as any).n};
+  return {updated:Date.now(),rounds,roundTrends:trends,opening,live,next,quant,scalp:byKind('scalp'),dip:byKind('dip'),hourly:byKind('hourly'),...rel,taker:byKind('taker'),maker:byKind('maker'),curve:heavy.curve,breakdown:heavy.breakdown,basis:errors.length?{count:errors.length,mean:mean(errors),histogram:[...hist].map(([bin,count])=>({bin,count}))}:{count:0,mean:null,histogram:[]},outcomes:outcomes.slice(-20).map(o=>({...o,context:undefined})),totalSignals:(journal.db.prepare('SELECT COUNT(*) AS n FROM signals').get() as any).n};
 }

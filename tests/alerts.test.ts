@@ -23,11 +23,6 @@ it('take profit and cut loss each have their own alert, then hold when back in t
   expect(detectEvents({...base,exits:{A:'HOLD'}},{...base,exits:{A:'TAKE PROFIT'}})).toEqual(['takeProfit']);expect(detectEvents({...base,exits:{A:'HOLD'}},{...base,exits:{A:'CUT LOSS'}})).toEqual(['cutLoss']);
   expect(detectEvents({...base,exits:{A:'TAKE PROFIT'}},{...base,exits:{A:'TAKE PROFIT'}})).toEqual([]);expect(detectEvents({...base,exits:{A:'TAKE PROFIT'}},{...base,exits:{A:'HOLD'}})).toEqual(['hold']);});
 it('a new scalp/dip setup pings once',()=>{const s1={...base,setupKey:'A:scalp:yes'};expect(detectEvents(base,s1)).toEqual(['setup']);expect(detectEvents(s1,s1)).toEqual([]);});
-it('a new coach warning plays the coach sound once; the first snapshot stays silent',()=>{
-  expect(detectEvents(null,{...base,coachKey:'size:1'})).toEqual([]);
-  expect(detectEvents({...base,coachKey:null},{...base,coachKey:'size:1'})).toEqual(['coach']);
-  expect(detectEvents({...base,coachKey:'size:1'},{...base,coachKey:'size:1'})).toEqual([]);
-  expect(detectEvents({...base,coachKey:'size:1'},{...base,coachKey:'flip:2'})).toEqual(['coach']);});
 it('the hourly page follows the hour: its best idea, its exits, its up/down call and its timing',()=>{
   const s=(o:any={})=>({config:{sweetMaxSeconds:900},guards:{pnl:0,today:'2026-10-07',locked:false},quality:{level:'solid'},evaluation:{idea:{side:'yes',price:.5}},ticker:'15M',market:{ticker:'15M'},tau:500,
     hourly:{event:'KXBTCD-26OCT0720',tau:1000,ideas:[],exits:[],up:{direction:'UP'},...o}});

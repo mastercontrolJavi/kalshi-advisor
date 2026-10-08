@@ -38,7 +38,7 @@ export function normalizeAccount(fills:any[],settlements:any[],series:string[]=[
   }return events.sort((a,b)=>a.time-b.time);
 }
 export class Account {
-  balance:number|null=null;portfolioValue:number|null=null;ready=false;updated=0;error='Credentials unavailable';positions:unknown[]=[];coachEvents:RealEvent[]=[];openCosts=new Map<string,OpenCost>();positionsUpdated=0;private busy=false;private again=false;
+  balance:number|null=null;portfolioValue:number|null=null;ready=false;updated=0;error='Credentials unavailable';positions:unknown[]=[];openCosts=new Map<string,OpenCost>();positionsUpdated=0;private busy=false;private again=false;
   // Fill warnings never change once computed; recomputing ~400 of them every sync stalled the engine loop ~300 ms.
   private warnings=new Map<string,string[]>();
   constructor(private client:KalshiClient,private journal:Journal){}
@@ -67,8 +67,8 @@ export class Account {
       const raw=this.journal.db.prepare('SELECT type,context FROM account_raw ORDER BY time').all() as {type:string;context:string}[];
       const rawFills=raw.filter(r=>r.type==='fill').map(r=>JSON.parse(r.context)),rawSettlements=raw.filter(r=>r.type==='settlement').map(r=>JSON.parse(r.context));
       const events=normalizeAccount(rawFills,rawSettlements);
-      // The coach watches every Bitcoin market you trade, hourly included; P&L and guardrails stay 15-minute only.
-      const openCosts=new Map<string,OpenCost>();this.coachEvents=normalizeAccount(rawFills,rawSettlements,['KXBTC15M','KXBTCD'],openCosts);this.openCosts=openCosts;
+      // Open-position costs (with actual fees) for every Bitcoin market, hourly included; P&L and guardrails stay 15-minute only.
+      const openCosts=new Map<string,OpenCost>();normalizeAccount(rawFills,rawSettlements,['KXBTC15M','KXBTCD'],openCosts);this.openCosts=openCosts;
       const config=this.journal.config();
       for(const e of events.filter(e=>e.type==='fill')){
         const cached=this.warnings.get(e.id);if(cached){e.warnings=cached;continue;}

@@ -1,6 +1,6 @@
 'use client';
 /** Synthesized alert sounds (Web Audio, no files). Each event has a distinct contour so it is recognisable without looking. */
-export type SoundName='buyYes'|'buyNo'|'sell'|'hold'|'win'|'loss'|'flipUp'|'flipDown'|'newWindow'|'entryWindow'|'finalMinute'|'closingUp'|'closingDown'|'setup'|'takeProfit'|'cutLoss'|'warning'|'lock'|'coach';
+export type SoundName='buyYes'|'buyNo'|'sell'|'hold'|'win'|'loss'|'flipUp'|'flipDown'|'newWindow'|'entryWindow'|'finalMinute'|'closingUp'|'closingDown'|'setup'|'takeProfit'|'cutLoss'|'warning'|'lock';
 export type Category='signals'|'positions'|'results'|'calls'|'timing'|'warnings';
 export const soundCatalog:{name:SoundName;label:string;category:Category}[]=[
   {name:'buyYes',label:'BUY YES signal',category:'signals'},{name:'buyNo',label:'BUY NO signal',category:'signals'},{name:'setup',label:'Scalp / dip setup appears',category:'signals'},
@@ -8,7 +8,7 @@ export const soundCatalog:{name:SoundName;label:string;category:Category}[]=[
   {name:'win',label:'Win / profit',category:'results'},{name:'loss',label:'Loss',category:'results'},
   {name:'flipUp',label:'Live call flips UP',category:'calls'},{name:'flipDown',label:'Live call flips DOWN',category:'calls'},
   {name:'newWindow',label:'New 15-min window',category:'timing'},{name:'entryWindow',label:'Entry window opens (5:00 left)',category:'timing'},{name:'finalMinute',label:'Final minute (no call)',category:'timing'},{name:'closingUp',label:'Closing call: UP into the final minute',category:'calls'},{name:'closingDown',label:'Closing call: DOWN into the final minute',category:'calls'},
-  {name:'warning',label:'Data unreliable / connection lost',category:'warnings'},{name:'lock',label:'Guardrail lock',category:'warnings'},{name:'coach',label:'Coach: risky trade (too big, switching sides, chasing, lottery ticket)',category:'warnings'}
+  {name:'warning',label:'Data unreliable / connection lost',category:'warnings'},{name:'lock',label:'Guardrail lock',category:'warnings'}
 ];
 export const categoryLabels:Record<Category,string>={signals:'Trade signals',positions:'Hold / sell',results:'Wins & losses',calls:'Live call flips',timing:'Window timing',warnings:'Warnings'};
 export interface SoundPrefs {enabled:boolean;volume:number;categories:Record<Category,boolean>;repeatSell:boolean}
@@ -43,8 +43,7 @@ const scores:Record<SoundName,Note[]>={
   cutLoss:[[880,0,.12,'sawtooth',.5],[660,.16,.12,'sawtooth',.5],[440,.32,.3,'sawtooth',.5]],
   setup:[[1568,0,.08,'sine',.7],[2093,.1,.14,'sine',.6]],
   warning:[[220,0,.18,'sawtooth',.5],[220,.26,.18,'sawtooth',.5]],
-  lock:[[150,0,.22,'square',.5],[150,.3,.22,'square',.5],[110,.6,.4,'square',.5]],
-  coach:[[587.33,0,.16,'square',.45],[392,.2,.16,'square',.45],[587.33,.4,.16,'square',.45],[392,.6,.3,'square',.45]]
+  lock:[[150,0,.22,'square',.5],[150,.3,.22,'square',.5],[110,.6,.4,'square',.5]]
 };
 export class SoundEngine {
   private ctx:AudioContext|null=null;

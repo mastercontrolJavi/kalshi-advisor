@@ -5,7 +5,7 @@ import {useSoundAlerts} from './use-sound-alerts';
 import {SoundToggle} from './sound-panel';
 import {SiteHeader} from './site-header';
 import {Card} from './ui/card';
-import {Pill,ProbBar,Collapsible,BacktestNote,Coach,type Tone} from './panels';
+import {Pill,ProbBar,Collapsible,BacktestNote,type Tone} from './panels';
 import {cn} from '@/lib/utils';
 import {dollars,signedDollars,cents,signedCents,pct,qty,mmss} from './format';
 const et=(t:number|null|undefined)=>t?new Date(t).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit'})+' ET':'—';
@@ -56,7 +56,6 @@ export default function Hourly(){
         {h.exits.map((e:any)=><div key={e.ticker} className="flex flex-wrap items-end justify-between gap-4 border-t border-line py-3 first:border-0 first:pt-0"><div><div className={cn('font-display text-4xl font-bold uppercase',{'RIDE':'text-yes','TAKE PROFIT':'text-yes','LET IT SETTLE':'text-yes','CUT LOSS':'text-no','SELL NOW':'text-warn'}[e.action as string]??'text-fg')}>{e.action}</div>
           <div className="mt-1 text-sm">{qty(e.contracts)} {e.side.toUpperCase()} on above <span className="num">${Math.round(e.strike??0).toLocaleString()}</span> · cost <span className="num">{cents(e.avgCost)}</span>{e.costSource==='exposure'?' (before fees)':' incl. fees'} · win chance <span className="num">{pct(e.winProb,0)}</span></div><p className="mt-1 text-sm text-muted">{String(e.reason).split(' Plan: ')[0]}</p></div>
           <div className="text-right"><div className="label">P&L if sold</div><div className={cn('num text-2xl',e.unrealized>0?'text-yes':e.unrealized<0?'text-no':'')}>{signedDollars(e.unrealized)}</div></div></div>)}</Card>:null}
-      <Coach s={s}/>
       <Collapsible open title="Strike ladder" icon={<Layers aria-hidden className="size-4 text-info"/>} aside={`${view.length} strikes near the price · updated ${h.updated?Math.max(0,Math.round((Date.now()-h.updated)/1000)):'—'}s ago`}>
         <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['BTC above','vs now','Kalshi bid / ask','Kalshi','Quant','Buy YES edge','Buy NO edge'].map(t=><th key={t} scope="col" className="pb-2 pr-3 font-medium">{t}</th>)}</tr></thead>
           <tbody>{view.map((r:any)=><tr key={r.ticker} className={cn('border-t border-line',r.ticker===spotStrike&&'bg-info/5',best?.ticker===r.ticker&&'bg-yes-dim/30')}>

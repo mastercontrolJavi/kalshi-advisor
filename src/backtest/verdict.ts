@@ -35,7 +35,3 @@ export function exitVerdict(v:Verdict|null){
   if(!v)return null;const f=v.exits.fixed,t=v.exits.trailing;
   return `Backtest: versus holding the same entries, take-profit/stop-loss ${c(f.mean)} and the trailing plan ${c(t.mean)} per trade.`;
 }
-export function ruinVerdict(v:Verdict|null){
-  if(!v?.ruin?.length)return null;const pct=(x:number)=>`${Math.round(x*100)}%`;
-  return `Backtest, 100 trades from $40: ${v.ruin.map(r=>`staking ${r.stake===1?'everything':pct(r.stake)} fell below $2 in ${pct(r.ruined)} of runs`).join(' · ')}.`;
-}

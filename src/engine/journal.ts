@@ -26,7 +26,8 @@ export class Journal {
       CREATE TABLE IF NOT EXISTS hourly_calls(event TEXT NOT NULL,horizon INTEGER NOT NULL,time INTEGER NOT NULL,tau REAL NOT NULL,k_hour REAL NOT NULL,direction TEXT NOT NULL,p REAL NOT NULL,base_p REAL NOT NULL,kalshi REAL,context TEXT NOT NULL,PRIMARY KEY(event,horizon));
       CREATE TABLE IF NOT EXISTS hourly_outcomes(event TEXT PRIMARY KEY,time INTEGER NOT NULL,settle REAL NOT NULL,k_hour REAL,up INTEGER,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS balances(time INTEGER PRIMARY KEY,balance REAL NOT NULL,portfolio_value REAL);
-      CREATE TABLE IF NOT EXISTS account_raw(id TEXT PRIMARY KEY,type TEXT NOT NULL,time INTEGER NOT NULL,context TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS account_raw(id TEXT PRIMARY KEY,type TEXT NOT NULL,time INTEGER NOT NULL,context TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS paper_status ON paper_trades(status,ticker);CREATE INDEX IF NOT EXISTS signals_cover ON signals(id,tau,regime,edge);`);
   }
   log(event:string,context:unknown){this.db.prepare('INSERT INTO events(time,event,context) VALUES(?,?,?)').run(Date.now(),event,JSON.stringify(context));}
   get<T>(key:string,fallback:T):T{const row=this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as {value:string}|undefined;return row?JSON.parse(row.value):fallback;}
@@ -89,7 +90,9 @@ export class Journal {
   real(events:RealEvent[]){this.realCache=null;const stmt=this.db.prepare('INSERT OR REPLACE INTO real_trades VALUES(?,?,?,?,?,?,?)');this.db.transaction(()=>{for(const e of events)stmt.run(e.id,e.time,e.ticker,e.type,e.pnl,e.contracts,JSON.stringify(e));})();}
   realEvents():RealEvent[]{return this.realCache??=(this.db.prepare('SELECT context FROM real_trades ORDER BY time').all() as {context:string}[]).map(r=>JSON.parse(r.context));}
   restoreHistory(){return this.db.prepare('SELECT time,proxy AS price FROM ticks WHERE proxy IS NOT NULL AND time>? GROUP BY time ORDER BY time').all(Date.now()-7200000) as {time:number;price:number}[];}
-  pendingMarkets(){return this.db.prepare('SELECT ticker,MAX(time) AS time FROM ticks WHERE ticker NOT IN (SELECT ticker FROM outcomes) GROUP BY ticker').all() as {ticker:string;time:number}[];}
+  /** Markets with ticks since `since` and no recorded outcome. Reads only the UNIQUE(time,ticker) index (~3 ms); scanning all
+   *  30 days of ticks every 10 s grew with the journal. */
+  pendingMarkets(since=0){return this.db.prepare('SELECT ticker,MAX(time) AS time FROM ticks INDEXED BY sqlite_autoindex_ticks_1 WHERE time>=? AND ticker NOT IN (SELECT ticker FROM outcomes) GROUP BY ticker').all(since) as {ticker:string;time:number}[];}
   prune(now=Date.now()){this.db.prepare('DELETE FROM ticks WHERE time<?').run(now-30*86400000);}
   expire(now:number){this.db.prepare("UPDATE paper_trades SET status='expired',settled_time=? WHERE status='resting' AND json_extract(context,'$.close')<=?").run(now,now);}
   export(table:string){if(!tables.includes(table as any))throw new Error('Unknown journal table');const rows=this.db.prepare(`SELECT * FROM ${table}`).all() as Record<string,unknown>[];

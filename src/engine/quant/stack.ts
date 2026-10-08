@@ -29,6 +29,10 @@ export interface StackSample extends StackInputs {y:0|1;ticker:string;horizon:st
  * 20 windows the prior blend (0.1865 Brier) beat both the raw model (0.1912) and the fitted weights (0.1939).
  */
 export const MIN_MARKETS=30,ADOPT_MARGIN=.002;
+/** Cross-validation folds, grouped by market. Leave-one-market-out refit once per market and cost O(markets²): 72 ms at
+ *  64 markets, ~6–8 s of blocked engine loop after a week. Up to CV_FOLDS markets it is still exactly leave-one-out;
+ *  30 folds at 700 markets takes ~0.25 s once per settlement. */
+export const CV_FOLDS=30;
 export interface StackFit {weights:number[];fittedWeights:number[];active:'prior'|'fitted';n:number;markets:number;cv:{stack:number|null;prior:number|null;model:number|null;kalshi:number|null;markets:number};fitted:number}
 export const priorFit=():StackFit=>({weights:[...PRIOR_MEAN],fittedWeights:[...PRIOR_MEAN],active:'prior',n:0,markets:0,cv:{stack:null,prior:null,model:null,kalshi:null,markets:0},fitted:0});
 const squash=(v:number|null)=>v===null||!Number.isFinite(v)?0:Math.tanh(v);
@@ -51,8 +55,9 @@ function solve(A:number[][],b:number[]):number[]{
   return M.map(r=>r[n]);
 }
 /** MAP logistic regression by Newton–Raphson with a Gaussian prior (ridge toward PRIOR_MEAN). */
-export function fitWeights(samples:StackSample[],iterations=25):number[]{
-  let w=[...PRIOR_MEAN];const X=samples.map(features),d=w.length;
+/** `start` warm-starts Newton (the problem is convex, so the optimum is the same; it just converges in fewer steps). */
+export function fitWeights(samples:StackSample[],iterations=25,start:number[]=PRIOR_MEAN):number[]{
+  let w=[...start];const X=samples.map(features),d=w.length;
   for(let it=0;it<iterations;it++){
     const g=w.map((wk,k)=>PRIOR_PRECISION[k]*(wk-PRIOR_MEAN[k])),H=Array.from({length:d},(_,i)=>Array.from({length:d},(_,j)=>i===j?PRIOR_PRECISION[i]:0));
     X.forEach((x,n)=>{const p=sigmoid(x.reduce((s,v,k)=>s+v*w[k],0)),r=p-samples[n].y,v=Math.max(p*(1-p),1e-6);
@@ -67,8 +72,9 @@ export function fitStack(samples:StackSample[],now=Date.now()):StackFit{
   if(!samples.length)return {...priorFit(),fitted:now};
   const tickers=[...new Set(samples.map(s=>s.ticker))],weights=fitWeights(samples);
   const cvP:number[]=[],priorP:number[]=[],ys:number[]=[],modelP:number[]=[],kalshiP:number[]=[],kalshiY:number[]=[];
-  if(tickers.length>=3)for(const t of tickers){
-    const held=samples.filter(s=>s.ticker===t),w=fitWeights(samples.filter(s=>s.ticker!==t));
+  const folds=Math.min(tickers.length,CV_FOLDS),fold=new Map([...tickers].sort().map((t,i)=>[t,i%folds]));
+  if(tickers.length>=3)for(let f=0;f<folds;f++){
+    const held=samples.filter(s=>fold.get(s.ticker)===f),w=fitWeights(samples.filter(s=>fold.get(s.ticker)!==f),25,weights);
     for(const s of held){cvP.push(predict({...priorFit(),weights:w},s).p);priorP.push(predict(priorFit(),s).p);ys.push(s.y);modelP.push(s.modelP);if(s.mid!==null){kalshiP.push(s.mid);kalshiY.push(s.y);}}
   }
   const cv={stack:brier(cvP,ys),prior:brier(priorP,ys),model:brier(modelP,ys),kalshi:brier(kalshiP,kalshiY),markets:tickers.length>=3?tickers.length:0};

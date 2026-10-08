@@ -1,10 +1,10 @@
 'use client';
 import {useEffect,useRef,type ReactNode} from 'react';
-import {Check,X,Info,Clock,Zap,TrendingDown,ChevronRight,ArrowUpRight,ArrowDownRight,Minus,Radio,Gauge,Wallet,BookOpen,Layers,ShieldCheck,Activity,TriangleAlert,Crosshair,FlaskConical,ShieldAlert} from 'lucide-react';
+import {Check,X,Info,Clock,Zap,TrendingDown,ChevronRight,ArrowUpRight,ArrowDownRight,Minus,Radio,Gauge,Wallet,BookOpen,Layers,ShieldCheck,Activity,TriangleAlert,Crosshair,FlaskConical} from 'lucide-react';
 import {Card} from './ui/card';
 import {cn} from '@/lib/utils';
 import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,ago} from './format';
-import {ruleVerdict,exitVerdict,ruinVerdict} from '@/backtest/verdict';
+import {ruleVerdict,exitVerdict} from '@/backtest/verdict';
 
 export type Tone='yes'|'no'|'warn'|'neutral';
 const toneText:Record<Tone,string>={yes:'text-yes',no:'text-no',warn:'text-warn',neutral:'text-fg'};
@@ -47,22 +47,6 @@ export function BacktestNote({s,which}:{s:any;which:'15m'|'hourly'}){
   const v=ruleVerdict(s?.backtest??null,which,Date.now(),which==='15m'&&s?.quant?.signalSource==='model'?'model':'quant');
   return <div className={cn('mt-3 flex items-start gap-2 rounded-xl border px-3 py-2 text-sm',v.tone==='warn'?'border-warn/40 bg-warn-dim/30':v.tone==='yes'?'border-yes/35 bg-yes-dim/30':'border-line bg-surface-2/60')}>
     <FlaskConical aria-hidden className={cn('mt-0.5 size-4 shrink-0',v.tone==='warn'?'text-warn':v.tone==='yes'?'text-yes':'text-muted')}/><span>{v.text}</span></div>;
-}
-/** Trade coach: warnings from your real fills (too big, switching sides, chasing a loss, lottery tickets). */
-/** Minimizable (remembered per browser); when minimized the summary line still shows the status in colour. */
-export function Coach({s}:{s:any}){
-  const c=s?.coach,items:any[]=c?.items??[],ruin=ruinVerdict(s?.backtest??null),stop=c?.level==='stop',caution=c?.level==='caution';
-  const counts=['size','flip','chase','longshot'].filter(k=>c?.counts?.[k]).map(k=>`${c.counts[k]} ${({size:'big bet',flip:'side switch',chase:'chase',longshot:'lottery ticket'} as any)[k]}${c.counts[k]>1?k==='flip'?'es':'s':''}`).join(' · ');
-  const aside=!items.length?(s?.account?.ready?'No risky trades today':'Waiting for account')
-    :<span className={stop?'text-no':caution?'text-warn':'text-muted'}>{stop?'Slow down: risky trades in the last hour':caution?'Careful: a risky trade in the last hour':'Earlier today'}<span className="hidden sm:inline"> · {counts} today</span></span>;
-  return <Collapsible open remember="coach" title="Coach" className={stop?'border-no/50':caution?'border-warn/50':undefined}
-    icon={items.length?<ShieldAlert aria-hidden className={cn('size-4',stop?'text-no':caution?'text-warn':'text-faint')}/>:<ShieldCheck aria-hidden className="size-4 text-faint"/>} aside={aside}>
-    {!items.length?<p className="text-sm text-muted">Nothing flagged today. The coach warns about trades that cost 10% or more of the account, switching sides in the same market, buying again within 3 minutes of a loss, and $1+ on contracts at 5¢ or less.</p>:<div className="space-y-3">
-    {stop?<div className="font-display text-5xl leading-none font-bold text-no uppercase">Slow down</div>:null}
-    <p className="text-xs text-muted sm:hidden">{counts} today</p>
-    <ul className="space-y-2">{items.map((i:any)=><li key={i.id} className={cn('flex items-start gap-2 rounded-xl border px-3 py-2 text-sm',i.level==='stop'?'border-no/40 bg-no-dim/30':'border-warn/35 bg-warn-dim/25')}>
-      <TriangleAlert aria-hidden className={cn('mt-0.5 size-4 shrink-0',i.level==='stop'?'text-no':'text-warn')}/><div className="min-w-0"><div className="font-medium">{i.title} <span className="num ml-1 text-xs font-normal text-faint">{new Date(i.time).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}</span></div><div className="text-fg/85">{i.text}</div></div></li>)}</ul>
-    {ruin?<p className="text-xs text-faint">{ruin}</p>:null}</div>}</Collapsible>;
 }
 
 export function WindowBar({s}:{s:any}){

@@ -28,3 +28,12 @@ it('a sync requested while one is running is queued, not dropped',async()=>{
   const client:any={authenticated:true,limits:null,get:async(path:string)=>{if(path==='/portfolio/balance'){balanceCalls++;if(balanceCalls===1)await gate;return {balance:1000,portfolio_value:0};}return {};},pages:async()=>[]};
   const account=new Account(client,new Journal(':memory:'));const first=account.sync();await account.sync();expect(balanceCalls).toBe(1);
   release();await first;await new Promise(r=>setTimeout(r,20));expect(balanceCalls).toBe(2);expect(account.ready).toBe(true);});
+it('hourly fills are normalized for open-position costs while P&L stays 15-minute only',async()=>{
+  const {normalizeAccount}=await import('../src/engine/account');
+  const fills=[{fill_id:'h',ticker:'KXBTCD-26OCT0720-T83199.99',outcome_side:'yes',book_side:'bid',count_fp:'10',yes_price_dollars:'.5',no_price_dollars:'.5',fee_cost:'.1',created_time:'2026-10-08T00:00:00Z'}];
+  const open=new Map();expect(normalizeAccount(fills,[])).toHaveLength(0);expect(normalizeAccount(fills,[],['KXBTC15M','KXBTCD'],open)).toHaveLength(1);
+  expect(open.get('KXBTCD-26OCT0720-T83199.99').avgCost).toBeCloseTo(.51,9);});
+it('pending markets only look at recent ticks',async()=>{
+  const {Journal}=await import('../src/engine/journal');const j=new Journal(':memory:'),now=Date.now();
+  j.tick({time:now-5*86400000,ticker:'OLD',proxy:1,K:1,tau:1,sigma:0,p:.5,q:.5,mid:.5,regime:'calm'});j.tick({time:now-60000,ticker:'NEW',proxy:1,K:1,tau:1,sigma:0,p:.5,q:.5,mid:.5,regime:'calm'});
+  expect(j.pendingMarkets(now-3*3600000).map(r=>r.ticker)).toEqual(['NEW']);expect(j.pendingMarkets().map(r=>r.ticker).sort()).toEqual(['NEW','OLD']);});
