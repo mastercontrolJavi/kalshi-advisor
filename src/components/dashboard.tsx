@@ -9,7 +9,7 @@ import Settings from './settings';
 import {Button} from './ui/button';
 import {Input} from './ui/input';
 import {Card} from './ui/card';
-import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Tactics,Session,Feeds,Collapsible,WindowBar,Pill,RecentRounds,actionTone} from './panels';
+import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Tactics,Session,Feeds,Collapsible,WindowBar,Pill,RecentRounds,Coach,actionTone} from './panels';
 import {SiteHeader} from './site-header';
 import {cn} from '@/lib/utils';
 import {ago,signedDollars} from './format';
@@ -33,6 +33,7 @@ export default function Dashboard(){
         <div className="lg:col-span-8"><SignalPanel s={s} fresh={fresh}/></div>
         <div className="lg:col-span-4"><ForecastPanel s={s} fresh={fresh}/></div>
       </div>
+      <Coach s={s}/>
       <Positions s={s} fresh={fresh}/>
       <Collapsible open title="Scalp & dip" icon={<Crosshair aria-hidden className="size-4 text-info"/>} aside={fresh&&s?.tactics?.ideas?.length?<span className="text-yes">{s.tactics.ideas.length} setup{s.tactics.ideas.length>1?'s':''} now</span>:'intra-window setups'}><Tactics s={s} fresh={fresh}/></Collapsible>
       <Instruments s={s}/>

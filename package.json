@@ -11,7 +11,8 @@
     "shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-shortcut.ps1",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "check": "npm run test && npm run typecheck"
+    "check": "npm run test && npm run typecheck",
+    "backtest": "tsx scripts/backtest.ts"
   },
   "dependencies": {
     "next": "^15.5.9",

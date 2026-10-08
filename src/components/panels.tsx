@@ -1,9 +1,10 @@
 'use client';
 import {useEffect,useRef,type ReactNode} from 'react';
-import {Check,X,Info,Clock,Zap,TrendingDown,ChevronRight,ArrowUpRight,ArrowDownRight,Minus,Radio,Gauge,Wallet,BookOpen,Layers,ShieldCheck,Activity,TriangleAlert,Crosshair} from 'lucide-react';
+import {Check,X,Info,Clock,Zap,TrendingDown,ChevronRight,ArrowUpRight,ArrowDownRight,Minus,Radio,Gauge,Wallet,BookOpen,Layers,ShieldCheck,Activity,TriangleAlert,Crosshair,FlaskConical,ShieldAlert} from 'lucide-react';
 import {Card} from './ui/card';
 import {cn} from '@/lib/utils';
 import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,ago} from './format';
+import {ruleVerdict,exitVerdict,ruinVerdict} from '@/backtest/verdict';
 
 export type Tone='yes'|'no'|'warn'|'neutral';
 const toneText:Record<Tone,string>={yes:'text-yes',no:'text-no',warn:'text-warn',neutral:'text-fg'};
@@ -38,6 +39,26 @@ export function ProbBar({p,mid,label='Model'}:{p:number|null;mid?:number|null;la
   </div>;
 }
 
+/** How the same BUY rule did on past rounds (npm run backtest), shown beside every BUY signal. */
+export function BacktestNote({s,which}:{s:any;which:'15m'|'hourly'}){
+  const v=ruleVerdict(s?.backtest??null,which,Date.now(),which==='15m'&&s?.quant?.signalSource==='model'?'model':'quant');
+  return <div className={cn('mt-3 flex items-start gap-2 rounded-xl border px-3 py-2 text-sm',v.tone==='warn'?'border-warn/40 bg-warn-dim/30':v.tone==='yes'?'border-yes/35 bg-yes-dim/30':'border-line bg-surface-2/60')}>
+    <FlaskConical aria-hidden className={cn('mt-0.5 size-4 shrink-0',v.tone==='warn'?'text-warn':v.tone==='yes'?'text-yes':'text-muted')}/><span>{v.text}</span></div>;
+}
+/** Trade coach: warnings from your real fills (too big, switching sides, chasing a loss, lottery tickets). */
+export function Coach({s}:{s:any}){
+  const c=s?.coach,items:any[]=c?.items??[],ruin=ruinVerdict(s?.backtest??null);
+  if(!items.length)return <Card className="flex min-h-14 flex-wrap items-center gap-3 py-3"><ShieldCheck aria-hidden className="size-4 text-faint"/><span className="label">Coach</span><span className="ml-auto text-sm text-muted">{s?.account?.ready?'No risky trades today':'Waiting for account'}</span></Card>;
+  const stop=c.level==='stop',caution=c.level==='caution';
+  return <Card className={cn('rise',stop?'border-no/50':caution?'border-warn/50':'border-line')}>
+    <div className="flex flex-wrap items-center gap-2"><ShieldAlert aria-hidden className={cn('size-4',stop?'text-no':caution?'text-warn':'text-faint')}/><h2 className="label">Coach</h2>
+      <span className={cn('ml-auto text-xs',stop?'text-no':caution?'text-warn':'text-muted')}>{stop?'Slow down: risky trades in the last hour':caution?'Careful: a risky trade in the last hour':'Earlier today'} · {['size','flip','chase','longshot'].filter(k=>c.counts?.[k]).map(k=>`${c.counts[k]} ${({size:'big bet',flip:'side switch',chase:'chase',longshot:'lottery ticket'} as any)[k]}${c.counts[k]>1?k==='flip'?'es':'s':''}`).join(' · ')} today</span></div>
+    {stop?<div className="font-display mt-3 text-5xl leading-none font-bold text-no uppercase">Slow down</div>:null}
+    <ul className="mt-3 space-y-2">{items.map((i:any)=><li key={i.id} className={cn('flex items-start gap-2 rounded-xl border px-3 py-2 text-sm',i.level==='stop'?'border-no/40 bg-no-dim/30':'border-warn/35 bg-warn-dim/25')}>
+      <TriangleAlert aria-hidden className={cn('mt-0.5 size-4 shrink-0',i.level==='stop'?'text-no':'text-warn')}/><div className="min-w-0"><div className="font-medium">{i.title} <span className="num ml-1 text-xs font-normal text-faint">{new Date(i.time).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}</span></div><div className="text-fg/85">{i.text}</div></div></li>)}</ul>
+    {ruin?<p className="mt-3 text-xs text-faint">{ruin}</p>:null}</Card>;
+}
+
 export function WindowBar({s}:{s:any}){
   const total=s?.market?(Date.parse(s.market.close_time)-Date.parse(s.market.open_time))/1000:900,tau=Math.max(0,s?.tau??0),done=s?.market?1-tau/total:0;
   return <div className="h-1 w-full bg-line" aria-hidden><div className={cn('bar-fill h-full',tau<=60?'bg-warn':'bg-info')} style={{width:`${done*100}%`}}/></div>;
@@ -53,11 +74,12 @@ export function SignalPanel({s,fresh}:{s:any;fresh:boolean}){
     </div>
     <div className={cn('font-display mt-4 text-6xl leading-none font-bold tracking-tight uppercase sm:text-8xl',toneText[tone])} aria-live="polite">{action}</div>
     <p className="mt-3 max-w-3xl text-[15px] text-fg/90">{fresh?(idea?ev.reason:failed?`${failed} of ${gates.length} checks failing${waiting?` · ${waiting.label.toLowerCase()} ${waiting.detail}`:''}`:waiting?`All checks clear — waiting: ${waiting.detail}`:ev?.reason??'Warming up'):'Live state unavailable — advice suppressed'}</p>
+    {idea?<BacktestNote s={s} which="15m"/>:null}
     {idea?<p className="mt-1 text-sm text-muted">{paperOnly?<><span className="text-info">Below 1 contract at your risk settings — logged as a paper trade.</span> One contract would cost {dollars(idea.price+idea.fee)}.</>:<>Spend / max loss {dollars(idea.maxLoss)} · ask {cents(idea.price)} + {cents(idea.fee,2)} fee</>}</p>:null}
     {gates.length?<ul className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" aria-label="Trade checks">{gates.some(g=>g.ok)?<li className="flex items-center gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2 text-sm text-muted sm:hidden"><Check aria-hidden className="size-4 text-yes"/>{gates.filter(g=>g.ok).length} passing</li>:null}{gates.map(g=>{const info=!g.ok&&g.advisory,wait=!g.ok&&g.wait;return <li key={g.key} className={cn('items-start gap-2 rounded-xl border px-3 py-2',g.ok?'hidden border-line bg-surface-2/60 sm:flex':wait?'flex border-line-strong bg-surface-2/60':info?'flex border-info/35 bg-info/10':'flex border-warn/35 bg-warn-dim/40')}>
       {g.ok?<Check aria-label="pass" className="mt-0.5 size-4 shrink-0 text-yes"/>:wait?<Clock aria-label="waiting" className="mt-0.5 size-4 shrink-0 text-muted"/>:info?<Info aria-label="information" className="mt-0.5 size-4 shrink-0 text-info"/>:<X aria-label="fail" className="mt-0.5 size-4 shrink-0 text-warn"/>}
       <div className="min-w-0"><div className="text-sm font-medium">{g.label}</div><div className={cn('text-xs leading-snug',g.ok||wait?'text-faint':info?'text-info':'text-warn')}>{g.detail}</div></div></li>;})}</ul>:null}
-    <p className="mt-4 text-xs text-faint">Edges use the {s?.quant?.signalSource==='quant'?'quant forecast (model blended with Kalshi)':'raw model'} after fees — YES {signedCents(s?.model?ev?.edges?.yes:null)} · NO {signedCents(s?.model?ev?.edges?.no:null)}. Check Calibration before relying on edge.</p>
+    <p className="mt-4 text-xs text-faint">Edges use the {s?.quant?.signalSource==='quant'?'quant forecast (model blended with Kalshi)':'raw model'} after fees — YES {signedCents(s?.model?ev?.edges?.yes:null)} · NO {signedCents(s?.model?ev?.edges?.no:null)}. {ruleVerdict(s?.backtest??null,'15m',Date.now(),s?.quant?.signalSource==='model'?'model':'quant').text}</p>
   </Card>;
 }
 
@@ -118,13 +140,13 @@ export function Positions({s,fresh}:{s:any;fresh:boolean}){
   if(!exits.length)return <Card className="flex min-h-14 flex-wrap items-center gap-3 py-3"><Wallet aria-hidden className="size-4 text-faint"/><span className="label">Your positions</span><span className="ml-auto text-sm text-muted">{s?.account?.ready?'No open BTC 15-min position':'Waiting for account'}</span></Card>;
   const tones:Record<string,Tone>={'SETTLING':'neutral','RIDE':'yes','TAKE PROFIT':'yes','LET IT SETTLE':'yes','CUT LOSS':'no','SELL NOW':'warn','HOLD':'neutral','TOO LATE':'neutral','NO MODEL':'neutral'};
   const urgent=exits.some(e=>['TAKE PROFIT','CUT LOSS','SELL NOW'].includes(e.action));
-  return <Card className={cn('rise',urgent?'border-warn/50':'border-info/30')}><Heading icon={<Wallet aria-hidden className="size-4 text-info"/>} title="Your positions · exit plan" aside={s?.config?.exitMode==='ev'?'expected-value mode':`ride from +${Math.round((s?.config?.takeProfitPct??.25)*100)}% · trail ${Math.round((s?.config?.trailGiveback??.5)*100)}% give-back · stop −${Math.round((s?.config?.stopLossPct??.5)*100)}% or < ${Math.round((s?.config?.stopWinProb??.25)*100)}%`}/>
+  return <Card className={cn('rise',urgent?'border-warn/50':'border-info/30')}><Heading icon={<Wallet aria-hidden className="size-4 text-info"/>} title="Your positions · exit plan" aside={s?.config?.exitMode==='hold'?'hold to settlement':s?.config?.exitMode==='ev'?'expected-value mode':`ride from +${Math.round((s?.config?.takeProfitPct??.25)*100)}% · trail ${Math.round((s?.config?.trailGiveback??.5)*100)}% give-back · stop −${Math.round((s?.config?.stopLossPct??.5)*100)}% or < ${Math.round((s?.config?.stopWinProb??.25)*100)}%`}/>
     {exits.map(e=>{const t=tones[e.action]??'neutral',[why,plan]=String(e.reason).split(' Plan: ');return <div key={e.ticker} className="mt-4 grid gap-4 border-t border-line pt-4 first-of-type:border-0 first-of-type:pt-0 lg:grid-cols-[1fr_auto]">
       <div><div className={cn('font-display text-5xl leading-none font-bold uppercase',toneText[t],e.action==='TOO LATE'&&'text-muted')}>{e.action}</div><div className="mt-2 text-sm"><span className="num">{qty(e.contracts)}</span> {e.side.toUpperCase()} · avg cost <span className="num">{cents(e.avgCost)}</span> · win chance <span className="num">{pct(e.winProb,0)}</span> <span className="num ml-1 text-xs text-faint">{e.ticker}</span></div>
         <p className="mt-2 text-sm text-fg/90">{why}</p>
         {plan&&e.action!=='SETTLING'?<div className="mt-2 flex flex-wrap gap-2 text-xs">{e.trailBid!=null?<Pill tone="yes">Trailing stop at bid ≤ {cents(e.trailBid)} · peak {e.peakPct>=0?'+':''}{Math.round((e.peakPct??0)*100)}%</Pill>:<><Pill tone="yes">Ride from bid ≥ {cents(e.takeProfitBid)}</Pill><Pill tone="no">Cut loss at bid ≤ {cents(e.stopBid)}</Pill></>}<Pill tone="neutral">or win chance &lt; {Math.round((s?.config?.stopWinProb??.25)*100)}%</Pill></div>:null}</div>
       <div className="grid grid-cols-3 gap-5 self-start text-right"><Stat label="P&L if sold" tone={e.unrealized>0?'yes':e.unrealized<0?'no':'neutral'} sub={e.unrealizedPct!=null?`${e.unrealizedPct>=0?'+':'−'}${Math.abs(e.unrealizedPct*100).toFixed(0)}% of cost`:undefined}>{signedDollars(e.unrealized)}</Stat><Stat label="Sell now" sub={`bid ${cents(e.bid)} − ${dollars(e.sellFee)} fee`}>{dollars(e.sellValue)}</Stat><Stat label="Hold value" sub="forecast × $1">{dollars(e.holdValue)}</Stat></div></div>;})}
-    <p className="mt-4 text-xs text-faint">Exits use your real cost after fees. RIDE = winning past the arm level; the trailing stop follows your best gain. Exits manage risk — they do not create edge (see Calibration).</p></Card>;
+    <p className="mt-4 text-xs text-faint">{s?.config?.exitMode==='hold'?'Hold mode: the plan is to keep the position to settlement. ':'Exits use your real cost after fees. RIDE = winning past the arm level; the trailing stop follows your best gain. '}{exitVerdict(s?.backtest??null)??'Exits manage risk; they do not create edge.'} Change the exit style in Settings.</p></Card>;
 }
 
 export function BookLadder({s}:{s:any}){
@@ -149,7 +171,7 @@ export function Tactics({s,fresh}:{s:any;fresh:boolean}){
     :<p className="text-sm text-muted">{!t?'Waiting for live data.':!t.live?'Paused (guardrail, data or market state).':`No setup now. Scalps need ≥ ${cents(cfg?.scalpMinEdge,0)} after fees, ≥ ${Math.round((cfg?.scalpMinSeconds??180)/60)} min left and a tight spread.`}</p>}
     {watch.map(w=><div key={w.side} className={cn('flex items-start gap-2 rounded-xl border px-3 py-2 text-sm',w.verdict==='buy'?'border-yes/30':'border-warn/35 bg-warn-dim/30')}><TrendingDown aria-hidden className={cn('mt-0.5 size-4 shrink-0',w.verdict==='buy'?'text-yes':'text-warn')}/>
       <span>{w.side.toUpperCase()} dropped {cents(w.drop)} ({cents(w.from)} → {cents(w.to)}) in a minute. {w.verdict==='buy'?'Fair value barely moved — likely overreaction.':`Fair value fell ${cents(Math.max(0,w.fairDrop))} too — falling knife, don't catch it.`}</span></div>)}
-    <p className="text-xs text-faint">Every setup is paper-traded (target hit before close, else held to settlement) and scored on the Calibration page.</p></div>;
+    <p className="text-xs text-faint">Every setup is paper-traded (target hit before close, else held to settlement) and scored on the Calibration page. Scalp and dip setups are not in the backtest: it needs second-by-second fills, so only their paper results count as evidence.</p></div>;
 }
 export function MakerIdeas({s,fresh}:{s:any;fresh:boolean}){
   const makers:any[]=fresh?s?.evaluation?.makers??[]:[];

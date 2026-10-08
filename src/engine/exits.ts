@@ -2,7 +2,11 @@ import {fee,type FeeSchedule} from './model/fees';
 /**
  * Exit plan for an open position, priced on the real cost after fees (selling pays the taker fee).
  *
- * Risk mode (default):
+ * Hold mode (default since the 2026-10-07 backtest): keep the position to settlement. On 2,483 replayed BUY entries
+ * (8,529 rounds) selling early cost 1.3¢/trade with fixed take-profit/stop-loss (CI −2.5..−0.1) and 0.9¢ with the
+ * trailing plan versus holding the very same entries: a second fee, sold at the bid. Terminal states still show.
+ *
+ * Risk mode:
  *   HOLD          until the gain reaches takeProfitPct (default +25%),
  *   RIDE          once armed: a trailing take-profit follows the best gain seen,
  *   TAKE PROFIT   when the gain falls back to max(trailFloor, peak × (1 − trailGiveback)),
@@ -18,7 +22,7 @@ export interface Position {ticker:string;position_fp:string;market_exposure_doll
 export type ExitAction='TAKE PROFIT'|'RIDE'|'CUT LOSS'|'SELL NOW'|'HOLD'|'LET IT SETTLE'|'TOO LATE'|'NO MODEL'|'SETTLING';
 /** A position whose round has already closed: Kalshi's official result if known, else the app's closing-average estimate. */
 export interface ClosedRound {result:'yes'|'no'|null;estimate:'yes'|'no'|null}
-export interface ExitConfig {exitMode:'risk'|'ev';exitMargin:number;makerMargin:number;takeProfitPct:number;stopLossPct:number;stopWinProb:number;trailGiveback:number;trailFloor:number}
+export interface ExitConfig {exitMode:'hold'|'risk'|'ev';exitMargin:number;makerMargin:number;takeProfitPct:number;stopLossPct:number;stopWinProb:number;trailGiveback:number;trailFloor:number}
 /** Per-position memory between evaluations: last action (hysteresis) and best gain since entry (trailing stop). */
 export interface ExitMemory {action:ExitAction|null;peak:number|null}
 export interface ExitAdvice {ticker:string;side:'yes'|'no';contracts:number;avgCost:number|null;winProb:number|null;bid:number|null;holdValue:number|null;sellValue:number|null;sellFee:number|null;unrealized:number|null;unrealizedPct:number|null;action:ExitAction;limitPrice:number|null;takeProfitBid:number|null;stopBid:number|null;trailBid:number|null;peakPct:number|null;reason:string}
@@ -67,6 +71,7 @@ export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|n
   if(bid!==null&&(bid>=SETTLE_BID||memory.action==='LET IT SETTLE'&&bid>=SETTLE_RELEASE))return out('LET IT SETTLE',`Bid ${c(bid)} — it pays $1.00 at settlement, and selling now only costs the fee.`);
   // A bid hovering around the 5¢ floor should not flip between CUT LOSS and TOO LATE every second.
   if(bid===null||bid<MIN_SELLABLE_BID||memory.action==='TOO LATE'&&bid<.08)return out(winProb<.5?'TOO LATE':'HOLD',bid===null?`No ${side.toUpperCase()} bid to sell into; win chance ${(winProb*100).toFixed(1)}%.`:`Bid only ${c(bid)} (${sellValue!==null?`$${sellValue.toFixed(2)} total`:''}) — too little left to be worth selling; win chance ${(winProb*100).toFixed(1)}%.`);
+  if(cfg.exitMode==='hold')return out('HOLD',`Holding to settlement · win chance ${(winProb*100).toFixed(0)}%. Selling now would ${unrealized!==null?`${unrealized>=0?'lock in':'lose'} $${Math.abs(unrealized).toFixed(2)}`:`pay ${c(sellValue!/contracts)}/contract`} and pay a second fee; in the backtest, early exits did worse than holding.`);
   if(risk&&unrealizedPct!==null){
     const stopping=memory.action==='CUT LOSS';
     if(unrealizedPct<=-cfg.stopLossPct||stopping&&unrealizedPct<=-cfg.stopLossPct*LATCH_SL&&winProb<cfg.stopWinProb+LATCH_PROB)return out('CUT LOSS',`Down ${pctTxt(unrealizedPct)} ($${unrealized!.toFixed(2)}). Selling now saves $${sellValue!.toFixed(2)} instead of risking it on a ${(winProb*100).toFixed(0)}% chance.`);

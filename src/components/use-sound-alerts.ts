@@ -26,7 +26,8 @@ export function useSoundAlerts(s:any,fresh:boolean){
     if(s.config?.notifications&&typeof Notification!=='undefined'&&Notification.permission==='granted'){
       const exit=(s.exits??[]).find((e:any)=>['TAKE PROFIT','CUT LOSS','SELL NOW'].includes(e.action));
       if(exit&&events.some(e=>e==='sell'||e==='takeProfit'||e==='cutLoss'))new Notification(exit.action,{body:String(exit.reason).split(' Plan: ')[0],tag:'exit'});
-      if(events.includes('buyYes')||events.includes('buyNo'))new Notification(s.evaluation.action,{body:s.evaluation.reason,tag:'signal'});
+      if(events.includes('buyYes')||events.includes('buyNo'))new Notification(s.evaluation.action,{body:s.evaluation.reason+(s.backtest?` · Backtest: this rule averaged ${(s.backtest.buy15.mean*100).toFixed(1)}¢ per contract`:''),tag:'signal'});
+      if(events.includes('coach')&&s.coach?.items?.[0])new Notification('Coach: '+s.coach.items[0].title,{body:s.coach.items[0].text,tag:'coach'});
       if(events.includes('win'))new Notification('Profit',{body:`P&L today ${s.guards.pnl>=0?'+':'−'}$${Math.abs(s.guards.pnl).toFixed(2)}`,tag:'result'});
     }
   },[s,fresh,prefs]);

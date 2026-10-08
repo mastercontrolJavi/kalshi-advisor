@@ -2,10 +2,11 @@ import type {KalshiClient} from './feeds/kalshi';
 import type {Journal} from './journal';
 import {fillWarnings,type RealEvent} from './guardrails';
 /** FIFO realized accounting, including canonical directional fills and complementary-side netting. */
-export function normalizeAccount(fills:any[],settlements:any[]):RealEvent[]{
+export function normalizeAccount(fills:any[],settlements:any[],series:string[]=['KXBTC15M']):RealEvent[]{
   const lots=new Map<string,{count:number;cost:number}[]>(),events:RealEvent[]=[],cashFlows=new Map<string,number>();
+  const wanted=(ticker:unknown)=>typeof ticker==='string'&&series.some(s=>ticker.startsWith(s+'-'));
   for(const f of [...fills].sort((a,b)=>Date.parse(a.created_time)-Date.parse(b.created_time))){
-    const ticker=f.ticker??f.market_ticker;if(!ticker?.startsWith('KXBTC15M'))continue;
+    const ticker=f.ticker??f.market_ticker;if(!wanted(ticker))continue;
     // Direction comes from outcome_side/book_side: yes = buy YES or sell NO. Live fills mirror it into the
     // deprecated side field, so action/side are only interpreted the legacy way when canonical fields are absent.
     // Every fill is then a purchase in its direction, netted FIFO against the complementary side.
@@ -21,7 +22,7 @@ export function normalizeAccount(fills:any[],settlements:any[]):RealEvent[]{
     cashFlows.set(ticker,(cashFlows.get(ticker)??0)+cashFlow);
     lots.set(key,list);events.push({id:'fill:'+(f.fill_id??f.trade_id),ticker,type:'fill',time,pnl,closedContracts,contracts:count,side,price,action,orderId:f.order_id});
   }
-  for(const s of settlements){if(!s.ticker?.startsWith('KXBTC15M'))continue;
+  for(const s of settlements){if(!wanted(s.ticker))continue;
     const revenue=Number(s.revenue)/100,cost=Number(s.yes_total_cost_dollars)+Number(s.no_total_cost_dollars),fees=Number(s.fee_cost),time=Date.parse(s.settled_time);
     if(![revenue,cost,fees,time].every(Number.isFinite))throw new Error('Unsupported settlement schema');
     const marketFills=events.filter(e=>e.ticker===s.ticker&&e.type==='fill');
@@ -33,7 +34,7 @@ export function normalizeAccount(fills:any[],settlements:any[]):RealEvent[]{
   }return events.sort((a,b)=>a.time-b.time);
 }
 export class Account {
-  balance:number|null=null;portfolioValue:number|null=null;ready=false;updated=0;error='Credentials unavailable';positions:unknown[]=[];private busy=false;
+  balance:number|null=null;portfolioValue:number|null=null;ready=false;updated=0;error='Credentials unavailable';positions:unknown[]=[];coachEvents:RealEvent[]=[];private busy=false;
   // Fill warnings never change once computed; recomputing ~400 of them every sync stalled the engine loop ~300 ms.
   private warnings=new Map<string,string[]>();
   constructor(private client:KalshiClient,private journal:Journal){}
@@ -52,7 +53,10 @@ export class Account {
       const put=this.journal.db.prepare('INSERT OR REPLACE INTO account_raw VALUES(?,?,?,?)');
       this.journal.db.transaction(()=>{for(const f of fills)put.run('fill:'+(f.fill_id??f.trade_id),'fill',Date.parse(f.created_time),JSON.stringify(f));for(const s of settlements)put.run('settlement:'+s.ticker,'settlement',Date.parse(s.settled_time),JSON.stringify(s));})();
       const raw=this.journal.db.prepare('SELECT type,context FROM account_raw ORDER BY time').all() as {type:string;context:string}[];
-      const events=normalizeAccount(raw.filter(r=>r.type==='fill').map(r=>JSON.parse(r.context)),raw.filter(r=>r.type==='settlement').map(r=>JSON.parse(r.context)));
+      const rawFills=raw.filter(r=>r.type==='fill').map(r=>JSON.parse(r.context)),rawSettlements=raw.filter(r=>r.type==='settlement').map(r=>JSON.parse(r.context));
+      const events=normalizeAccount(rawFills,rawSettlements);
+      // The coach watches every Bitcoin market you trade, hourly included; P&L and guardrails stay 15-minute only.
+      this.coachEvents=normalizeAccount(rawFills,rawSettlements,['KXBTC15M','KXBTCD']);
       const config=this.journal.config();
       for(const e of events.filter(e=>e.type==='fill')){
         const cached=this.warnings.get(e.id);if(cached){e.warnings=cached;continue;}

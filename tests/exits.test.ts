@@ -42,3 +42,12 @@ it('expensive contracts still get a reachable ride level (half the maximum possi
   const e=exitAdvice(yes('17.25','13.80'),.85,book(.84,.15),baseFees,risk)!;expect(e.takeProfitBid).not.toBeNull();expect(e.takeProfitBid!).toBeLessThan(.99);expect(e.takeProfitBid!).toBeGreaterThan(.84);
   const ride=exitAdvice(yes('17.25','13.80'),.95,book(.92,.07),baseFees,risk)!;expect(ride.action).toBe('RIDE');
   expect(exitAdvice(yes('10','4.00'),.55,book(.45,.53),baseFees,risk)!.takeProfitBid).toBe(exitAdvice(yes('10','4.00'),.55,book(.45,.53),baseFees,{...risk,takeProfitPct:.25})!.takeProfitBid);});
+const hold:ExitConfig={...risk,exitMode:'hold'};
+it('hold mode keeps the position to settlement where risk mode would take profit or cut loss',()=>{
+  const winning=exitAdvice(yes('10','4.00'),.9,book(.6,.38),baseFees,hold,mem('RIDE',.6))!;expect(winning.action).toBe('HOLD');expect(winning.reason).toContain('Holding to settlement');expect(winning.reason).not.toContain('Plan:');
+  expect(exitAdvice(yes('10','4.00'),.9,book(.6,.38),baseFees,risk,mem('RIDE',.6))!.action).not.toBe('HOLD');
+  const losing=exitAdvice(yes('10','6.00'),.15,book(.2,.78),baseFees,hold)!;expect(losing.action).toBe('HOLD');expect(losing.reason).toContain('lose $');
+  expect(exitAdvice(yes('10','6.00'),.15,book(.2,.78),baseFees,risk)!.action).toBe('CUT LOSS');
+  // Terminal states are unchanged.
+  expect(exitAdvice(yes('10','6.00'),.99,book(.98,.01),baseFees,hold)!.action).toBe('LET IT SETTLE');
+  expect(exitAdvice(yes('10','6.00'),.2,book(.02,.97),baseFees,hold)!.action).toBe('TOO LATE');});

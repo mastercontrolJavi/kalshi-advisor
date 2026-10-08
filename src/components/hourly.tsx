@@ -3,7 +3,7 @@ import {Check,X,Clock,Layers,History,Wallet,Info} from 'lucide-react';
 import {useLive} from './use-live';
 import {SiteHeader} from './site-header';
 import {Card} from './ui/card';
-import {Pill,ProbBar,Collapsible,type Tone} from './panels';
+import {Pill,ProbBar,Collapsible,BacktestNote,Coach,type Tone} from './panels';
 import {cn} from '@/lib/utils';
 import {dollars,signedDollars,cents,signedCents,pct,qty,mmss} from './format';
 const et=(t:number|null|undefined)=>t?new Date(t).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit'})+' ET':'—';
@@ -35,6 +35,7 @@ export default function Hourly(){
           <div className={cn('font-display mt-4 text-5xl leading-none font-bold tracking-tight uppercase sm:text-7xl',best?(best.side==='yes'?'text-yes':'text-no'):'text-fg')}>{h.action}</div>
           <p className="mt-3 max-w-3xl text-[15px] text-fg/90">{h.reason}</p>
           {best?<p className="mt-1 text-sm text-muted">Ask {cents(best.price)} + {cents(best.fee,2)} fee{best.belowMinSize?` · one contract costs ${dollars(best.price+best.fee)}`:` · spend / max loss ${dollars(best.maxLoss)}`}</p>:null}
+          {best?<BacktestNote s={s} which="hourly"/>:null}
           {h.ideas?.length>1?<ul className="mt-4 space-y-1.5 text-sm">{h.ideas.slice(1).map((i:any)=><li key={i.ticker+i.side} className="flex flex-wrap justify-between gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2"><span>{i.side==='yes'?'Above':'Not above'} <span className="num">${Math.round(i.strike).toLocaleString()}</span> at <span className="num">{cents(i.price)}</span></span><span className="num text-yes">{signedCents(i.edge)}</span></li>)}</ul>:null}
           <p className="mt-4 text-xs text-faint">Same gates as the 15-minute advisor (edge after fees, spread, depth, feeds, guardrails); every best idea is paper-traded and scored on Calibration.</p>
         </Card>
@@ -48,6 +49,7 @@ export default function Hourly(){
           <p className="text-xs text-faint">Kalshi has no single hourly up/down contract; "up" means the closing 60-s average beats the 60-s average before the hour opened. Trade it through the strike nearest that reference.</p>
         </Card>
       </div>
+      <Coach s={s}/>
       <Collapsible open title="Strike ladder" icon={<Layers aria-hidden className="size-4 text-info"/>} aside={`${view.length} strikes near the price · updated ${h.updated?Math.max(0,Math.round((Date.now()-h.updated)/1000)):'—'}s ago`}>
         <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['BTC above','vs now','Kalshi bid / ask','Kalshi','Quant','Buy YES edge','Buy NO edge'].map(t=><th key={t} scope="col" className="pb-2 pr-3 font-medium">{t}</th>)}</tr></thead>
           <tbody>{view.map((r:any)=><tr key={r.ticker} className={cn('border-t border-line',r.ticker===spotStrike&&'bg-info/5',best?.ticker===r.ticker&&'bg-yes-dim/30')}>
