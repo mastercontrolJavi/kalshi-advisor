@@ -17,8 +17,8 @@ import {buildCalibration} from './calibration';
 import {openingCall,OPENING_K_DEADLINE_SECONDS} from './model/opening';
 import {exitAdvice,entryCost,type ExitMemory} from './exits';
 import {nextDirection,confidence,dueHorizon,dataQuality,type Direction} from './model/live';
-import {fitStack,predict,explain,describe,type StackFit} from './quant/stack';
-import {stackSamples} from './quant/samples';
+import {fitStack,predict,explain,describe,type StackFit,type StackSample} from './quant/stack';
+import {stackSamples,lateSamples} from './quant/samples';
 import {autoBasis,nextWindow,NEXT_HORIZONS} from './quant/forecast';
 import {scalp,dips} from './quant/tactics';
 import {rollupMarkets,buildAnalytics} from './analytics';
@@ -26,6 +26,7 @@ import {HourlyBoard,HOURLY_SERIES,HOURLY_HORIZONS,ladder,impliedAbove,hourlyIdea
 import {buildHourlyHistory} from './rounds';
 import {priorFit} from './quant/stack';
 import {VERDICT_PATH,type Verdict} from '../backtest/verdict';
+import {BacktestRefresher} from './refresh';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
 {const stored=journal.get<any>('config',null);
@@ -59,6 +60,8 @@ const exitMemory=new Map<string,ExitMemory>();
 let verdict:Verdict|null=null,verdictMtime=-1;
 function loadVerdict(){try{const m=statSync(VERDICT_PATH).mtimeMs;if(m!==verdictMtime){verdict=JSON.parse(readFileSync(VERDICT_PATH,'utf8'));verdictMtime=m;journal.log('backtest-verdict-loaded',{generated:verdict?.generated});}}catch{verdict=null;verdictMtime=-1;}}
 loadVerdict();
+// Daily automatic backtest refresh in a separate low-priority process (see refresh.ts).
+const refresher=new BacktestRefresher(log);const refresherTimer=setInterval(()=>refresher.tick(),5*60000);
 let settledOnce=false,calibrationKey='',sentCalibration:number|null=null;
 let previousTicker='',lastLoop=Date.now(),lastSecond=0,lastPublish=0,lastFastRefresh=0,settling=false,refreshing=false;
 const safe=(name:string,fn:()=>Promise<void>)=>void fn().catch(e=>log(name,{message:e.message}));
@@ -163,7 +166,14 @@ async function settleHours(){
 }
 
 // Refit only when new settled windows arrive (leave-one-market-out CV is the costly part).
+// Late-round forecast (final minute): fitted on the kept final-minute seconds and used only once its learned weights beat
+// the default blend on rounds held out of the fit; until then the main forecast applies there too.
+const lateCache=new Map<string,StackSample[]>();let lateStack:StackFit=fitStack(lateSamples(journal.db,lateCache)),lateOutcomes=-1;
 function refitQuant(){
+  // Only after a new settlement: the final-minute rows of a round are complete once its outcome is recorded.
+  const settledCount=(journal.db.prepare('SELECT count(*) n FROM outcomes').get() as {n:number}).n;
+  if(settledCount!==lateOutcomes){lateOutcomes=settledCount;const late=lateSamples(journal.db,lateCache);
+    if(late.length!==lateStack.n){lateStack=fitStack(late);log('late-fit',{n:lateStack.n,markets:lateStack.markets,active:lateStack.active,cv:lateStack.cv,weights:describe(lateStack)});}}
   const samples=stackSamples(journal.db);basisState=autoBasis(basisErrors());if(samples.length===stack.n)return;
   stack=fitStack(samples);const entry={time:Date.now(),n:stack.n,markets:stack.markets,active:stack.active,cv:stack.cv,weights:describe(stack),basis:basisState.correction};
   log('quant-fit',entry);journal.set('quantHistory',[...journal.get<any[]>('quantHistory',[]),entry].slice(-200));
@@ -195,7 +205,7 @@ const loop=setInterval(()=>{
     const venueStates=Object.values(proxy.venues).map(v=>({...v,healthy:healthy(v,now,config.staleMs),age:now-v.updated}));
     const rawVol=volatility(proxy.history,config.halfLifeSeconds,config.realizedBlend),vol=warmVolatility(rawVol,journal.get<{sigma:number;time:number}|null>('lastSigma',null),config.minVolSamples,now);
     if(newSecond&&rawVol.count>=config.minVolSamples&&rawVol.sigma>0&&time%60000===0)journal.set('lastSigma',{sigma:rawVol.sigma,time:now});
-    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory};
+    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,backtestRefresh:{running:refresher.running,lastFinished:refresher.lastFinished,lastExit:refresher.lastExit},next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory};
     if(!market){
       // Between windows: poll every second so the next market and its K are picked up immediately.
       if(now-lastFastRefresh>1000){lastFastRefresh=now;safe('market-refresh-error',refresh);}
@@ -224,7 +234,8 @@ const loop=setInterval(()=>{
       // Kalshi's midpoint only counts as a forecast when the book is tight; a wide spread makes it meaningless.
       const kalshiP=mid!==null&&bv.yesAsk!==null&&bv.yesBid!==null&&bv.yesAsk-bv.yesBid<=.1?mid:null;
       const stackInputs=model?{modelP:model.p,mid:kalshiP,sigma:vol.sigma,momentum30s:features.momentum30s,momentum120s:features.momentum120s,imbalance:features.imbalance,tradeFlow30s:features.tradeFlow30s,tradeVolume30s:features.tradeVolume30s}:null;
-      const q=stackInputs?predict(stack,stackInputs).p:null,pSignal=config.useQuantForSignals&&q!==null?q:model?.p??.5;
+      const forecast=tau<60&&lateStack.active==='fitted'?lateStack:stack;
+      const q=stackInputs?predict(forecast,stackInputs).p:null,pSignal=config.useQuantForSignals&&q!==null?q:model?.p??.5;
       const evaluation=evaluate(pSignal,tau,book,market,account.balance,config,schedule,{feedsHealthy:venueStates.every(v=>v.healthy),healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kConfirmed:confirmed,lock:guards.reason,modelReady:!!model,accountReady:account.ready&&now-account.updated<config.accountStaleMs,now});
       const quality=dataQuality({healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kalshiLive:kalshi.status==='connected',bookLive:bv.valid&&now-bv.updated<=config.bookStaleMs,kConfirmed:confirmed,modelReady:!!model,clockSynced:client.clockSynced});
       const callOf=(p:number,direction:'UP'|'DOWN')=>({direction,p,baseP:model.p,lean:p-model.p,confidence:confidence(p),reasons:explain(stack,stackInputs!),inputs:{...stackInputs,K,kSource:confirmed?'kalshi':'proxy estimate'}});
@@ -273,7 +284,7 @@ const loop=setInterval(()=>{
         if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,peakPct:e.peakPct});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,title:e.notice.title,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,winProb:e.winProb});exitMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
         return e;}).filter(Boolean);
       state={...common,...tick,market,evaluation,exits,liveCall,nextCall,quality,openingCall:journal.openingCall(market.ticker),
-        quant:{p:q,model:model?.p??null,mid,active:stack.active,markets:stack.markets,basis,autoBasis:basisState,signalSource:config.useQuantForSignals&&q!==null?'quant':'model'},
+        quant:{p:q,model:model?.p??null,mid,active:stack.active,markets:stack.markets,late:{active:lateStack.active,markets:lateStack.markets,inUse:forecast===lateStack,cv:lateStack.cv},basis,autoBasis:basisState,signalSource:config.useQuantForSignals&&q!==null?'quant':'model'},
         tactics:{live:tacticsLive,ideas:tacticIdeas,dips:dipState.watch},lockedCount:locked?.length??0,lockedImputed:lockedFill?.imputed??0,distance:spot!==null&&K!==null?spot-K:null};
     }
     // Hourly board: recomputed once per second, reused between the faster publishes.
@@ -286,5 +297,5 @@ const loop=setInterval(()=>{
     const message=JSON.stringify(sendCalibration&&newSecond?state:{...state,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
-const shutdown=()=>{for(const t of [loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,calibrationTimer,hourlyTimer,hourlySettleTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
+const shutdown=()=>{refresher.stop();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,calibrationTimer,hourlyTimer,hourlySettleTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

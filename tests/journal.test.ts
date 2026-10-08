@@ -37,3 +37,15 @@ it('pending markets only look at recent ticks',async()=>{
   const {Journal}=await import('../src/engine/journal');const j=new Journal(':memory:'),now=Date.now();
   j.tick({time:now-5*86400000,ticker:'OLD',proxy:1,K:1,tau:1,sigma:0,p:.5,q:.5,mid:.5,regime:'calm'});j.tick({time:now-60000,ticker:'NEW',proxy:1,K:1,tau:1,sigma:0,p:.5,q:.5,mid:.5,regime:'calm'});
   expect(j.pendingMarkets(now-3*3600000).map(r=>r.ticker)).toEqual(['NEW']);expect(j.pendingMarkets().map(r=>r.ticker).sort()).toEqual(['NEW','OLD']);});
+it('pruning keeps the final minute of every round for good',async()=>{
+  const {Journal}=await import('../src/engine/journal');const j=new Journal(':memory:'),now=Date.now(),old=now-40*86400000;
+  for(const tau of [600,59,10])j.tick({time:old+(600-tau)*1000,ticker:'OLD',proxy:1,K:1,tau,sigma:0,p:.5,q:.5,mid:.5,regime:'calm'});
+  j.prune(now);expect((j.db.prepare('SELECT tau FROM ticks ORDER BY tau').all() as {tau:number}[]).map(r=>r.tau)).toEqual([10,59]);});
+it('late-round samples: nearest second to each of 50/40/30/20/10 s, read incrementally',async()=>{
+  const {Journal}=await import('../src/engine/journal');const {lateSamples}=await import('../src/engine/quant/samples');const j=new Journal(':memory:'),t0=Date.now();
+  for(let tau=59;tau>=1;tau--)j.tick({time:t0+(60-tau)*1000,ticker:'A',proxy:100,K:99,tau,sigma:1e-5,p:.9,q:.9,mid:.85,regime:'calm',book:{yesBid:.84,yesAsk:.86},features:{momentum30s:.001}});
+  j.db.prepare('INSERT INTO outcomes VALUES(?,?,?,?,?,?,?,?)').run('A',t0,'yes',null,null,null,null,'{}');
+  const cache=new Map(),s=lateSamples(j.db,cache);expect(s.map(x=>x.horizon).sort()).toEqual(['10','20','30','40','50']);
+  expect(s[0]).toMatchObject({modelP:.9,mid:.85,y:1,ticker:'A',momentum30s:.001});
+  j.db.prepare('DELETE FROM ticks').run();expect(lateSamples(j.db,cache)).toHaveLength(5);// already-read rounds come from the cache
+});

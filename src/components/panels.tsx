@@ -4,7 +4,7 @@ import {Check,X,Info,Clock,Zap,TrendingDown,ChevronRight,ArrowUpRight,ArrowDownR
 import {Card} from './ui/card';
 import {cn} from '@/lib/utils';
 import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,ago,opensAt,maintenanceNote} from './format';
-import {ruleVerdict,exitVerdict} from '@/backtest/verdict';
+import {ruleVerdict,exitVerdict,finalMinuteEvidence} from '@/backtest/verdict';
 
 export type Tone='yes'|'no'|'warn'|'neutral';
 const toneText:Record<Tone,string>={yes:'text-yes',no:'text-no',warn:'text-warn',neutral:'text-fg'};
@@ -42,6 +42,13 @@ export function ProbBar({p,mid,label='Model'}:{p:number|null;mid?:number|null;la
   </div>;
 }
 
+/** What the data now says that could change a setting. Shown only when it is actionable; never changes anything itself. */
+export function DataUpdate({s}:{s:any}){
+  const f=finalMinuteEvidence(s?.backtest??null),on=!!s?.config?.finalMinuteSignals;
+  const show=f.status==='proven'&&!on||on&&(f.status==='losing'||f.status==='unclear');if(!show)return null;
+  return <Card className={cn('rise flex items-start gap-3',f.status==='proven'?'border-yes/40':'border-warn/50')}><FlaskConical aria-hidden className={cn('mt-0.5 size-4 shrink-0',f.status==='proven'?'text-yes':'text-warn')}/>
+    <div className="text-sm"><div className="font-medium">{f.status==='proven'?'The data found something':'Final-minute entries are on, but the data does not support them'}</div><div className="text-fg/85">{f.text} {f.status==='proven'?'You can allow final-minute entries in Settings → Entry rules; the app will not turn them on by itself.':'You can turn them off in Settings → Entry rules.'}</div></div></Card>;
+}
 /** How the same BUY rule did on past rounds (npm run backtest), shown beside every BUY signal. */
 export function BacktestNote({s,which}:{s:any;which:'15m'|'hourly'}){
   const v=ruleVerdict(s?.backtest??null,which,Date.now(),which==='15m'&&s?.quant?.signalSource==='model'?'model':'quant');

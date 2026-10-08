@@ -31,6 +31,20 @@ export function ruleVerdict(v:Verdict|null,which:'15m'|'hourly',now=Date.now(),s
   const text=`Backtest: this BUY rule${raw?' (raw model)':''} averaged ${c(r.mean)} per contract after fees over ${r.n.toLocaleString()} past ${which==='15m'?'rounds':'hours'} (${date(v.from)}–${date(v.to)}; likely range ${c(r.ci[0])} to ${c(r.ci[1])}) — ${edge?'a measurable edge so far':loses?'it lost money':'no proven edge'}.${stale(v,now)?' Results are over two weeks old; re-run npm run backtest.':''}`;
   return {tone:edge?'yes':'warn',text};
 }
+/**
+ * Whether the final-minute study supports entries in the last minute. "proven" needs ≥ 100 trades, a 95% range above
+ * zero and a positive first and second half, so one lucky stretch cannot switch anything on. The app only reports it;
+ * acting on it is the user's Settings choice (finalMinuteSignals).
+ */
+export const FINAL_MIN_TRADES=100;
+export function finalMinuteEvidence(v:Verdict|null):{status:'collecting'|'proven'|'losing'|'unclear';rounds:number;text:string}{
+  const f=v?.finalMinute,t=f?.trade;if(!f||!t||!t.n)return {status:'collecting',rounds:f?.rounds??0,text:'Final-minute study: collecting data.'};
+  const range=`${c(t.mean)} per contract over ${t.n} trades (likely range ${c(t.ci[0])} to ${c(t.ci[1])}), ${f.rounds} rounds`;
+  if(t.n<FINAL_MIN_TRADES)return {status:'collecting',rounds:f.rounds,text:`Final-minute study: ${range} so far. Needs ${FINAL_MIN_TRADES}+ trades before it can show an edge.`};
+  if(t.ci[0]>0&&t.early>0&&t.late>0)return {status:'proven',rounds:f.rounds,text:`Final-minute study: entries in the last minute made ${range}, and in both halves of the period.`};
+  if(t.ci[1]<0)return {status:'losing',rounds:f.rounds,text:`Final-minute study: entries in the last minute lost money: ${range}.`};
+  return {status:'unclear',rounds:f.rounds,text:`Final-minute study: no proven edge yet: ${range}.`};
+}
 export function exitVerdict(v:Verdict|null){
   if(!v)return null;const f=v.exits.fixed,t=v.exits.trailing;
   return `Backtest: versus holding the same entries, take-profit/stop-loss ${c(f.mean)} and the trailing plan ${c(t.mean)} per trade.`;

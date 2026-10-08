@@ -25,7 +25,8 @@ const cents=(x:number)=>`${(x*100).toFixed(1)}¢`;
 export function gateChecklist(p:number,tau:number,book:Orderbook,market:Market,balance:number|null,config:Config,schedule:FeeSchedule,c:Conditions):Gate[]{
   const v=book.view(),yes=v.yesAsk===null?-Infinity:p-v.yesAsk-fee(v.yesAsk,1,'taker',schedule),no=v.noAsk===null?-Infinity:1-p-v.noAsk-fee(v.noAsk,1,'taker',schedule);
   const side=yes>=no?'yes':'no',edge=Math.max(yes,no),price=side==='yes'?v.yesAsk:v.noAsk,bid=side==='yes'?v.yesBid:v.noBid,depth=side==='yes'?v.yesDepth:v.noDepth;
-  const inSweet=tau>=config.sweetMinSeconds&&tau<=config.sweetMaxSeconds,sizing=price!==null&&balance!==null?size(side==='yes'?p:1-p,price,balance,config,schedule):{contracts:0};
+  // Final-minute entries (5–59 s left) only when the user turns finalMinuteSignals on, e.g. after the study proves an edge.
+  const minTau=config.finalMinuteSignals?5:60,inSweet=(tau>=config.sweetMinSeconds||tau>=minTau&&tau<60)&&tau<=config.sweetMaxSeconds,sizing=price!==null&&balance!==null?size(side==='yes'?p:1-p,price,balance,config,schedule):{contracts:0};
   const bookLive=book.valid&&c.now-book.updated<=config.bookStaleMs;
   return [
     {key:'market',label:'Market open',ok:market.status==='active',detail:market.status},
@@ -37,7 +38,7 @@ export function gateChecklist(p:number,tau:number,book:Orderbook,market:Market,b
     {key:'guards',label:'Guardrails',ok:!c.lock,detail:c.lock??'clear'},
     {key:'edge',label:'Edge',ok:Number.isFinite(edge)&&edge>=config.minEdge,detail:Number.isFinite(edge)?`${side.toUpperCase()} ${cents(edge)} vs ${cents(config.minEdge)} min`:'no ask'},
     // Before the entry window and in the final minute, timing is a schedule, not a fault: show it as waiting.
-    {key:'timing',label:'Timing',ok:tau>=60&&(inSweet||edge>=config.earlyEdge),wait:tau<60||tau>config.sweetMaxSeconds,detail:tau<60?'closed for entries (final minute)':inSweet?'in entry window':`opens in ${Math.floor((tau-config.sweetMaxSeconds)/60)}:${String(Math.floor((tau-config.sweetMaxSeconds)%60)).padStart(2,'0')} (or ${cents(config.earlyEdge)}+ edge now)`},
+    {key:'timing',label:'Timing',ok:tau>=minTau&&(inSweet||edge>=config.earlyEdge),wait:tau<minTau||tau>config.sweetMaxSeconds,detail:tau<minTau?(minTau===5?'closed for entries (last 5 s)':'closed for entries (final minute)'):inSweet?'in entry window':`opens in ${Math.floor((tau-config.sweetMaxSeconds)/60)}:${String(Math.floor((tau-config.sweetMaxSeconds)%60)).padStart(2,'0')} (or ${cents(config.earlyEdge)}+ edge now)`},
     {key:'spread',label:'Spread',ok:price!==null&&bid!==null&&price-bid<=config.maxSpread+1e-8,detail:price!==null&&bid!==null?`${cents(price-bid)} vs ${cents(config.maxSpread)} max`:'one-sided'},
     {key:'depth',label:'Depth',ok:depth>=config.minDepth,detail:`${Math.floor(depth)} vs ${config.minDepth} min`},
     // With signalBelowMinSize the size check informs the contract count but no longer blocks the signal or its paper trade.
@@ -57,7 +58,8 @@ export function evaluate(p:number,tau:number,book:Orderbook,market:Market,balanc
     const reasons:string[]=[];
     if(price===null||bid===null){result.reason='Book side missing';continue;}
     if(edge<config.minEdge)reasons.push(`edge ${(edge*100).toFixed(1)}¢ < ${(config.minEdge*100).toFixed(1)}¢ after ${(fee(price,1,'taker',schedule)*100).toFixed(2)}¢ fee`);
-    if(tau<60||(!(tau>=config.sweetMinSeconds&&tau<=config.sweetMaxSeconds)&&edge<config.earlyEdge))reasons.push('Outside entry window');
+    const minTau=config.finalMinuteSignals?5:60,inWindow=(tau>=config.sweetMinSeconds||tau>=minTau&&tau<60)&&tau<=config.sweetMaxSeconds;
+    if(tau<minTau||(!inWindow&&edge<config.earlyEdge))reasons.push('Outside entry window');
     if(price-bid>config.maxSpread+1e-8)reasons.push('Spread too wide');if(depth<config.minDepth)reasons.push('Insufficient top depth');
     const sizing=size(side==='yes'?p:1-p,price,balance,config,schedule),belowMinSize=sizing.contracts<1;if(belowMinSize&&!config.signalBelowMinSize)reasons.push('Risk budget below one contract');
     if(reasons.length){if(side===candidates[0].side)result.reason=reasons.join(' · ');continue;}

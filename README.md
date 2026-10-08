@@ -89,6 +89,14 @@ Calibration uses one paired tick nearest 180s remaining (±30s) per settled mark
 
 It replays the app's own diffusion model, fee function and quant prior blend at every 1-minute candle close and reports: Brier score versus Kalshi's mid by minutes left (round-clustered 95% ranges), whether contracts at each price win as often as their price plus fee implies, strategy results per contract after fees (the app's BUY rule with and without the exit plans, edge thresholds, favorites, longshots, first-minute entries) split into first and second half of the period, model calibration and a variance-multiplier scan, and what different stake sizes do to a $40 account. Limits: decisions are at 1-minute resolution (the final minute's locked-average edge is not testable this way), spot is Coinbase plus a learned basis rather than the 4-venue proxy, and depth/latency are not modelled. `output/backtest.json` holds the raw numbers.
 
+## Self-updating
+
+While the app runs it improves itself only where held-out data proves the change, and never changes trading behaviour on its own:
+- **Daily backtest refresh.** Once the verdict is 24 h old, never in the first 10 minutes after start and at most one attempt an hour, the engine runs `scripts/backtest.ts` as a separate below-normal-priority process (`logs/backtest.log`, report in `output/BACKTEST.md`). It downloads only new history, re-runs the replay and the final-minute study, and rewrites `data/backtest-verdict.json`, which the engine hot-reloads; the BUY notes and the footer pick it up. It takes ~30 s.
+- **Forecast blends.** The main quant blend refits after every settled round. A separate late-round blend is fitted on the final-minute seconds (nearest 50/40/30/20/10 s of every round). Each replaces the default blend only after beating it on rounds held out of the fit (≥ 30 markets, 30 market-grouped folds); the late one then serves the last minute. The learned weights and their out-of-sample scores are logged (`quant-fit`, `late-fit`).
+- **Final-minute data is kept for good.** Pruning deletes ticks older than 30 days except the final minute (~25 MB/day), so the study keeps growing.
+- **Trading changes stay manual.** When the final-minute study shows ≥ 100 trades with a 95% range above zero and both halves positive, the dashboard says so. Final-minute entries (5–59 s left) are a setting, *Allow entries in the final minute*, off by default. If it is on while the study says entries lose or are unproven, the dashboard warns.
+
 ## Verification
 
 `npm run check` validates fees at 1/50/99¢, probability symmetry, final-minute average weights, Kelly caps, guardrail triggers, signed paths, book gaps, paper fills, pruning, auth and calibration independence. Live verification is recorded in docs/VERIFICATION.md. Authentication and account/tier checks require your credentials; Tailscale phone delivery requires your tailnet login. No profitability claim follows from a small sample.

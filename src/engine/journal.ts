@@ -93,7 +93,9 @@ export class Journal {
   /** Markets with ticks since `since` and no recorded outcome. Reads only the UNIQUE(time,ticker) index (~3 ms); scanning all
    *  30 days of ticks every 10 s grew with the journal. */
   pendingMarkets(since=0){return this.db.prepare('SELECT ticker,MAX(time) AS time FROM ticks INDEXED BY sqlite_autoindex_ticks_1 WHERE time>=? AND ticker NOT IN (SELECT ticker FROM outcomes) GROUP BY ticker').all(since) as {ticker:string;time:number}[];}
-  prune(now=Date.now()){this.db.prepare('DELETE FROM ticks WHERE time<?').run(now-30*86400000);}
+  /** Ticks older than 30 days are deleted, except the final minute (tau < 60): that is the one window the 1-minute
+   *  history cannot test, so it is kept for good (~25 MB/day) for the final-minute study and the late-round forecast. */
+  prune(now=Date.now()){this.db.prepare('DELETE FROM ticks WHERE time<? AND (tau IS NULL OR tau>=60)').run(now-30*86400000);}
   expire(now:number){this.db.prepare("UPDATE paper_trades SET status='expired',settled_time=? WHERE status='resting' AND json_extract(context,'$.close')<=?").run(now,now);}
   export(table:string){if(!tables.includes(table as any))throw new Error('Unknown journal table');const rows=this.db.prepare(`SELECT * FROM ${table}`).all() as Record<string,unknown>[];
     const columns=(this.db.prepare(`PRAGMA table_info(${table})`).all() as {name:string}[]).map(r=>r.name);

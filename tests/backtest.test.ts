@@ -88,3 +88,14 @@ it('final-minute study reads settled rounds from the live journal, one entry per
   // A: buy YES at 86¢ and win; B: buy YES at 86¢ and lose.
   expect(f.model.mean).toBeCloseTo(((1-.86-fee(.86))+(-.86-fee(.86)))/2,9);expect(f.accuracy.length).toBeGreaterThan(0);
   expect(finalMinuteStudy(new Journal(':memory:').db)).toBeNull();});
+it('the backtest refresh runs once the verdict is a day old, never right after startup and at most hourly',async()=>{
+  const {refreshDue,REFRESH_EVERY_MS,STARTUP_GRACE_MS}=await import('../src/engine/refresh');const now=Date.parse('2026-10-08T12:00:00Z'),up={running:false,lastAttempt:0,started:now-STARTUP_GRACE_MS-1};
+  expect(refreshDue(now-REFRESH_EVERY_MS-1,now,up)).toBe(true);expect(refreshDue(null,now,up)).toBe(true);expect(refreshDue(now-3600000,now,up)).toBe(false);
+  expect(refreshDue(null,now,{...up,running:true})).toBe(false);expect(refreshDue(null,now,{...up,started:now-60000})).toBe(false);expect(refreshDue(null,now,{...up,lastAttempt:now-600000})).toBe(false);});
+it('final-minute evidence only reads as proven with 100+ trades, a range above zero and both halves positive',async()=>{
+  const {finalMinuteEvidence}=await import('../src/backtest/verdict');const v=(t:any,rounds=400)=>verdict({finalMinute:{rounds,trade:t}});
+  expect(finalMinuteEvidence(null).status).toBe('collecting');
+  expect(finalMinuteEvidence(v({n:23,mean:-.07,ci:[-.25,.12],early:-.1,late:.02},87)).text).toContain('Needs 100+ trades');
+  expect(finalMinuteEvidence(v({n:150,mean:.04,ci:[.01,.07],early:.03,late:.05})).status).toBe('proven');
+  expect(finalMinuteEvidence(v({n:150,mean:.04,ci:[.01,.07],early:-.01,late:.08})).status).toBe('unclear');
+  expect(finalMinuteEvidence(v({n:150,mean:-.04,ci:[-.07,-.01],early:-.03,late:-.05})).status).toBe('losing');});

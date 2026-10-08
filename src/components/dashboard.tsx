@@ -9,10 +9,11 @@ import Settings from './settings';
 import {Button} from './ui/button';
 import {Input} from './ui/input';
 import {Card} from './ui/card';
-import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Tactics,Session,Feeds,Collapsible,WindowBar,Pill,RecentRounds,actionTone} from './panels';
+import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Tactics,Session,Feeds,Collapsible,WindowBar,Pill,RecentRounds,DataUpdate,actionTone} from './panels';
 import {SiteHeader} from './site-header';
 import {cn} from '@/lib/utils';
 import {ago,signedDollars} from './format';
+import {finalMinuteEvidence} from '@/backtest/verdict';
 const ProbabilityChart=dynamic(()=>import('./probability-chart'),{ssr:false,loading:()=><div className="chart animate-pulse rounded-xl bg-surface-2"/>});
 
 export default function Dashboard(){
@@ -29,6 +30,7 @@ export default function Dashboard(){
       <span className="num hidden text-xs text-muted md:inline" title="Age of data on screen">{s?ago(Math.max(0,Date.now()-s.engineTime)):'—'}</span>
     </SiteHeader>
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 pt-4 pb-16 sm:px-6">
+      <DataUpdate s={s}/>
       <Instruments s={s}/>
       <div className="grid gap-4 lg:grid-cols-12">
         <div className="lg:col-span-8"><SignalPanel s={s} fresh={fresh}/></div>
@@ -50,7 +52,7 @@ export default function Dashboard(){
         {s?.config?<Settings config={s.config}/>:<p className="text-muted">Waiting for engine</p>}
       </Collapsible>
       <Collapsible title="Sound alerts" icon={<BellRing aria-hidden className="size-4 text-info"/>} aside={sound.prefs.enabled?(sound.ready?'on':'click page to arm'):'muted'}><SoundPanel {...sound}/></Collapsible>
-      <footer className="flex flex-wrap justify-between gap-3 pt-2 text-xs text-faint"><span>Next: <span className="num">{s?.next?.ticker??'discovering'}</span> · journal stays in ./data/advisor.db · orders disabled</span><a className="underline-offset-4 hover:text-fg hover:underline" href="/api/engine/export/signals">Export signals CSV</a></footer>
+      <footer className="flex flex-wrap justify-between gap-3 pt-2 text-xs text-faint"><span>Next: <span className="num">{s?.next?.ticker??'discovering'}</span> · journal stays in ./data/advisor.db · orders disabled · {finalMinuteEvidence(s?.backtest??null).text}{s?.backtestRefresh?.running?' · refreshing the backtest now':s?.backtest?.generated?` · backtest refreshed ${new Date(s.backtest.generated).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`:''}</span><a className="underline-offset-4 hover:text-fg hover:underline" href="/api/engine/export/signals">Export signals CSV</a></footer>
     </main>
     {s?.guards?.dailyLocked?<div role="dialog" aria-modal="true" aria-labelledby="lock-title" className="fixed inset-0 z-50 flex items-center justify-center bg-bg/95 p-5 backdrop-blur"><Card className="max-w-md space-y-5 border-no/40">
       <div className="label text-no">Daily discipline lock</div><h1 id="lock-title" className="font-display text-7xl font-bold text-no">LOCKED</h1>
