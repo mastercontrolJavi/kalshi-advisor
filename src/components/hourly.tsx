@@ -7,7 +7,7 @@ import {SiteHeader} from './site-header';
 import {Card} from './ui/card';
 import {Pill,ProbBar,Collapsible,BacktestNote,type Tone} from './panels';
 import {cn} from '@/lib/utils';
-import {dollars,signedDollars,cents,signedCents,pct,qty,mmss} from './format';
+import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,opensAt,maintenanceNote} from './format';
 const et=(t:number|null|undefined)=>t?new Date(t).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit'})+' ET':'—';
 const local=(t:number|null|undefined)=>t?new Date(t).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'—';
 const hm=(sec:number)=>sec>=3600?`${Math.floor(sec/3600)}:${mmss(sec%3600)}`:mmss(sec);
@@ -21,6 +21,16 @@ export default function Hourly(){
   // Only strikes with a live two-sided market (or a model price between 2% and 98%) — the rest are settled in all but name.
   const view=(h?.rungs??[]).filter((r:any)=>(h.spot==null||Math.abs(r.strike-h.spot)<=1000)&&(r.mid!=null||(r.quant!=null&&r.quant>.02&&r.quant<.98)));
   const totals=h?.history?.totals??{};
+  // Shown with or without a current hour, so results stay visible while Kalshi has no hourly market open.
+  const pastHours=h?<>
+      <Collapsible open title="Past hours" icon={<History aria-hidden className="size-4 text-info"/>} aside={totals['900']?.n?`15-min-left call ${Math.round(totals['900'].rate*100)}% right (${totals['900'].hits}/${totals['900'].n})`:'calls & results'}>
+        <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-5">{HORIZONS.map(([k,l])=>{const t=totals[k];return <div key={k} className="rounded-xl border border-line bg-surface-2/50 p-3"><div className="label">{l} left</div><div className="num mt-1 text-lg">{t?.n?pct(t.rate,0):'—'}</div><div className="text-xs text-muted">{t?.hits??0}/{t?.n??0} right{t?.brier!=null?` · Brier ${t.brier.toFixed(3)}`:''}{t?.kalshiBrier!=null?` (Kalshi ${t.kalshiBrier.toFixed(3)})`:''}</div></div>;})}</div>
+        {h.history?.rows?.length?<div className="overflow-x-auto"><table className="w-full min-w-[720px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['Hour closed','Open ref','Settled avg','Result',...HORIZONS.map(([,l])=>l)].map(t=><th key={t} scope="col" className="pb-2 pr-3 font-medium">{t}</th>)}</tr></thead>
+          <tbody>{h.history.rows.map((r:any)=><tr key={r.event} className="border-t border-line"><td className="py-2 pr-3 num">{et(r.close)}</td><td className="num pr-3">{dollars(r.kHour)}</td><td className="num pr-3">{dollars(r.settle)}</td><td className="pr-3">{r.result?<Pill tone={r.result==='yes'?'yes':'no'}>{r.result==='yes'?'UP':'DOWN'}</Pill>:<span className="text-xs text-muted">pending</span>}</td>
+            {HORIZONS.map(([k])=>{const c=r.calls[k];if(!c)return <td key={k} className="pr-3 text-faint">—</td>;const ok=r.result?(c.direction==='UP')===(r.result==='yes'):null;return <td key={k} className="pr-3"><span className={c.direction==='UP'?'text-yes':'text-no'}>{c.direction==='UP'?'▲':'▼'}{pct(c.direction==='UP'?c.p:1-c.p,0)}</span>{ok===null?null:ok?<Check aria-label="right" className="ml-1 inline size-3.5 text-yes"/>:<X aria-label="wrong" className="ml-1 inline size-3.5 text-no"/>}</td>;})}</tr>)}</tbody></table></div>
+        :<p className="text-sm text-muted">Hours appear here once the app has been running at their open. Calls are frozen at 45, 30, 15, 5 and 1 minute left.</p>}
+      </Collapsible>
+      </>:null;
   return <>
     <div aria-hidden className="ambient" data-tone={!fresh?'warn':best?tone:'none'}/>
     <SiteHeader current="/hourly" aside={<span className="num hidden truncate text-xs text-muted xl:inline">{h?.event??'waiting for hourly market'}</span>}>
@@ -28,7 +38,9 @@ export default function Hourly(){
       <Pill tone={fresh?'yes':'warn'}><span className={fresh?'pulse size-1.5 rounded-full bg-yes':'size-1.5 rounded-full bg-warn'}/>{fresh?'Live':connected?'Stale':'Reconnecting'}</Pill>
     </SiteHeader>
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 pt-4 pb-16 sm:px-6">
-      {!h?.event?<Card><p className="text-sm text-muted">{!fresh?'Live state unavailable.':h?.error?`Hourly prices unavailable: ${h.error}`:'Waiting for the current hourly market (Kalshi KXBTCD).'}</p></Card>:<>
+      {!h?.event?<><Card className="space-y-1"><p className="text-sm">{!fresh?'Live state unavailable.':h?.error?`Hourly prices unavailable: ${h.error}`:'No hourly Bitcoin market is open on Kalshi right now.'}</p>
+        {fresh&&h&&!h.error?<p className="text-sm text-muted">{h.next?`Next hourly market opens ${opensAt(h.next.open)} and closes ${opensAt(h.next.close)}.`:'Kalshi has not listed the next hourly market yet; this updates every minute.'} {maintenanceNote()??''}</p>:null}</Card>
+        {h?pastHours:null}</>:<>
       <div className="grid gap-4 lg:grid-cols-12">
         <Card className={cn('rise lg:col-span-8',best?(best.side==='yes'?'border-yes/40':'border-no/40'):'')}>
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -64,13 +76,7 @@ export default function Hourly(){
             <td className={cn('num pr-3',r.edgeYes>=(s?.config?.minEdge??.04)?'text-yes':r.edgeYes>0?'text-fg':'text-faint')}>{signedCents(r.edgeYes)}</td><td className={cn('num',r.edgeNo>=(s?.config?.minEdge??.04)?'text-yes':r.edgeNo>0?'text-fg':'text-faint')}>{signedCents(r.edgeNo)}</td></tr>)}</tbody></table></div>
         <p className="mt-3 text-xs text-faint">YES pays $1 if the closing 60-s BRTI average is above the strike. Edges are quant probability minus the ask minus the taker fee. Strikes are $100 apart; only strikes with a live two-sided market within $1,000 of the price are shown.</p>
       </Collapsible>
-      <Collapsible open title="Past hours" icon={<History aria-hidden className="size-4 text-info"/>} aside={totals['900']?.n?`15-min-left call ${Math.round(totals['900'].rate*100)}% right (${totals['900'].hits}/${totals['900'].n})`:'calls & results'}>
-        <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-5">{HORIZONS.map(([k,l])=>{const t=totals[k];return <div key={k} className="rounded-xl border border-line bg-surface-2/50 p-3"><div className="label">{l} left</div><div className="num mt-1 text-lg">{t?.n?pct(t.rate,0):'—'}</div><div className="text-xs text-muted">{t?.hits??0}/{t?.n??0} right{t?.brier!=null?` · Brier ${t.brier.toFixed(3)}`:''}{t?.kalshiBrier!=null?` (Kalshi ${t.kalshiBrier.toFixed(3)})`:''}</div></div>;})}</div>
-        {h.history?.rows?.length?<div className="overflow-x-auto"><table className="w-full min-w-[720px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['Hour closed','Open ref','Settled avg','Result',...HORIZONS.map(([,l])=>l)].map(t=><th key={t} scope="col" className="pb-2 pr-3 font-medium">{t}</th>)}</tr></thead>
-          <tbody>{h.history.rows.map((r:any)=><tr key={r.event} className="border-t border-line"><td className="py-2 pr-3 num">{et(r.close)}</td><td className="num pr-3">{dollars(r.kHour)}</td><td className="num pr-3">{dollars(r.settle)}</td><td className="pr-3">{r.result?<Pill tone={r.result==='yes'?'yes':'no'}>{r.result==='yes'?'UP':'DOWN'}</Pill>:<span className="text-xs text-muted">pending</span>}</td>
-            {HORIZONS.map(([k])=>{const c=r.calls[k];if(!c)return <td key={k} className="pr-3 text-faint">—</td>;const ok=r.result?(c.direction==='UP')===(r.result==='yes'):null;return <td key={k} className="pr-3"><span className={c.direction==='UP'?'text-yes':'text-no'}>{c.direction==='UP'?'▲':'▼'}{pct(c.direction==='UP'?c.p:1-c.p,0)}</span>{ok===null?null:ok?<Check aria-label="right" className="ml-1 inline size-3.5 text-yes"/>:<X aria-label="wrong" className="ml-1 inline size-3.5 text-no"/>}</td>;})}</tr>)}</tbody></table></div>
-        :<p className="text-sm text-muted">Hours appear here once the app has been running at their open. Calls are frozen at 45, 30, 15, 5 and 1 minute left.</p>}
-      </Collapsible>
+      {pastHours}
       <Card className="flex items-start gap-3 text-xs text-muted"><Info aria-hidden className="mt-0.5 size-4 shrink-0 text-info"/><span>Settlement: the simple average of CF Benchmarks&apos; BRTI over the 60 s before the top of the hour (ET), exactly like the 15-minute markets. The hourly model uses the same volatility, basis correction and final-minute locking; σ over an hour is wider, so probabilities stay closer to 50% until late. <Clock aria-hidden className="inline size-3.5"/> Trade sizes use your normal risk settings.</span></Card>
       </>}
     </main>

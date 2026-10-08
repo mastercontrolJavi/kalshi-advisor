@@ -3,7 +3,7 @@ import {useEffect,useRef,type ReactNode} from 'react';
 import {Check,X,Info,Clock,Zap,TrendingDown,ChevronRight,ArrowUpRight,ArrowDownRight,Minus,Radio,Gauge,Wallet,BookOpen,Layers,ShieldCheck,Activity,TriangleAlert,Crosshair,FlaskConical} from 'lucide-react';
 import {Card} from './ui/card';
 import {cn} from '@/lib/utils';
-import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,ago} from './format';
+import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,ago,opensAt,maintenanceNote} from './format';
 import {ruleVerdict,exitVerdict} from '@/backtest/verdict';
 
 export type Tone='yes'|'no'|'warn'|'neutral';
@@ -64,6 +64,7 @@ export function SignalPanel({s,fresh}:{s:any;fresh:boolean}){
     </div>
     <div className={cn('font-display mt-4 text-6xl leading-none font-bold tracking-tight uppercase sm:text-8xl',toneText[tone])} aria-live="polite">{action}</div>
     <p className="mt-3 max-w-3xl text-[15px] text-fg/90">{fresh?(idea?ev.reason:failed?`${failed} of ${gates.length} checks failing${waiting?` · ${waiting.label.toLowerCase()} ${waiting.detail}`:''}`:waiting?`All checks clear — waiting: ${waiting.detail}`:ev?.reason??'Warming up'):'Live state unavailable — advice suppressed'}</p>
+    {fresh&&!s?.market&&s?.nextOpen?<p className="mt-1 text-sm text-muted">Next round opens {opensAt(s.nextOpen)}. {maintenanceNote()??''}</p>:null}
     {idea?<BacktestNote s={s} which="15m"/>:null}
     {idea?<p className="mt-1 text-sm text-muted">{paperOnly?<><span className="text-info">Below 1 contract at your risk settings — logged as a paper trade.</span> One contract would cost {dollars(idea.price+idea.fee)}.</>:<>Spend / max loss {dollars(idea.maxLoss)} · ask {cents(idea.price)} + {cents(idea.fee,2)} fee</>}</p>:null}
     {gates.length?<ul className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" aria-label="Trade checks">{gates.some(g=>g.ok)?<li className="flex items-center gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2 text-sm text-muted sm:hidden"><Check aria-hidden className="size-4 text-yes"/>{gates.filter(g=>g.ok).length} passing</li>:null}{gates.map(g=>{const info=!g.ok&&g.advisory,wait=!g.ok&&g.wait;return <li key={g.key} className={cn('items-start gap-2 rounded-xl border px-3 py-2',g.ok?'hidden border-line bg-surface-2/60 sm:flex':wait?'flex border-line-strong bg-surface-2/60':info?'flex border-info/35 bg-info/10':'flex border-warn/35 bg-warn-dim/40')}>

@@ -1,3 +1,12 @@
+/** "5:00 AM ET (2:00 AM your time)" for a timestamp, plus a note during Kalshi's Thursday 3–5 AM ET maintenance window. */
+export function opensAt(t:number){
+  const et=new Date(t).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit'}),local=new Date(t).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+  return et===local?`${et}`:`${et} ET (${local} your time)`;
+}
+export function maintenanceNote(now=Date.now()){
+  const p=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'numeric',hourCycle:'h23'}).formatToParts(new Date(now)).map(x=>[x.type,x.value]));
+  return p.weekday==='Thu'&&Number(p.hour)<9?'Kalshi closes every Thursday 3–5 AM ET for maintenance and lists no hourly Bitcoin markets for a few hours around it.':null;
+}
 export const dollars=(v:number|null|undefined,digits=2)=>v==null||!Number.isFinite(v)?'—':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:digits,maximumFractionDigits:digits}).format(v);
 export const signedDollars=(v:number|null|undefined)=>v==null||!Number.isFinite(v)?'—':`${v>0?'+':v<0?'−':''}${dollars(Math.abs(v))}`;
 export const cents=(v:number|null|undefined,digits=1)=>v==null||!Number.isFinite(v)?'—':`${(v*100).toFixed(digits)}¢`;

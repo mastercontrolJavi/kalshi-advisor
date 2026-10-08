@@ -122,7 +122,7 @@ const hourlyBoard=new HourlyBoard(client),hourlyMemory=new Map<string,ExitMemory
 let hourlyState:any=null,hourlyHistory=buildHourlyHistory(journal.db);
 function computeHourly(time:number,now:number,spot:number|null,vol:any,venueStates:any[],guards:any){
   const {current,next}=hourlyBoard.events(time);
-  const base={updated:hourlyBoard.updated,error:hourlyBoard.error,series:HOURLY_SERIES,next:next?{event:next.event,open:next.open,close:next.close}:null,history:hourlyHistory,calibration:{hourly:calibration?.hourly??null}};
+  const base={updated:hourlyBoard.updated,error:hourlyBoard.error,series:HOURLY_SERIES,next:next?{event:next.event,open:next.open,close:next.close}:hourlyBoard.upcoming,history:hourlyHistory,calibration:{hourly:calibration?.hourly??null}};
   if(!current)return {...base,event:null};
   const tau=(current.close-time)/1000,basis=config.basisCorrection+(config.autoBasis?basisState.correction:0),schedule={...kalshi.fees,precision:config.feePrecision};
   // "Up this hour" reference: the proxy average of the 60 s before the hour opened (plus the learned basis).
@@ -199,7 +199,8 @@ const loop=setInterval(()=>{
     if(!market){
       // Between windows: poll every second so the next market and its K are picked up immediately.
       if(now-lastFastRefresh>1000){lastFastRefresh=now;safe('market-refresh-error',refresh);}
-      state={...common,market:null,evaluation:{action:'NO TRADE',reason:'No active market',idea:null,makers:[]}};
+      const upcoming=kalshi.markets.find(m=>Date.parse(m.open_time)>time);
+      state={...common,market:null,nextOpen:upcoming?Date.parse(upcoming.open_time):null,evaluation:{action:'NO TRADE',reason:upcoming?'No round is open right now':'No active market',idea:null,makers:[]}};
     }
     else {
       const close=Date.parse(market.close_time),open=Date.parse(market.open_time),tau=(close-time)/1000,book=kalshi.books.get(market.ticker)!;

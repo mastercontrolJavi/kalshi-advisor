@@ -58,7 +58,9 @@ export class KalshiFeed {
       // Ask for markets closing within the next hour: the current one and the next few. status=unopened returns the
       // furthest-future markets first (a day ahead), so the very next round was often missing from its first page.
       const now=Date.now()+this.client.clockOffset,from=Math.floor(now/1000);
-      const {markets:windowed}=await this.client.get(`/markets?series_ticker=KXBTC15M&min_close_ts=${from}&max_close_ts=${from+3600}&limit=100`);
+      // Look 6 h ahead while nothing is open (Kalshi closes Thursdays 3–5 AM ET), so the next round is known in advance.
+      const ahead=this.markets.some(m=>Date.parse(m.close_time)>now)?3600:6*3600;
+      const {markets:windowed}=await this.client.get(`/markets?series_ticker=KXBTC15M&min_close_ts=${from}&max_close_ts=${from+ahead}&limit=100`);
       // Keep markets we already know until they close: around the open Kalshi briefly lists the new market as neither
       // 'open' nor 'unopened', and replacing the list dropped the live market for 12–28 s at 3 of 7 rollovers.
       const unique=new Map<string,Market>();for(const m of [...this.markets,...windowed])unique.set(m.ticker,m);

@@ -57,12 +57,19 @@ export function hourlyIdeas(rungs:Rung[],tau:number,balance:number|null,config:C
 }
 /** Polls the current and next KXBTCD events (one request returns every strike) and settles finished hours. */
 export class HourlyBoard {
-  markets:HourlyMarket[]=[];updated=0;error='';private busy=false;
+  markets:HourlyMarket[]=[];updated=0;error='';upcoming:{event:string;open:number;close:number}|null=null;private busy=false;private upcomingChecked=0;
   constructor(private client:KalshiClient){}
   async refresh(nowMs:number){
     if(this.busy)return;this.busy=true;
     try{const from=Math.floor(nowMs/1000),{markets}=await this.client.get(`/markets?series_ticker=${HOURLY_SERIES}&min_close_ts=${from}&max_close_ts=${from+7300}&limit=1000`);
-      this.markets=markets as HourlyMarket[];this.updated=Date.now();this.error='';}
+      this.markets=markets as HourlyMarket[];this.updated=Date.now();this.error='';
+      // Kalshi lists no hourly markets for several hours around its Thursday 3–5 AM ET maintenance (and occasionally
+      // otherwise). Then say when the next one opens: the soonest unopened event, checked once a minute.
+      if(!this.events(nowMs).current&&Date.now()-this.upcomingChecked>60000){this.upcomingChecked=Date.now();
+        const {events}=await this.client.get(`/events?series_ticker=${HOURLY_SERIES}&status=unopened&limit=5`);
+        const close=(events??[]).map((e:any)=>({event:e.event_ticker,close:Date.parse(e.strike_date)})).filter((e:any)=>Number.isFinite(e.close)&&e.close>nowMs).sort((a:any,b:any)=>a.close-b.close)[0];
+        this.upcoming=close?{event:close.event,open:close.close-3600000,close:close.close}:null;}
+      else if(this.events(nowMs).current)this.upcoming=null;}
     catch(e){this.error=(e as Error).message;}finally{this.busy=false;}
   }
   events(nowMs:number){
