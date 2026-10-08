@@ -24,8 +24,10 @@ export type ExitAction='TAKE PROFIT'|'RIDE'|'CUT LOSS'|'SELL NOW'|'HOLD'|'LET IT
 export interface ClosedRound {result:'yes'|'no'|null;estimate:'yes'|'no'|null}
 export interface ExitConfig {exitMode:'hold'|'risk'|'ev';exitMargin:number;makerMargin:number;takeProfitPct:number;stopLossPct:number;stopWinProb:number;trailGiveback:number;trailFloor:number}
 /** Per-position memory between evaluations: last action (hysteresis) and best gain since entry (trailing stop). */
-export interface ExitMemory {action:ExitAction|null;peak:number|null}
-export interface ExitAdvice {ticker:string;side:'yes'|'no';contracts:number;avgCost:number|null;costSource?:'fills'|'estimate'|'exposure';winProb:number|null;bid:number|null;holdValue:number|null;sellValue:number|null;sellFee:number|null;unrealized:number|null;unrealizedPct:number|null;action:ExitAction;limitPrice:number|null;takeProfitBid:number|null;stopBid:number|null;trailBid:number|null;peakPct:number|null;reason:string}
+/** Hold-mode heads-up: the plan stays HOLD, but big moves are called out with what selling would lock in. */
+export interface ExitNotice {kind:'gain'|'giveback'|'loss'|'odds';tone:'yes'|'warn'|'no';title:string;text:string}
+export interface ExitMemory {action:ExitAction|null;peak:number|null;trough?:number|null;entryProb?:number|null;notice?:ExitNotice['kind']|null}
+export interface ExitAdvice {troughPct?:number|null;entryWinProb?:number|null;notice?:ExitNotice|null;ticker:string;side:'yes'|'no';contracts:number;avgCost:number|null;costSource?:'fills'|'estimate'|'exposure';winProb:number|null;bid:number|null;holdValue:number|null;sellValue:number|null;sellFee:number|null;unrealized:number|null;unrealizedPct:number|null;action:ExitAction;limitPrice:number|null;takeProfitBid:number|null;stopBid:number|null;trailBid:number|null;peakPct:number|null;reason:string}
 const c=(v:number)=>`${(v*100).toFixed(1)}¢`;
 const pctTxt=(v:number)=>`${v>=0?'+':'−'}${Math.abs(v*100).toFixed(0)}%`;
 const MIN_SELLABLE_BID=.05,SETTLE_BID=.97,SETTLE_RELEASE=.95;
@@ -50,6 +52,22 @@ export function entryCost(position:Position,open:{side:string;contracts:number;a
   if(open&&open.side===side&&Math.abs(open.contracts-contracts)<.011)return {avgCost:open.avgCost,source:'fills'};
   if(!Number.isFinite(exposure)||exposure<=0)return null;const price=exposure/contracts;return {avgCost:price+fee(Math.min(.99,price),contracts,'taker',schedule)/contracts,source:'estimate'};
 }
+/**
+ * Hold-mode heads-up, most serious first: a loss beyond stopLossPct, giving back trailGiveback of a gain that reached the
+ * arm level, the win chance falling 25 points since entry, a gain past the arm level. Each stays on until its condition
+ * clearly clears (80% of the threshold), so a 1¢ wobble does not re-fire it.
+ */
+export function holdNotice(unrealized:number|null,u:number|null,peak:number|null,arm:number|null,winProb:number,entryProb:number,bid:number|null,sellValue:number|null,contracts:number,cfg:ExitConfig,prev:ExitNotice['kind']|null):ExitNotice|null{
+  if(u===null||unrealized===null||bid===null)return null;
+  const was=(k:ExitNotice['kind'])=>prev===k,usd=(x:number)=>`$${Math.abs(x).toFixed(2)}`,wp=`${(winProb*100).toFixed(0)}%`,ep=`${(entryProb*100).toFixed(0)}%`;
+  const sell=`Selling now (bid ${c(bid)}) would ${unrealized>=0?'lock in':'lose'} ${usd(unrealized)}`,backtest='In the backtest, selling early did worse than holding on average; your call.';
+  if(u<=-cfg.stopLossPct||was('loss')&&u<=-cfg.stopLossPct*.8)return {kind:'loss',tone:'no',title:`Down ${pctTxt(u)}`,text:`${sell} and keep ${sellValue!==null?usd(sellValue):'what is left'}; holding risks it on a ${wp} win chance (${ep} when you bought). ${backtest}`};
+  if(peak!==null&&arm!==null&&peak>=arm){const level=Math.max(cfg.trailFloor,peak*(1-cfg.trailGiveback));
+    if(u<=level||was('giveback')&&u<=peak*(1-cfg.trailGiveback*.8))return {kind:'giveback',tone:'warn',title:'Gave back part of the gain',text:`Peak ${pctTxt(peak)} → now ${pctTxt(u)}. ${sell}. ${backtest}`};}
+  if(entryProb-winProb>=.25||was('odds')&&entryProb-winProb>=.2)return {kind:'odds',tone:'no',title:'Win chance dropped',text:`From ${ep} when you bought to ${wp} now. ${sell}. ${backtest}`};
+  if(arm!==null&&(u>=arm||was('gain')&&u>=arm*.8))return {kind:'gain',tone:'yes',title:`Up ${pctTxt(u)}`,text:`${sell}; holding pays $${contracts.toFixed(2)} if it wins (${wp} chance). ${backtest}`};
+  return null;
+}
 export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|null;noBid:number|null}|null,schedule:FeeSchedule,cfg:ExitConfig,memory:ExitMemory={action:null,peak:null},closed:ClosedRound|null=null,cost:{avgCost:number;source:'fills'|'estimate'}|null=null):ExitAdvice|null{
   const signed=Number(position.position_fp);if(!Number.isFinite(signed)||Math.abs(signed)<1e-9)return null;
   // Kalshi convention: positive position = YES contracts, negative = NO contracts.
@@ -62,12 +80,13 @@ export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|n
   // The arm level must be reachable: a contract bought at 80¢ can gain at most ~24% before fees, so a fixed +25% would
   // never arm. Arm at the smaller of takeProfitPct and half the maximum possible gain (selling at 99¢).
   const maxGain=avgCost?(netPer(.99,contracts,schedule)-avgCost)/avgCost:null,armPct=maxGain!==null&&maxGain>0?Math.min(cfg.takeProfitPct,maxGain/2):null;
-  const peakPct=risk?Math.max(memory.peak??-Infinity,unrealizedPct??-Infinity):null,armed=risk&&armPct!==null&&peakPct!==null&&peakPct>=armPct;
+  // Best and worst gain since entry are tracked in every mode (hold mode reports them; risk mode trails from the peak).
+  const peakPct=Math.max(memory.peak??-Infinity,unrealizedPct??-Infinity),troughPct=Math.min(memory.trough??Infinity,unrealizedPct??Infinity),armed=risk&&armPct!==null&&peakPct>=armPct;
   const trailLevel=armed?Math.max(cfg.trailFloor,peakPct!*(1-cfg.trailGiveback)):null;
   const takeProfitBid=risk&&armPct!==null?bidFor(avgCost!*(1+armPct),contracts,schedule,'atLeast'):null;
   const stopBid=risk?bidFor(avgCost!*(1-cfg.stopLossPct),contracts,schedule,'atMost'):null;
   const trailBid=trailLevel!==null?bidFor(avgCost!*(1+trailLevel),contracts,schedule,'atMost'):null;
-  const base={ticker:position.ticker,side,contracts,avgCost,costSource,bid,sellFee,sellValue,unrealized,unrealizedPct,takeProfitBid,stopBid,trailBid,peakPct:Number.isFinite(peakPct??NaN)?peakPct:null} as const;
+  const base={ticker:position.ticker,side,contracts,avgCost,costSource,bid,sellFee,sellValue,unrealized,unrealizedPct,takeProfitBid,stopBid,trailBid,peakPct:Number.isFinite(peakPct)?peakPct:null,troughPct:Number.isFinite(troughPct)?troughPct:null} as const;
   const plan=risk?(armed?` Plan: trailing stop at bid ≤ ${trailBid!==null?c(trailBid):'—'} (gain ${pctTxt(trailLevel!)}) · cut loss if win chance < ${(cfg.stopWinProb*100).toFixed(0)}%.`
     :` Plan: ride from bid ≥ ${takeProfitBid!==null?c(takeProfitBid):'—'} (${armPct!==null?pctTxt(armPct):'—'}) · cut loss at bid ≤ ${stopBid!==null?c(stopBid):'—'} (${pctTxt(-cfg.stopLossPct)}) or if win chance < ${(cfg.stopWinProb*100).toFixed(0)}%.`):'';
   if(closed){
@@ -76,16 +95,17 @@ export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|n
     return {...base,winProb:outcome===null?null:won?1:0,holdValue:outcome===null?null:won?contracts:0,action:'SETTLING',limitPrice:null,reason};
   }
   if(p===null||!Number.isFinite(p))return {...base,winProb:null,holdValue:null,action:'NO MODEL',limitPrice:null,reason:'Model not ready for this market; no exit estimate.'+plan};
-  const winProb=side==='yes'?p:1-p,holdValue=contracts*winProb;
+  const winProb=side==='yes'?p:1-p,holdValue=contracts*winProb,entryWinProb=memory.entryProb??winProb;
   const limit=Math.ceil((winProb+cfg.makerMargin)*100-1e-9)/100,limitPrice=limit<1&&(bid===null||limit>bid)?limit:null;
-  const out=(action:ExitAction,reason:string):ExitAdvice=>({...base,winProb,holdValue,action,limitPrice:action==='HOLD'?limitPrice:null,reason:reason+(action==='HOLD'||action==='RIDE'?plan:'')});
+  const out=(action:ExitAction,reason:string,notice:ExitNotice|null=null):ExitAdvice=>({...base,winProb,holdValue,entryWinProb,notice,action,limitPrice:action==='HOLD'?limitPrice:null,reason:reason+(action==='HOLD'||action==='RIDE'?plan:'')});
   // Hold mode shows one steady word all the way to settlement: the settle / nothing-left-to-sell cases only change the
   // explanation. Showing LET IT SETTLE and TOO LATE here flipped the big label 6+ times a round on 1¢ moves.
   if(cfg.exitMode==='hold'){
-    const held=`Holding to settlement · win chance ${(winProb*100).toFixed(0)}%.`;
-    if(bid!==null&&bid>=SETTLE_BID)return out('HOLD',`${held} Bid ${c(bid)}: it pays $1.00 at settlement, and selling now would only cost the fee.`);
-    if(bid===null||bid<MIN_SELLABLE_BID)return out('HOLD',`${held} ${bid===null?`No ${side.toUpperCase()} bid to sell into.`:`Bid only ${c(bid)}: too little left to be worth selling.`}`);
-    return out('HOLD',`${held} Selling now would ${unrealized!==null?`${unrealized>=0?'lock in':'lose'} $${Math.abs(unrealized).toFixed(2)}`:`pay ${c(sellValue!/contracts)}/contract`} and pay a second fee; in the backtest, early exits did worse than holding.`);
+    const held=`Holding to settlement · win chance ${(winProb*100).toFixed(0)}%${Math.abs(winProb-entryWinProb)>=.05?` (${(entryWinProb*100).toFixed(0)}% when you bought)`:''}.`;
+    const notice=holdNotice(unrealized,unrealizedPct,Number.isFinite(peakPct)?peakPct:null,armPct,winProb,entryWinProb,bid,sellValue,contracts,cfg,memory.notice??null);
+    if(bid!==null&&bid>=SETTLE_BID)return out('HOLD',`${held} Bid ${c(bid)}: it pays $1.00 at settlement, and selling now would only cost the fee.`,notice);
+    if(bid===null||bid<MIN_SELLABLE_BID)return out('HOLD',`${held} ${bid===null?`No ${side.toUpperCase()} bid to sell into.`:`Bid only ${c(bid)}: too little left to be worth selling.`}`,notice);
+    return out('HOLD',`${held} Selling now would ${unrealized!==null?`${unrealized>=0?'lock in':'lose'} $${Math.abs(unrealized).toFixed(2)}`:`pay ${c(sellValue!/contracts)}/contract`} after the fee.`,notice);
   }
   // Terminal states first: nothing sensible to do but wait. Settle has hysteresis so 96.9¢/97.0¢ does not flicker.
   if(bid!==null&&(bid>=SETTLE_BID||memory.action==='LET IT SETTLE'&&bid>=SETTLE_RELEASE))return out('LET IT SETTLE',`Bid ${c(bid)} — it pays $1.00 at settlement, and selling now only costs the fee.`);

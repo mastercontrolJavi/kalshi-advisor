@@ -35,3 +35,8 @@ it('sound is on by default; prefs saved before v2 are switched back on once, kee
   const old=migratePrefs({enabled:false,volume:.3,categories:{signals:false,positions:true,results:true,calls:true,timing:true,warnings:false},repeatSell:false});
   expect(old.enabled).toBe(true);expect(old.volume).toBe(.3);expect(old.categories.signals).toBe(true);expect(old.categories.warnings).toBe(true);
   const chosen=migratePrefs({version:2,enabled:false,volume:.5,categories:{timing:false},repeatSell:true});expect(chosen.enabled).toBe(false);expect(chosen.categories.timing).toBe(false);expect(chosen.categories.signals).toBe(true);expect((chosen as any).version).toBeUndefined();});
+it('a hold-mode heads-up plays once when it appears or changes, not when it clears',()=>{
+  expect(detectEvents({...base,notices:{A:null}},{...base,notices:{A:'gain'}})).toEqual(['positionMove']);
+  expect(detectEvents({...base,notices:{A:'gain'}},{...base,notices:{A:'gain'}})).toEqual([]);
+  expect(detectEvents({...base,notices:{A:'gain'}},{...base,notices:{A:'giveback'}})).toEqual(['positionMove']);
+  expect(detectEvents({...base,notices:{A:'loss'}},{...base,notices:{A:null}})).toEqual([]);});

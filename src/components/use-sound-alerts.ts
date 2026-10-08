@@ -30,6 +30,8 @@ export function useSoundAlerts(s:any,fresh:boolean,page:'15m'|'hourly'='15m'){
       if(exit&&events.some(e=>e==='sell'||e==='takeProfit'||e==='cutLoss'))new Notification(exit.action,{body:String(exit.reason).split(' Plan: ')[0],tag:'exit'});
       if((events.includes('buyYes')||events.includes('buyNo'))&&page==='hourly')new Notification(s.hourly?.action??'Hourly signal',{body:String(s.hourly?.reason??''),tag:'signal'});
       else if(events.includes('buyYes')||events.includes('buyNo'))new Notification(s.evaluation.action,{body:s.evaluation.reason+(s.backtest?` · Backtest: this rule averaged ${(s.backtest.buy15.mean*100).toFixed(1)}¢ per contract`:''),tag:'signal'});
+      const moved=((page==='hourly'?s.hourly?.exits:s.exits)??[]).find((e:any)=>e.notice);
+      if(events.includes('positionMove')&&moved)new Notification(moved.notice.title,{body:moved.notice.text,tag:'position'});
       if(events.includes('win'))new Notification('Profit',{body:`P&L today ${s.guards.pnl>=0?'+':'−'}$${Math.abs(s.guards.pnl).toFixed(2)}`,tag:'result'});
     }
   },[s,fresh,prefs,page]);

@@ -52,3 +52,5 @@
   - Resting paper-trade lookups on every Kalshi trade message and every second now use a (status,ticker) index.
   - The 4 Hz WebSocket push was ~208 KB. It now carries calibration only when it changes and the window history once a second; the page keeps the last copy.
   - The daily-loss baseline is now the first observed account value (cash + positions). Cash alone gave a $5.18 baseline on 2026-10-07, so the 10% lock fired on the first $0.52 loss.
+
+42. Hold mode felt unresponsive (user: "it just says hold" through big gains and losses). By design the plan stays HOLD, because the backtest favours holding. The box now reacts: live P&L in colour, best and worst gain since entry, win chance versus entry, and a heads-up (box + sound + `exit-notice` log) for four events. They are a gain past the ride level, giving back trailGiveback of such a gain, a loss past stopLossPct, and the win chance falling 25 points. Each states what selling would lock in and that early exits did worse in the backtest. The thresholds reuse the risk-mode settings, with 80% hysteresis. Risk mode remains one setting away for actual TAKE PROFIT / CUT LOSS calls.

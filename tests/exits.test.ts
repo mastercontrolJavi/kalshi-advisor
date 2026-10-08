@@ -68,3 +68,18 @@ it('risk mode: once CUT LOSS fires it stays while the loss is still beyond 35%, 
   expect(exitAdvice(yes('10','7.00'),.40,book(.37,.62),baseFees,risk,mem('CUT LOSS'))!.action).toBe('CUT LOSS');
   expect(exitAdvice(yes('10','7.00'),.40,book(.37,.62),baseFees,risk)!.action).toBe('HOLD');
   expect(exitAdvice(yes('10','7.00'),.6,book(.5,.49),baseFees,risk,mem('CUT LOSS'))!.action).toBe('HOLD');});
+it('hold mode reacts to big moves with a heads-up while the plan stays HOLD',()=>{
+  const at=(bid:number,p:number,m:ExitMemory=mem())=>exitAdvice(yes('10','5.00'),p,book(bid,1-bid-.01),baseFees,hold,m)!;
+  const flat=at(.5,.55);expect(flat.action).toBe('HOLD');expect(flat.notice).toBeNull();expect(flat.entryWinProb).toBeCloseTo(.55);
+  const up=at(.7,.75,{action:'HOLD',peak:0,entryProb:.55});expect(up.action).toBe('HOLD');expect(up.notice!.kind).toBe('gain');expect(up.notice!.text).toContain('lock in');
+  // Peak +38% then back to +6%: gave back more than half.
+  const back=at(.55,.6,{action:'HOLD',peak:.38,entryProb:.55});expect(back.notice!.kind).toBe('giveback');expect(back.peakPct).toBeCloseTo(.38);
+  const down=at(.22,.25,{action:'HOLD',peak:.02,entryProb:.55});expect(down.action).toBe('HOLD');expect(down.notice!.kind).toBe('loss');expect(down.notice!.text).toContain('55% when you bought');expect(down.troughPct!).toBeLessThan(-.5);
+  // Win chance −25 points without a big loss yet.
+  const odds=at(.45,.29,{action:'HOLD',peak:0,entryProb:.55});expect(odds.notice!.kind).toBe('odds');
+  // Hysteresis: a loss notice stays while the loss is still beyond 80% of the threshold, then clears.
+  expect(at(.3,.35,{action:'HOLD',peak:0,entryProb:.4,notice:'loss'}).notice!.kind).toBe('loss');
+  expect(at(.3,.35,{action:'HOLD',peak:0,entryProb:.4}).notice).toBeNull();
+  expect(at(.45,.5,{action:'HOLD',peak:0,entryProb:.5,notice:'loss'}).notice).toBeNull();
+  // Risk mode is unchanged: no notices, real exit calls.
+  expect(exitAdvice(yes('10','5.00'),.25,book(.22,.77),baseFees,risk)!.action).toBe('CUT LOSS');});

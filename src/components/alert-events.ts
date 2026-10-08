@@ -1,20 +1,20 @@
 import type {SoundName} from './sounds';
 /** The slice of live state that alerts react to. Sounds fire on transitions only, never on the first snapshot. */
-export interface AlertSnapshot {ticker:string|null;tau:number|null;entryAt:number;ideaKey:string|null;ideaSide:string|null;setupKey?:string|null;exits:Record<string,string>;pnl:number|null;day:string|null;liveDir:string|null;unreliable:boolean;locked:boolean}
+export interface AlertSnapshot {ticker:string|null;tau:number|null;entryAt:number;ideaKey:string|null;ideaSide:string|null;setupKey?:string|null;exits:Record<string,string>;pnl:number|null;day:string|null;liveDir:string|null;unreliable:boolean;locked:boolean;notices?:Record<string,string|null>}
 /** `page` picks which market the sounds follow: the 15-minute round, or the current hour (KXBTCD) on /hourly. */
 export function snapshot(s:any,fresh:boolean,page:'15m'|'hourly'='15m'):AlertSnapshot{
   const common={pnl:s?.guards?.pnl??null,day:s?.guards?.today??null,unreliable:!fresh||s?.quality?.level==='unreliable',locked:!!s?.guards?.locked};
   if(page==='hourly'){const h=fresh?s?.hourly:null,best=h?.ideas?.[0];
     return {...common,ticker:h?.event??null,tau:h?.event?h.tau:null,entryAt:s?.config?.sweetMaxSeconds??900,ideaKey:best?[best.ticker,best.side,best.price].join(':'):null,ideaSide:best?.side??null,setupKey:null,
-      exits:Object.fromEntries((h?.exits??[]).map((e:any)=>[e.ticker,e.action])),liveDir:h?.up?.direction??null};}
+      exits:Object.fromEntries((h?.exits??[]).map((e:any)=>[e.ticker,e.action])),notices:Object.fromEntries((h?.exits??[]).map((e:any)=>[e.ticker,e.notice?.kind??null])),liveDir:h?.up?.direction??null};}
   const idea=fresh?s?.evaluation?.idea:null;
   const setup=fresh?s?.tactics?.ideas?.[0]:null;
   return {ticker:s?.market?.ticker??null,tau:s?.market?s.tau:null,entryAt:s?.config?.sweetMaxSeconds??300,ideaKey:idea?[s.ticker,idea.side,idea.price].join(':'):null,ideaSide:idea?.side??null,setupKey:setup?[s.ticker,setup.kind,setup.side].join(':'):null,
-    exits:Object.fromEntries((fresh?s?.exits??[]:[]).map((e:any)=>[e.ticker,e.action])),pnl:s?.guards?.pnl??null,day:s?.guards?.today??null,
+    exits:Object.fromEntries((fresh?s?.exits??[]:[]).map((e:any)=>[e.ticker,e.action])),notices:Object.fromEntries((fresh?s?.exits??[]:[]).map((e:any)=>[e.ticker,e.notice?.kind??null])),pnl:s?.guards?.pnl??null,day:s?.guards?.today??null,
     liveDir:fresh?s?.liveCall?.direction??null:null,unreliable:!fresh||s?.quality?.level==='unreliable',locked:!!s?.guards?.locked};
 }
 // Most important first; the player spaces them out and caps how many play per update.
-export const priority:SoundName[]=['cutLoss','takeProfit','sell','lock','buyYes','buyNo','win','loss','warning','setup','hold','closingUp','closingDown','flipUp','flipDown','newWindow','entryWindow','finalMinute'];
+export const priority:SoundName[]=['cutLoss','takeProfit','sell','positionMove','lock','buyYes','buyNo','win','loss','warning','setup','hold','closingUp','closingDown','flipUp','flipDown','newWindow','entryWindow','finalMinute'];
 export function detectEvents(prev:AlertSnapshot|null,next:AlertSnapshot):SoundName[]{
   if(!prev)return [];
   const out=new Set<SoundName>();
@@ -30,5 +30,7 @@ export function detectEvents(prev:AlertSnapshot|null,next:AlertSnapshot):SoundNa
   if(sameWindow&&prev.tau!==null&&next.tau!==null){if(prev.tau>next.entryAt&&next.tau<=next.entryAt)out.add('entryWindow');if(prev.tau>60&&next.tau<=60)out.add(next.liveDir==='UP'?'closingUp':next.liveDir==='DOWN'?'closingDown':'finalMinute');}
   if(!prev.unreliable&&next.unreliable)out.add('warning');
   if(!prev.locked&&next.locked)out.add('lock');
+  // Hold-mode heads-up: a new or different notice on a position (not when it clears).
+  for(const [ticker,kind] of Object.entries(next.notices??{}))if(kind&&kind!==(prev.notices?.[ticker]??null))out.add('positionMove');
   return priority.filter(n=>out.has(n));
 }

@@ -1,10 +1,10 @@
 'use client';
 /** Synthesized alert sounds (Web Audio, no files). Each event has a distinct contour so it is recognisable without looking. */
-export type SoundName='buyYes'|'buyNo'|'sell'|'hold'|'win'|'loss'|'flipUp'|'flipDown'|'newWindow'|'entryWindow'|'finalMinute'|'closingUp'|'closingDown'|'setup'|'takeProfit'|'cutLoss'|'warning'|'lock';
+export type SoundName='buyYes'|'buyNo'|'sell'|'hold'|'win'|'loss'|'flipUp'|'flipDown'|'newWindow'|'entryWindow'|'finalMinute'|'closingUp'|'closingDown'|'setup'|'takeProfit'|'cutLoss'|'warning'|'lock'|'positionMove';
 export type Category='signals'|'positions'|'results'|'calls'|'timing'|'warnings';
 export const soundCatalog:{name:SoundName;label:string;category:Category}[]=[
   {name:'buyYes',label:'BUY YES signal',category:'signals'},{name:'buyNo',label:'BUY NO signal',category:'signals'},{name:'setup',label:'Scalp / dip setup appears',category:'signals'},
-  {name:'takeProfit',label:'TAKE PROFIT on your position (repeats)',category:'positions'},{name:'cutLoss',label:'CUT LOSS on your position (repeats)',category:'positions'},{name:'sell',label:'SELL NOW on your position (repeats)',category:'positions'},{name:'hold',label:'HOLD your position',category:'positions'},
+  {name:'takeProfit',label:'TAKE PROFIT on your position (repeats)',category:'positions'},{name:'cutLoss',label:'CUT LOSS on your position (repeats)',category:'positions'},{name:'sell',label:'SELL NOW on your position (repeats)',category:'positions'},{name:'hold',label:'HOLD your position',category:'positions'},{name:'positionMove',label:'Big move on your position (hold-mode heads-up)',category:'positions'},
   {name:'win',label:'Win / profit',category:'results'},{name:'loss',label:'Loss',category:'results'},
   {name:'flipUp',label:'Live call flips UP',category:'calls'},{name:'flipDown',label:'Live call flips DOWN',category:'calls'},
   {name:'newWindow',label:'New 15-min window',category:'timing'},{name:'entryWindow',label:'Entry window opens (5:00 left)',category:'timing'},{name:'finalMinute',label:'Final minute (no call)',category:'timing'},{name:'closingUp',label:'Closing call: UP into the final minute',category:'calls'},{name:'closingDown',label:'Closing call: DOWN into the final minute',category:'calls'},
@@ -43,7 +43,8 @@ const scores:Record<SoundName,Note[]>={
   cutLoss:[[880,0,.12,'sawtooth',.5],[660,.16,.12,'sawtooth',.5],[440,.32,.3,'sawtooth',.5]],
   setup:[[1568,0,.08,'sine',.7],[2093,.1,.14,'sine',.6]],
   warning:[[220,0,.18,'sawtooth',.5],[220,.26,.18,'sawtooth',.5]],
-  lock:[[150,0,.22,'square',.5],[150,.3,.22,'square',.5],[110,.6,.4,'square',.5]]
+  lock:[[150,0,.22,'square',.5],[150,.3,.22,'square',.5],[110,.6,.4,'square',.5]],
+  positionMove:[[E5,0,.12,'triangle',.8],[A4,.14,.12,'triangle',.8],[E5,.28,.2,'triangle',.8]]
 };
 export class SoundEngine {
   private ctx:AudioContext|null=null;
