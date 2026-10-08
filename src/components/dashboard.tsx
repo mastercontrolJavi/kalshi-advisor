@@ -33,8 +33,8 @@ export default function Dashboard(){
         <div className="lg:col-span-8"><SignalPanel s={s} fresh={fresh}/></div>
         <div className="lg:col-span-4"><ForecastPanel s={s} fresh={fresh}/></div>
       </div>
-      <Coach s={s}/>
       <Positions s={s} fresh={fresh}/>
+      <Coach s={s}/>
       <Collapsible open title="Scalp & dip" icon={<Crosshair aria-hidden className="size-4 text-info"/>} aside={fresh&&s?.tactics?.ideas?.length?<span className="text-yes">{s.tactics.ideas.length} setup{s.tactics.ideas.length>1?'s':''} now</span>:'intra-window setups'}><Tactics s={s} fresh={fresh}/></Collapsible>
       <Instruments s={s}/>
       <Collapsible open title="Recent rounds" icon={<History aria-hidden className="size-4 text-info"/>} aside={s?.calibration?.roundTrends?.totals?.live300?.n?`5:00 call ${Math.round(s.calibration.roundTrends.totals.live300.rate*100)}% right`:'calls & results'}><RecentRounds s={s}/></Collapsible>

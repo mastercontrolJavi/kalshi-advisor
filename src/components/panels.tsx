@@ -12,10 +12,13 @@ const toneBorder:Record<Tone,string>={yes:'border-yes/40',no:'border-no/40',warn
 export const actionTone=(action:string):Tone=>action==='BUY YES'?'yes':action==='BUY NO'?'no':'neutral';
 
 /** Mobile-first: closed on phones so the call stays on the first screen; `open` panels expand on ≥1024px. */
-export function Collapsible({title,icon,aside,open=false,children}:{title:string;icon?:ReactNode;aside?:ReactNode;open?:boolean;children:ReactNode}){
-  const ref=useRef<HTMLDetailsElement>(null);
-  useEffect(()=>{if(open&&ref.current&&window.matchMedia('(min-width: 1024px)').matches)ref.current.open=true;},[open]);
-  return <Card className="p-0"><details ref={ref}>
+/** `remember` keeps the panel open or minimized across reloads (per browser), shared by every page that uses the key. */
+export function Collapsible({title,icon,aside,open=false,remember,className,children}:{title:string;icon?:ReactNode;aside?:ReactNode;open?:boolean;remember?:string;className?:string;children:ReactNode}){
+  const ref=useRef<HTMLDetailsElement>(null),key=remember?'panel:'+remember:null;
+  useEffect(()=>{const el=ref.current;if(!el)return;let saved:string|null=null;if(key){try{saved=localStorage.getItem(key);}catch{}}
+    if(saved!==null)el.open=saved==='open';else if(open&&window.matchMedia('(min-width: 1024px)').matches)el.open=true;},[open,key]);
+  const toggled=key?(e:React.SyntheticEvent<HTMLDetailsElement>)=>{try{localStorage.setItem(key,e.currentTarget.open?'open':'closed');}catch{}}:undefined;
+  return <Card className={cn('p-0',className)}><details ref={ref} onToggle={toggled}>
     <summary className="flex min-h-14 items-center gap-3 px-5 py-3"><ChevronRight aria-hidden className="chev size-4 text-faint"/>{icon}<span className="font-medium">{title}</span><span className="ml-auto text-xs text-muted">{aside}</span></summary>
     <div className="border-t border-line px-5 pb-5 pt-4">{children}</div></details></Card>;
 }
@@ -46,17 +49,20 @@ export function BacktestNote({s,which}:{s:any;which:'15m'|'hourly'}){
     <FlaskConical aria-hidden className={cn('mt-0.5 size-4 shrink-0',v.tone==='warn'?'text-warn':v.tone==='yes'?'text-yes':'text-muted')}/><span>{v.text}</span></div>;
 }
 /** Trade coach: warnings from your real fills (too big, switching sides, chasing a loss, lottery tickets). */
+/** Minimizable (remembered per browser); when minimized the summary line still shows the status in colour. */
 export function Coach({s}:{s:any}){
-  const c=s?.coach,items:any[]=c?.items??[],ruin=ruinVerdict(s?.backtest??null);
-  if(!items.length)return <Card className="flex min-h-14 flex-wrap items-center gap-3 py-3"><ShieldCheck aria-hidden className="size-4 text-faint"/><span className="label">Coach</span><span className="ml-auto text-sm text-muted">{s?.account?.ready?'No risky trades today':'Waiting for account'}</span></Card>;
-  const stop=c.level==='stop',caution=c.level==='caution';
-  return <Card className={cn('rise',stop?'border-no/50':caution?'border-warn/50':'border-line')}>
-    <div className="flex flex-wrap items-center gap-2"><ShieldAlert aria-hidden className={cn('size-4',stop?'text-no':caution?'text-warn':'text-faint')}/><h2 className="label">Coach</h2>
-      <span className={cn('ml-auto text-xs',stop?'text-no':caution?'text-warn':'text-muted')}>{stop?'Slow down: risky trades in the last hour':caution?'Careful: a risky trade in the last hour':'Earlier today'} · {['size','flip','chase','longshot'].filter(k=>c.counts?.[k]).map(k=>`${c.counts[k]} ${({size:'big bet',flip:'side switch',chase:'chase',longshot:'lottery ticket'} as any)[k]}${c.counts[k]>1?k==='flip'?'es':'s':''}`).join(' · ')} today</span></div>
-    {stop?<div className="font-display mt-3 text-5xl leading-none font-bold text-no uppercase">Slow down</div>:null}
-    <ul className="mt-3 space-y-2">{items.map((i:any)=><li key={i.id} className={cn('flex items-start gap-2 rounded-xl border px-3 py-2 text-sm',i.level==='stop'?'border-no/40 bg-no-dim/30':'border-warn/35 bg-warn-dim/25')}>
+  const c=s?.coach,items:any[]=c?.items??[],ruin=ruinVerdict(s?.backtest??null),stop=c?.level==='stop',caution=c?.level==='caution';
+  const counts=['size','flip','chase','longshot'].filter(k=>c?.counts?.[k]).map(k=>`${c.counts[k]} ${({size:'big bet',flip:'side switch',chase:'chase',longshot:'lottery ticket'} as any)[k]}${c.counts[k]>1?k==='flip'?'es':'s':''}`).join(' · ');
+  const aside=!items.length?(s?.account?.ready?'No risky trades today':'Waiting for account')
+    :<span className={stop?'text-no':caution?'text-warn':'text-muted'}>{stop?'Slow down: risky trades in the last hour':caution?'Careful: a risky trade in the last hour':'Earlier today'}<span className="hidden sm:inline"> · {counts} today</span></span>;
+  return <Collapsible open remember="coach" title="Coach" className={stop?'border-no/50':caution?'border-warn/50':undefined}
+    icon={items.length?<ShieldAlert aria-hidden className={cn('size-4',stop?'text-no':caution?'text-warn':'text-faint')}/>:<ShieldCheck aria-hidden className="size-4 text-faint"/>} aside={aside}>
+    {!items.length?<p className="text-sm text-muted">Nothing flagged today. The coach warns about trades that cost 10% or more of the account, switching sides in the same market, buying again within 3 minutes of a loss, and $1+ on contracts at 5¢ or less.</p>:<div className="space-y-3">
+    {stop?<div className="font-display text-5xl leading-none font-bold text-no uppercase">Slow down</div>:null}
+    <p className="text-xs text-muted sm:hidden">{counts} today</p>
+    <ul className="space-y-2">{items.map((i:any)=><li key={i.id} className={cn('flex items-start gap-2 rounded-xl border px-3 py-2 text-sm',i.level==='stop'?'border-no/40 bg-no-dim/30':'border-warn/35 bg-warn-dim/25')}>
       <TriangleAlert aria-hidden className={cn('mt-0.5 size-4 shrink-0',i.level==='stop'?'text-no':'text-warn')}/><div className="min-w-0"><div className="font-medium">{i.title} <span className="num ml-1 text-xs font-normal text-faint">{new Date(i.time).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}</span></div><div className="text-fg/85">{i.text}</div></div></li>)}</ul>
-    {ruin?<p className="mt-3 text-xs text-faint">{ruin}</p>:null}</Card>;
+    {ruin?<p className="text-xs text-faint">{ruin}</p>:null}</div>}</Collapsible>;
 }
 
 export function WindowBar({s}:{s:any}){
