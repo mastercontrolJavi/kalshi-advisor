@@ -14,8 +14,8 @@ import {validateConfig} from './config';
 import {authorized,requireDashboardCredentials} from './auth';
 import {createExecutor} from './executor';
 import {buildCalibration} from './calibration';
-import {openingCall,OPENING_WINDOW_SECONDS} from './model/opening';
-import {exitAdvice,type ExitMemory} from './exits';
+import {openingCall,OPENING_K_DEADLINE_SECONDS} from './model/opening';
+import {exitAdvice,entryCost,type ExitMemory} from './exits';
 import {nextDirection,confidence,dueHorizon,dataQuality,type Direction} from './model/live';
 import {fitStack,predict,explain,describe,type StackFit} from './quant/stack';
 import {stackSamples} from './quant/samples';
@@ -50,7 +50,7 @@ let calibration=buildCalibration(journal,stack,basisState);
 const log=(event:string,data:unknown)=>{journal.log(event,data);console.log(JSON.stringify({time:new Date().toISOString(),event,data}));};
 const proxy=new ProxyFeed(log);proxy.history=journal.restoreHistory();
 const client=new KalshiClient(),account=new Account(client,journal);
-const kalshi=new KalshiFeed(client,log,t=>journal.throughTrade(t),()=>void account.sync());
+const kalshi=new KalshiFeed(client,log,t=>journal.throughTrade(t),()=>void account.onFill());
 const known=new Map<string,Market>();let state:any={status:'Starting',config,engineTime:Date.now(),evaluation:{action:'NO TRADE',reason:'Warming feeds',makers:[]}};
 const seriesHistory:{time:number;model:number|null;market:number|null;quant:number|null}[]=[];
 let live:{ticker:string;direction:Direction|null;since:number;flips:number}={ticker:'',direction:null,since:0,flips:0};
@@ -155,7 +155,7 @@ function computeHourly(time:number,now:number,spot:number|null,vol:any,venueStat
   const held=(account.positions as any[]).filter(p=>String(p.ticker).startsWith(current.event+'-'));
   const heldRungs=new Map(ladder(current.markets.filter(m=>held.some(p=>p.ticker===m.ticker)),inputs,schedule,Infinity).map(r=>[r.ticker,r]));
   const exits=held.map(pos=>{const r=heldRungs.get(pos.ticker),key=`${pos.ticker}:${pos.position_fp}:${pos.market_exposure_dollars}`,mem=hourlyMemory.get(key)??{action:null,peak:null};
-    const e=exitAdvice(pos,r?.quant??null,r?{yesBid:r.yesBid,noBid:r.noBid}:null,schedule,config,mem);if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,hourly:true,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized});hourlyMemory.set(key,{action:e.action,peak:e.peakPct});}
+    const e=exitAdvice(pos,r?.quant??null,r?{yesBid:r.yesBid,noBid:r.noBid}:null,schedule,config,mem,null,entryCost(pos,account.openCosts.get(pos.ticker),schedule));if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,hourly:true,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized});hourlyMemory.set(key,{action:e.action,peak:e.peakPct});}
     return e?{...e,strike:r?.strike??null}:null;}).filter(Boolean);
   return {...base,event:current.event,open:current.open,close:current.close,tau,spot,kHour,kSource:kFill?'proxy average of the 60 s before the hour opened':null,lockedCount:locked?.length??0,
     up:upQuant===null?null:{model:upModel,kalshi:kalshiUp,quant:upQuant,direction:upQuant>=.5?'UP':'DOWN',confidence:confidence(upQuant)},
@@ -196,7 +196,7 @@ const loop=setInterval(()=>{
     const venueStates=Object.values(proxy.venues).map(v=>({...v,healthy:healthy(v,now,config.staleMs),age:now-v.updated}));
     const rawVol=volatility(proxy.history,config.halfLifeSeconds,config.realizedBlend),vol=warmVolatility(rawVol,journal.get<{sigma:number;time:number}|null>('lastSigma',null),config.minVolSamples,now);
     if(newSecond&&rawVol.count>=config.minVolSamples&&rawVol.sigma>0&&time%60000===0)journal.set('lastSigma',{sigma:rawVol.sigma,time:now});
-    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),coach:coachNow(now),backtest:verdict,next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory};
+    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),coach:coachNow(now),backtest:verdict,next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory};
     if(!market){
       // Between windows: poll every second so the next market and its K are picked up immediately.
       if(now-lastFastRefresh>1000){lastFastRefresh=now;safe('market-refresh-error',refresh);}
@@ -228,8 +228,9 @@ const loop=setInterval(()=>{
       const evaluation=evaluate(pSignal,tau,book,market,account.balance,config,schedule,{feedsHealthy:venueStates.every(v=>v.healthy),healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kConfirmed:confirmed,lock:guards.reason,modelReady:!!model,accountReady:account.ready&&now-account.updated<config.accountStaleMs,now});
       const quality=dataQuality({healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kalshiLive:kalshi.status==='connected',bookLive:bv.valid&&now-bv.updated<=config.bookStaleMs,kConfirmed:confirmed,modelReady:!!model,clockSynced:client.clockSynced});
       const callOf=(p:number,direction:'UP'|'DOWN')=>({direction,p,baseP:model.p,lean:p-model.p,confidence:confidence(p),reasons:explain(stack,stackInputs!),inputs:{...stackInputs,K,kSource:confirmed?'kalshi':'proxy estimate'}});
-      // Opening call: frozen at the first evaluation of the window with a model (estimated K allowed, so it is instant).
-      if(newSecond&&q!==null&&tau>=(close-open)/1000-OPENING_WINDOW_SECONDS&&!journal.openingCall(market.ticker)){
+      // Opening call: frozen at the first evaluation after Kalshi publishes K (floor_strike), usually 5–40 s into the
+      // window. User request: the call is made against the official opening price, never an estimate.
+      if(newSecond&&q!==null&&confirmed&&tau>=(close-open)/1000-OPENING_K_DEADLINE_SECONDS&&!journal.openingCall(market.ticker)){
         try{const call=callOf(q,q>=.5?'UP':'DOWN');journal.saveOpeningCall(market.ticker,time,tau,call as any,mid);log('opening-call',{ticker:market.ticker,direction:call.direction,p:call.p,tau,kSource:call.inputs.kSource});}
         catch(e){log('opening-call-error',{message:(e as Error).message});}
       }
@@ -268,7 +269,7 @@ const loop=setInterval(()=>{
         if(posClose!==null&&posClose<=time){const official=journal.db.prepare('SELECT result FROM outcomes WHERE ticker=?').get(pos.ticker) as {result:'yes'|'no'}|undefined;
           const avg=filledSeconds(proxy.history,posClose-60000,posClose),k=Number(posMarket!.floor_strike);
           closed={result:official?.result??null,estimate:avg&&Number.isFinite(k)&&k>0?(mean(avg.values)+basis>=k?'yes':'no'):null};}
-        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,kalshi.books.get(pos.ticker)?.view()??null,schedule,config,mem,closed);
+        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,kalshi.books.get(pos.ticker)?.view()??null,schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule));
         if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,peakPct:e.peakPct});exitMemory.set(key,{action:e.action,peak:e.peakPct});}
         return e;}).filter(Boolean);
       state={...common,...tick,market,evaluation,exits,liveCall,nextCall,quality,openingCall:journal.openingCall(market.ticker),

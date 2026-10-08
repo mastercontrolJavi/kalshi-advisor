@@ -29,6 +29,7 @@ export default function Dashboard(){
       <span className="num hidden text-xs text-muted md:inline" title="Age of data on screen">{s?ago(Math.max(0,Date.now()-s.engineTime)):'—'}</span>
     </SiteHeader>
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 pt-4 pb-16 sm:px-6">
+      <Instruments s={s}/>
       <div className="grid gap-4 lg:grid-cols-12">
         <div className="lg:col-span-8"><SignalPanel s={s} fresh={fresh}/></div>
         <div className="lg:col-span-4"><ForecastPanel s={s} fresh={fresh}/></div>
@@ -36,7 +37,6 @@ export default function Dashboard(){
       <Positions s={s} fresh={fresh}/>
       <Coach s={s}/>
       <Collapsible open title="Scalp & dip" icon={<Crosshair aria-hidden className="size-4 text-info"/>} aside={fresh&&s?.tactics?.ideas?.length?<span className="text-yes">{s.tactics.ideas.length} setup{s.tactics.ideas.length>1?'s':''} now</span>:'intra-window setups'}><Tactics s={s} fresh={fresh}/></Collapsible>
-      <Instruments s={s}/>
       <Collapsible open title="Recent rounds" icon={<History aria-hidden className="size-4 text-info"/>} aside={s?.calibration?.roundTrends?.totals?.live300?.n?`5:00 call ${Math.round(s.calibration.roundTrends.totals.live300.rate*100)}% right`:'calls & results'}><RecentRounds s={s}/></Collapsible>
       <div className="grid gap-4 lg:grid-cols-12">
         <div className="lg:col-span-8"><Collapsible open title="Probability over this window" icon={<ChartIcon aria-hidden className="size-4 text-info"/>} aside={<span className="flex gap-3"><span className="text-yes">— Quant</span><span className="text-faint">┄ Model</span><span className="text-info">— Kalshi</span></span>}><ProbabilityChart data={s?.history??[]}/></Collapsible></div>

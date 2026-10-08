@@ -5,6 +5,8 @@
  * most ±MAX_LEAN and is scored on the calibration page before it may influence any trade signal.
  */
 export const OPENING_WINDOW_SECONDS = 60;
+/** The call waits for Kalshi's published K (user request 2026-10-07); if K is later than this, the window gets no call. */
+export const OPENING_K_DEADLINE_SECONDS = 180;
 export const MAX_LEAN = .10;
 const WEIGHTS = {momentum120s: .45, momentum30s: .25, imbalance: .15, tradeFlow30s: .15};
 export interface OpeningInputs {

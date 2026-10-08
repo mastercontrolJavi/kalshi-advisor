@@ -2,7 +2,9 @@ import type {KalshiClient} from './feeds/kalshi';
 import type {Journal} from './journal';
 import {fillWarnings,type RealEvent} from './guardrails';
 /** FIFO realized accounting, including canonical directional fills and complementary-side netting. */
-export function normalizeAccount(fills:any[],settlements:any[],series:string[]=['KXBTC15M']):RealEvent[]{
+/** Open position cost per contract, including the actual fees paid on the fills still open (FIFO). */
+export interface OpenCost {ticker:string;side:'yes'|'no';contracts:number;avgCost:number}
+export function normalizeAccount(fills:any[],settlements:any[],series:string[]=['KXBTC15M'],open?:Map<string,OpenCost>):RealEvent[]{
   const lots=new Map<string,{count:number;cost:number}[]>(),events:RealEvent[]=[],cashFlows=new Map<string,number>();
   const wanted=(ticker:unknown)=>typeof ticker==='string'&&series.some(s=>ticker.startsWith(s+'-'));
   for(const f of [...fills].sort((a,b)=>Date.parse(a.created_time)-Date.parse(b.created_time))){
@@ -22,6 +24,8 @@ export function normalizeAccount(fills:any[],settlements:any[],series:string[]=[
     cashFlows.set(ticker,(cashFlows.get(ticker)??0)+cashFlow);
     lots.set(key,list);events.push({id:'fill:'+(f.fill_id??f.trade_id),ticker,type:'fill',time,pnl,closedContracts,contracts:count,side,price,action,orderId:f.order_id});
   }
+  if(open)for(const [key,list] of lots){const count=list.reduce((n,l)=>n+l.count,0);if(count<1e-8)continue;const [ticker,,side]=key.split(':');
+    const prior=open.get(ticker);if(!prior||prior.contracts<count)open.set(ticker,{ticker,side:side as 'yes'|'no',contracts:count,avgCost:list.reduce((n,l)=>n+l.count*l.cost,0)/count});}
   for(const s of settlements){if(!wanted(s.ticker))continue;
     const revenue=Number(s.revenue)/100,cost=Number(s.yes_total_cost_dollars)+Number(s.no_total_cost_dollars),fees=Number(s.fee_cost),time=Date.parse(s.settled_time);
     if(![revenue,cost,fees,time].every(Number.isFinite))throw new Error('Unsupported settlement schema');
@@ -34,18 +38,26 @@ export function normalizeAccount(fills:any[],settlements:any[],series:string[]=[
   }return events.sort((a,b)=>a.time-b.time);
 }
 export class Account {
-  balance:number|null=null;portfolioValue:number|null=null;ready=false;updated=0;error='Credentials unavailable';positions:unknown[]=[];coachEvents:RealEvent[]=[];private busy=false;
+  balance:number|null=null;portfolioValue:number|null=null;ready=false;updated=0;error='Credentials unavailable';positions:unknown[]=[];coachEvents:RealEvent[]=[];openCosts=new Map<string,OpenCost>();positionsUpdated=0;private busy=false;private again=false;
   // Fill warnings never change once computed; recomputing ~400 of them every sync stalled the engine loop ~300 ms.
   private warnings=new Map<string,string[]>();
   constructor(private client:KalshiClient,private journal:Journal){}
+  /** A fill: refresh positions at once (one request), then the full sync. */
+  async onFill(){
+    if(this.client.authenticated){try{this.positions=await this.client.pages('/portfolio/positions','market_positions');this.positionsUpdated=Date.now();}catch(e){this.journal.log('account-error',{message:(e as Error).message});}}
+    await this.sync();
+  }
   async sync(){
-    if(this.busy||!this.client.authenticated)return;this.busy=true;
+    if(!this.client.authenticated)return;
+    // A sync requested while one runs (e.g. a fill mid-sync) is queued, not dropped: dropping it left the positions
+    // box up to 30 s stale (p90 17 s, max 317 s over 53 orders on 2026-10-07).
+    if(this.busy){this.again=true;return;}this.busy=true;
     try{
       const b=await this.client.get('/portfolio/balance',true);this.balance=Number(b.balance)/100;this.portfolioValue=Number.isFinite(Number(b.portfolio_value))?Number(b.portfolio_value)/100:null;
       if(!Number.isFinite(this.balance)||this.balance<0)throw new Error('Unsupported account balance');
       this.journal.balance(Date.now(),this.balance,this.portfolioValue);
       this.client.limits=(await this.client.get('/account/limits',true));
-      this.positions=await this.client.pages('/portfolio/positions','market_positions');
+      this.positions=await this.client.pages('/portfolio/positions','market_positions');this.positionsUpdated=Date.now();
       // Persist every raw record. Refresh live pages; archived fills backfill only on first run.
       const fills=await this.client.pages('/portfolio/fills','fills');
       if(!this.journal.get('historicalBackfill',false)){const old=await this.client.pages('/historical/fills','fills');fills.push(...old);}
@@ -56,7 +68,7 @@ export class Account {
       const rawFills=raw.filter(r=>r.type==='fill').map(r=>JSON.parse(r.context)),rawSettlements=raw.filter(r=>r.type==='settlement').map(r=>JSON.parse(r.context));
       const events=normalizeAccount(rawFills,rawSettlements);
       // The coach watches every Bitcoin market you trade, hourly included; P&L and guardrails stay 15-minute only.
-      this.coachEvents=normalizeAccount(rawFills,rawSettlements,['KXBTC15M','KXBTCD']);
+      const openCosts=new Map<string,OpenCost>();this.coachEvents=normalizeAccount(rawFills,rawSettlements,['KXBTC15M','KXBTCD'],openCosts);this.openCosts=openCosts;
       const config=this.journal.config();
       for(const e of events.filter(e=>e.type==='fill')){
         const cached=this.warnings.get(e.id);if(cached){e.warnings=cached;continue;}
@@ -67,6 +79,6 @@ export class Account {
         this.warnings.set(e.id,e.warnings);
       }
       this.journal.real(events);this.journal.set('historicalBackfill',true);this.ready=true;this.updated=Date.now();this.error='';
-    }catch(e){this.ready=false;this.error=(e as Error).message;this.journal.log('account-error',{message:this.error});}finally{this.busy=false;}
+    }catch(e){this.ready=false;this.error=(e as Error).message;this.journal.log('account-error',{message:this.error});}finally{this.busy=false;if(this.again){this.again=false;void this.sync();}}
   }
 }

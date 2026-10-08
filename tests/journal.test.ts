@@ -14,3 +14,17 @@ it('live fill shape: action=sell with mirrored side closes the held leg via outc
 it('canonical directional fills net opposite exposure and legacy sales retain their original side',()=>{const ticker='KXBTC15M-X',base={ticker,count_fp:'1',fee_cost:'.01'};const fills=[{...base,fill_id:'1',outcome_side:'yes',book_side:'bid',yes_price_dollars:'.4',no_price_dollars:'.6',created_time:'2026-10-06T01:00:00Z'},{...base,fill_id:'2',outcome_side:'no',book_side:'ask',yes_price_dollars:'.6',no_price_dollars:'.4',created_time:'2026-10-06T01:01:00Z'}];expect(normalizeAccount(fills,[])[1].pnl).toBeCloseTo(.18);expect(normalizeAccount(fills,[])[1].closedContracts).toBe(1);expect(normalizeAccount([fills[0],{...fills[1],side:'yes',action:'sell'}],[])[1].pnl).toBeCloseTo(.18);});
 it('maker paper order expires at close before official settlement arrives',()=>{const j=new Journal(':memory:');j.signal('BTC',100,idea,{p:.5,tau:200,regime:'normal',close:1000},baseFees);j.expire(999);expect((j.db.prepare('SELECT status FROM paper_trades').get() as any).status).toBe('resting');j.expire(1000);expect((j.db.prepare('SELECT status FROM paper_trades').get() as any).status).toBe('expired');j.throughTrade({ticker:'BTC',time:1001,yesPrice:.39,count:1,takerSide:'no'});j.settle('BTC','yes',2000,100,100,99,{});expect((j.db.prepare('SELECT pnl FROM paper_trades').get() as any).pnl).toBeNull();j.db.close();});
 it('missing actual fee fails account normalization closed',()=>expect(()=>normalizeAccount([{ticker:'KXBTC15M-X',outcome_side:'yes',count_fp:'1',yes_price_dollars:'.5',created_time:new Date().toISOString()}],[])).toThrow('missing actual fee'));
+it('open positions keep their FIFO cost including the actual entry fees',async()=>{
+  const {normalizeAccount}=await import('../src/engine/account');const ticker='KXBTC15M-X',base={ticker,outcome_side:'yes',book_side:'bid'};
+  const fills=[{...base,fill_id:'1',count_fp:'10',yes_price_dollars:'.5',no_price_dollars:'.5',fee_cost:'.18',created_time:'2026-10-06T01:00:00Z'},
+    {...base,fill_id:'2',count_fp:'10',yes_price_dollars:'.6',no_price_dollars:'.4',fee_cost:'.17',created_time:'2026-10-06T01:01:00Z'},
+    {ticker,fill_id:'3',outcome_side:'no',book_side:'ask',count_fp:'10',yes_price_dollars:'.7',no_price_dollars:'.3',fee_cost:'.15',created_time:'2026-10-06T01:02:00Z'}];
+  const open=new Map();normalizeAccount(fills,[],['KXBTC15M'],open);
+  // The first 10 were sold FIFO; the second lot stays at 60¢ + 1.7¢ fee.
+  expect(open.get(ticker)).toMatchObject({side:'yes',contracts:10});expect(open.get(ticker).avgCost).toBeCloseTo(.617,9);});
+it('a sync requested while one is running is queued, not dropped',async()=>{
+  const {Account}=await import('../src/engine/account');const {Journal}=await import('../src/engine/journal');
+  let balanceCalls=0,release:()=>void=()=>{};const gate=new Promise<void>(r=>release=r);
+  const client:any={authenticated:true,limits:null,get:async(path:string)=>{if(path==='/portfolio/balance'){balanceCalls++;if(balanceCalls===1)await gate;return {balance:1000,portfolio_value:0};}return {};},pages:async()=>[]};
+  const account=new Account(client,new Journal(':memory:'));const first=account.sync();await account.sync();expect(balanceCalls).toBe(1);
+  release();await first;await new Promise(r=>setTimeout(r,20));expect(balanceCalls).toBe(2);expect(account.ready).toBe(true);});

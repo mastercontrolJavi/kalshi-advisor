@@ -1,6 +1,6 @@
 import {it,expect} from 'vitest';
-import {exitAdvice,type ExitConfig,type ExitMemory} from '../src/engine/exits';
-import {baseFees} from '../src/engine/model/fees';
+import {exitAdvice,entryCost,type ExitConfig,type ExitMemory} from '../src/engine/exits';
+import {baseFees,fee} from '../src/engine/model/fees';
 const risk:ExitConfig={exitMode:'risk',exitMargin:.02,makerMargin:.03,takeProfitPct:.25,stopLossPct:.5,stopWinProb:.25,trailGiveback:.5,trailFloor:.05};
 const ev:ExitConfig={...risk,exitMode:'ev'};
 const no=(n:string,cost:string)=>({ticker:'M',position_fp:'-'+n,market_exposure_dollars:cost});
@@ -48,6 +48,23 @@ it('hold mode keeps the position to settlement where risk mode would take profit
   expect(exitAdvice(yes('10','4.00'),.9,book(.6,.38),baseFees,risk,mem('RIDE',.6))!.action).not.toBe('HOLD');
   const losing=exitAdvice(yes('10','6.00'),.15,book(.2,.78),baseFees,hold)!;expect(losing.action).toBe('HOLD');expect(losing.reason).toContain('lose $');
   expect(exitAdvice(yes('10','6.00'),.15,book(.2,.78),baseFees,risk)!.action).toBe('CUT LOSS');
-  // Terminal states are unchanged.
-  expect(exitAdvice(yes('10','6.00'),.99,book(.98,.01),baseFees,hold)!.action).toBe('LET IT SETTLE');
-  expect(exitAdvice(yes('10','6.00'),.2,book(.02,.97),baseFees,hold)!.action).toBe('TOO LATE');});
+  // One steady word in hold mode: settle-level and nothing-left bids only change the explanation.
+  const settle=exitAdvice(yes('10','6.00'),.99,book(.98,.01),baseFees,hold)!;expect(settle.action).toBe('HOLD');expect(settle.reason).toContain('pays $1.00 at settlement');
+  const late=exitAdvice(yes('10','6.00'),.2,book(.02,.97),baseFees,hold)!;expect(late.action).toBe('HOLD');expect(late.reason).toContain('too little left');
+  expect(exitAdvice(yes('10','6.00'),.99,book(.98,.01),baseFees,risk)!.action).toBe('LET IT SETTLE');
+  // A wobbling bid around the old flicker point keeps one action across ticks.
+  const seq=[.36,.37,.35,.38,.36].map(b=>exitAdvice(yes('10','7.00'),.4,book(b,1-b-.01),baseFees,hold)!.action);expect(new Set(seq).size).toBe(1);});
+it('cost includes the entry fee: FIFO cost of open fills when they match the position, else the fee implied by exposure',()=>{
+  const pos=yes('14.1','7.755');
+  expect(entryCost(pos,{side:'yes',contracts:14.1,avgCost:.567},baseFees)).toEqual({avgCost:.567,source:'fills'});
+  const est=entryCost(pos,{side:'yes',contracts:10,avgCost:.6},baseFees)!;expect(est.source).toBe('estimate');expect(est.avgCost).toBeCloseTo(.55+fee(.55,14.1)/14.1,9);
+  expect(entryCost(no('5','2'),{side:'yes',contracts:5,avgCost:.5},baseFees)!.source).toBe('estimate');
+  expect(entryCost({ticker:'M',position_fp:'3'},undefined,baseFees)).toBeNull();
+  // P&L if sold now includes both fees.
+  const e=exitAdvice(pos,.54,book(.54,.45),baseFees,hold,mem(),null,{avgCost:.567,source:'fills'})!;
+  expect(e.unrealized!).toBeCloseTo(14.1*.54-fee(.54,14.1)-14.1*.567,9);expect(e.costSource).toBe('fills');});
+it('risk mode: once CUT LOSS fires it stays while the loss is still beyond 35%, even if the win chance ticks up',()=>{
+  const first=exitAdvice(yes('10','7.00'),.36,book(.34,.65),baseFees,risk)!;expect(first.action).toBe('CUT LOSS');
+  expect(exitAdvice(yes('10','7.00'),.40,book(.37,.62),baseFees,risk,mem('CUT LOSS'))!.action).toBe('CUT LOSS');
+  expect(exitAdvice(yes('10','7.00'),.40,book(.37,.62),baseFees,risk)!.action).toBe('HOLD');
+  expect(exitAdvice(yes('10','7.00'),.6,book(.5,.49),baseFees,risk,mem('CUT LOSS'))!.action).toBe('HOLD');});
