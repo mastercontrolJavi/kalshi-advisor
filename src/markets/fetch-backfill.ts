@@ -2,6 +2,7 @@ import type {KalshiClient} from '../engine/feeds/kalshi';
 import type {MarketsJournal} from './journal';
 import {parseCandle,eventTime,priceAt,vwap,pickSeries,candleGroups} from './backfill';
 import {groupOf} from './categories';
+import {accuracyTables} from './record';
 const H=3600,DAY=86400;
 type Client=Pick<KalshiClient,'get'>;
 async function pages(client:Client,path:string){
@@ -47,6 +48,7 @@ export async function runBackfill(client:Client,journal:MarketsJournal,o:{now:nu
     }catch(e){o.log(`  candles batch ${i+1}/${groups.length}: ${(e as Error).message}`);}
     if(i%25===0)o.log(`  candles ${i+1}/${groups.length}`);
   }
+  journal.set('accuracy',accuracyTables(journal.backfillRows()));
   journal.set('backfillFinished',Date.now());o.log(`backfill done: ${listed} listed, ${priced} priced`);
   return {listed,priced};
 }

@@ -32,3 +32,6 @@ it('a running backfill keeps its heartbeat fresh',async()=>{
 it('a backfill counts as running when this process started it or another one is beating',()=>{
   const j=new MarketsJournal(':memory:'),t0=Date.now(),r=new BackfillRefresher(()=>{},j,t0);
   expect(r.active(t0)).toBe(false);j.set('backfillHeartbeat',t0-60e3);expect(r.active(t0)).toBe(true);expect(r.active(t0+11*60e3)).toBe(false);});
+it('a finished backfill stores the accuracy tables, so the markets process never computes them',async()=>{
+  const j=new MarketsJournal(':memory:');await runBackfill(fake(),j,{now:NOW,traded:new Set(),log:()=>{}});
+  const t=j.get<any>('accuracy',null);expect(t.sports.p1.find((b:any)=>b.lo===.5).n).toBe(2);expect(t.politics.p1.every((b:any)=>b.n===0)).toBe(true);});

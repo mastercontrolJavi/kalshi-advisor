@@ -1,5 +1,5 @@
 import {it,expect} from 'vitest';
-import {accuracy,yourRecord,buildRecord} from '../src/markets/record';
+import {accuracy,accuracyTables,yourRecord,buildRecord} from '../src/markets/record';
 import {normalizeAccount} from '../src/engine/account';
 import type {BackfillRow} from '../src/markets/journal';
 const row=(ticker:string,event:string,p1:number|null,result:'yes'|'no',grp:any='sports'):BackfillRow=>({ticker,event,series:'S',grp,title:ticker,eventTs:1,settleTs:2,result,volume:500,p24:null,a24:null,p1,a1:p1===null?null:p1+.01,vwap:null,priced:1});
@@ -23,8 +23,8 @@ it('your record by group and entry price, from real fills and settlements',()=>{
   expect(r.total.ret!).toBeCloseTo((1.6-3.21)/(8.4+3.21),3);
   expect(r.entryBy.combos.find(x=>x.bucket==='0–5¢')!.markets).toBe(1);expect(r.entryBy.combos.find(x=>x.bucket==='80–100¢')!.markets).toBe(0);expect(r.entryBy.sports.find(x=>x.bucket==='80–100¢')!.wins).toBe(1);});
 it('an empty backfill gives empty accuracy and the stats, not zeros',()=>{
-  const s=buildRecord({rows:[],events:[],fills:[],groupFor:()=>'sports',stats:{markets:0,priced:0,from:null,to:null},finished:null});
+  const s=buildRecord({accuracy:null,events:[],fills:[],groupFor:()=>'sports',stats:{markets:0,priced:0,from:null,to:null},finished:null});
   expect(s.accuracy.all.p1.every(b=>b.n===0&&b.win===null&&b.ret===null)).toBe(true);expect(s.backfill.markets).toBe(0);expect(s.yours.total.markets).toBe(0);});
 it('category accuracy only uses its own markets',()=>{
-  const s=buildRecord({rows:[row('A','E1',.5,'yes','sports'),row('B','E2',.5,'no','politics')],events:[],fills:[],groupFor:()=>'sports',stats:{markets:2,priced:2,from:1,to:1},finished:5});
+  const s=buildRecord({accuracy:accuracyTables([row('A','E1',.5,'yes','sports'),row('B','E2',.5,'no','politics')]),events:[],fills:[],groupFor:()=>'sports',stats:{markets:2,priced:2,from:1,to:1},finished:5});
   expect(s.accuracy.sports.p1.find(x=>x.lo===.5)!.win).toBe(1);expect(s.accuracy.politics.p1.find(x=>x.lo===.5)!.win).toBe(0);expect(s.accuracy.all.p1.find(x=>x.lo===.5)!.n).toBe(2);});

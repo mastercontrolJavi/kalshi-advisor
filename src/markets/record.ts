@@ -40,10 +40,13 @@ export function yourRecord(events:RealEvent[],fills:any[],groupFor:(ticker:strin
   const entry=(xs:typeof ms)=>ENTRY_EDGES.slice(0,-1).map((lo,i)=>{const hi=ENTRY_EDGES[i+1];return line(ENTRY_LABELS[i],xs.filter(m=>m.avgEntry!==null&&m.avgEntry>=lo&&(m.avgEntry<hi||hi===1)));});
   return {byGroup:groups.map(g=>line(g,ms.filter(m=>m.group===g))),byEntry:entry(ms),entryBy:Object.fromEntries(groups.map(g=>[g,entry(ms.filter(m=>m.group===g))])) as Record<string,RecordLine[]>,total:line('All',ms)};
 }
-export interface RecordState {yours:ReturnType<typeof yourRecord>;accuracy:Record<'all'|'sports'|'politics'|'commodities',Record<Horizon,AccuracyBucket[]>>;backfill:{markets:number;priced:number;from:number|null;to:number|null;finished:number|null}}
-export function buildRecord(a:{rows:BackfillRow[];events:RealEvent[];fills:any[];groupFor:(t:string)=>string;stats:{markets:number;priced:number;from:number|null;to:number|null};finished:number|null}):RecordState{
-  const by=(rows:BackfillRow[])=>({p1:accuracy(rows,'p1'),p24:accuracy(rows,'p24'),vwap:accuracy(rows,'vwap')});
-  return {yours:yourRecord(a.events,a.fills,a.groupFor),
-    accuracy:{all:by(a.rows),sports:by(a.rows.filter(r=>r.grp==='sports')),politics:by(a.rows.filter(r=>r.grp==='politics')),commodities:by(a.rows.filter(r=>r.grp==='commodities'))},
-    backfill:{...a.stats,finished:a.finished}};
+export type AccuracyTables=Record<'all'|'sports'|'politics'|'commodities',Record<Horizon,AccuracyBucket[]>>;
+/** Every category × horizon table. Seconds of work on a large backfill, so the backfill process computes it once when it finishes. */
+export function accuracyTables(rows:BackfillRow[]):AccuracyTables{
+  const by=(xs:BackfillRow[])=>({p1:accuracy(xs,'p1'),p24:accuracy(xs,'p24'),vwap:accuracy(xs,'vwap')});
+  return {all:by(rows),sports:by(rows.filter(r=>r.grp==='sports')),politics:by(rows.filter(r=>r.grp==='politics')),commodities:by(rows.filter(r=>r.grp==='commodities'))};
+}
+export interface RecordState {yours:ReturnType<typeof yourRecord>;accuracy:AccuracyTables;backfill:{markets:number;priced:number;from:number|null;to:number|null;finished:number|null}}
+export function buildRecord(a:{accuracy:AccuracyTables|null;events:RealEvent[];fills:any[];groupFor:(t:string)=>string;stats:{markets:number;priced:number;from:number|null;to:number|null};finished:number|null}):RecordState{
+  return {yours:yourRecord(a.events,a.fills,a.groupFor),accuracy:a.accuracy??accuracyTables([]),backfill:{...a.stats,finished:a.finished}};
 }
