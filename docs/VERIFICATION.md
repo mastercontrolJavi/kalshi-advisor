@@ -40,3 +40,21 @@ No actual taker signal or maker paper fill was observed without credentials. Mak
 3. Verify a suggested contract count does not exceed 25 or 2% of cash including fees; verify NO TRADE reasons respond to stale feeds and guardrails.
 4. Observe a closing minute: locked proxy count should advance, market rolls, official outcome appears later in calibration, and CSV contains that market.
 5. Open the Tailscale HTTPS URL on the phone, confirm login and live indicator, then check that stopping the engine suppresses advice and restarting reconnects.
+
+## Markets stage 1 — 2026-10-09 (side instance, ports 3010/3012, live account, read-only)
+
+- The markets process synced positions and fills, and polled the held combo and its 8 legs in 2 batched requests.
+- State of the combo:
+  - 2,777.77 YES at a cost of 0.353¢ per contract incl. fees, from fills ($9.81).
+  - Legs: South Alabama won; 7 to play at 42–60¢.
+  - Value 0.6154¢ ($17.10). Bid 0.11¢ → sell $2.84 after a $0.21 fee.
+  - Verdict HOLD; headline UP +$7.29 (+74%) at leg odds.
+- /markets rendered at desktop width and at 375 px. scrollWidth equals 375 on /markets and /hourly with the 5-link nav.
+- The category filters set aria-pressed, show the empty state and remember the choice. The combo price line is drawn from #legs snapshots.
+- /markets-ws delivered live state through the authenticated web server from the 15-min page.
+- next build is green (/markets 4.0 kB); 176 tests pass; tsc is clean.
+- The Bitcoin engine loop ran at 5–14 ms with the markets process running. There were no loop-stall events after it started; the last one was at 08:01Z, before any markets run.
+- Not verified live:
+  - a heads-up firing on a real move (covered by unit tests);
+  - sounds playing in the browser (the transition logic is unit-tested);
+  - the supervised start under npm run trade (it starts on the next launch from the desktop shortcut).

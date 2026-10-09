@@ -64,3 +64,12 @@
   - A late-round quant blend learns from those seconds (nearest 50/40/30/20/10 s per settled round, read incrementally: ~0.2 ms per refit after start) and is used in the final minute only after its learned weights beat the default blend out of sample. On the first 87 rounds the model alone scored Brier 0.0145 vs Kalshi 0.0535 at those horizons; the fit is not yet adopted.
   - The backtest refreshes itself daily in a below-normal-priority child process: ~26 s, incremental download, verdict hot-reloaded, report to output/.
   - Final-minute entries are a user setting (finalMinuteSignals, off). The dashboard announces only "proven" evidence (≥ 100 trades, CI > 0, both halves > 0) and warns if the setting is on without it.
+
+46. Markets, stage 1 (user request 2026-10-09: monitor and get advice on every Kalshi bet, not just Bitcoin; spec docs/superpowers/specs/2026-10-09-markets-advisor-design.md):
+  - A separate supervised process (src/markets, 127.0.0.1:3002, data/markets.db) rather than more work in the Bitcoin engine, whose 4 Hz loop has a stall history (25, 41). KalshiClient spacing of 200 ms caps it at 5 requests/s. With it running for ~45 min the engine loop stayed at 5–14 ms with no stall events.
+  - Hold value is market-implied: the YES mid, or for combos the product of the leg mids. SELL BEATS HOLD needs net bid − value ≥ max(0.0005, min(exitMargin, 0.2 × value)); the 2¢ margin alone could never fire on sub-cent combos. With market odds only it is rare by design; stage 3's outside references are what can make it fire.
+  - Combo fee type quadratic_with_combo_maker_fees is the quadratic taker fee, verified on the user's fill (2,777.77 at 0.33¢ paid $0.639559; formula $0.6396).
+  - Leg status is won / lost / to play, from Kalshi's result only. The API gives no game clock, so live vs. upcoming is not shown. Per-event fee changes are not applied to non-Bitcoin series yet.
+  - The combo headline and price line use the leg-implied value (snapshot key <ticker>#legs), because a combo's own book is nearly empty (a 0.11¢ bid against a 0.62¢ value).
+  - Markets notices sound on every page; a localStorage claim lets only one open tab play each (60 s window). Exit settings are read read-only from advisor.db, so Settings stays the single place to change them.
+  - The web server proxies HTTP by prefix (/api/engine, /api/markets) and WebSockets by path (/ws, /markets-ws), with auth and origin checks unchanged.
