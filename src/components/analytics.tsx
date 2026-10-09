@@ -5,7 +5,7 @@ import {RefreshCw,Check,X,Lightbulb} from 'lucide-react';
 import {SiteHeader} from './site-header';
 import {Card} from './ui/card';
 import {Button} from './ui/button';
-import {Pill} from './panels';
+import {Pill,Kpi,Empty} from './panels';
 import {cn} from '@/lib/utils';
 import {dollars,signedDollars,pct,cents,qty} from './format';
 const Equity=dynamic(()=>import('./analytics-charts').then(m=>m.EquityChart),{ssr:false});
@@ -13,10 +13,6 @@ const Daily=dynamic(()=>import('./analytics-charts').then(m=>m.DailyChart),{ssr:
 const Trend=dynamic(()=>import('./analytics-charts').then(m=>m.TrendChart),{ssr:false});
 const REFRESH_MS=60000;
 const tone=(v:number|null|undefined)=>v==null||v===0?'':v>0?'text-yes':'text-no';
-function Kpi({label,children,sub,className}:{label:string;children:ReactNode;sub?:ReactNode;className?:string}){
-  return <Card className="p-4"><div className="label">{label}</div><div className={cn('num mt-1.5 text-2xl font-medium',className)}>{children}</div>{sub?<div className="mt-0.5 text-xs text-muted">{sub}</div>:null}</Card>;
-}
-function Empty({children}:{children:ReactNode}){return <p className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-muted">{children}</p>;}
 function Breakdown({title,rows}:{title:string;rows:any[]}){
   return <Card><h2 className="mb-3 font-semibold">{title}</h2>{rows?.length?<table className="w-full text-sm"><thead className="text-left text-xs text-muted"><tr>{['','Markets','Win rate','P&L','Avg / market'].map(h=><th key={h} scope="col" className="pb-2 pr-2 font-medium">{h}</th>)}</tr></thead>
     <tbody>{rows.map(r=><tr key={r.bucket} className="border-t border-line"><th scope="row" className="py-2 pr-2 text-left font-medium">{r.bucket}</th><td className="num pr-2">{r.markets}</td><td className="num pr-2">{pct(r.winRate,0)}</td><td className={cn('num pr-2',tone(r.pnl))}>{signedDollars(r.pnl)}</td><td className={cn('num',tone(r.expectancy))}>{signedDollars(r.expectancy)}</td></tr>)}</tbody></table>:<Empty>No settled trades yet.</Empty>}</Card>;

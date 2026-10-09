@@ -37,8 +37,8 @@ export function yourRecord(events:RealEvent[],fills:any[],groupFor:(ticker:strin
   const fees=new Map<string,number>();for(const f of fills){const t=f.ticker??f.market_ticker;fees.set(t,(fees.get(t)??0)+(Number(f.fee_cost)||0));}
   const ms=rollupMarkets(events,fees,[]).filter(m=>m.status==='settled').map(m=>({...m,group:groupFor(m.ticker),spent:m.contracts*(m.avgEntry??0)+m.fees}));
   const groups=[...new Set(ms.map(m=>m.group))].sort();
-  const byEntry=ENTRY_EDGES.slice(0,-1).map((lo,i)=>{const hi=ENTRY_EDGES[i+1];return line(ENTRY_LABELS[i],ms.filter(m=>m.avgEntry!==null&&m.avgEntry>=lo&&(m.avgEntry<hi||hi===1)));});
-  return {byGroup:groups.map(g=>line(g,ms.filter(m=>m.group===g))),byEntry,total:line('All',ms)};
+  const entry=(xs:typeof ms)=>ENTRY_EDGES.slice(0,-1).map((lo,i)=>{const hi=ENTRY_EDGES[i+1];return line(ENTRY_LABELS[i],xs.filter(m=>m.avgEntry!==null&&m.avgEntry>=lo&&(m.avgEntry<hi||hi===1)));});
+  return {byGroup:groups.map(g=>line(g,ms.filter(m=>m.group===g))),byEntry:entry(ms),entryBy:Object.fromEntries(groups.map(g=>[g,entry(ms.filter(m=>m.group===g))])) as Record<string,RecordLine[]>,total:line('All',ms)};
 }
 export interface RecordState {yours:ReturnType<typeof yourRecord>;accuracy:Record<'all'|'sports'|'politics'|'commodities',Record<Horizon,AccuracyBucket[]>>;backfill:{markets:number;priced:number;from:number|null;to:number|null;finished:number|null}}
 export function buildRecord(a:{rows:BackfillRow[];events:RealEvent[];fills:any[];groupFor:(t:string)=>string;stats:{markets:number;priced:number;from:number|null;to:number|null};finished:number|null}):RecordState{

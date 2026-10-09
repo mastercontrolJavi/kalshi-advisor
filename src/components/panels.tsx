@@ -126,6 +126,12 @@ const noticeStyle:Record<string,string>={yes:'border-yes/40 bg-yes-dim/30',warn:
 export function Notice({notice}:{notice:{tone:'yes'|'warn'|'no';title:string;text:string}}){
   return <div role="status" className={cn('mt-3 rounded-xl border px-3 py-2 text-sm',noticeStyle[notice.tone])}><div className={cn('font-medium',toneText[notice.tone])}>{notice.title}</div><div className="text-fg/85">{notice.text}</div></div>;
 }
+/** A figure in its own card: label, big number, optional subline (Analytics and Markets → Record). */
+export function Kpi({label,children,sub,className}:{label:string;children:ReactNode;sub?:ReactNode;className?:string}){
+  return <Card className="p-4"><div className="label">{label}</div><div className={cn('num mt-1.5 text-2xl font-medium',className)}>{children}</div>{sub?<div className="mt-0.5 text-xs text-muted">{sub}</div>:null}</Card>;
+}
+/** Dashed placeholder for a section with nothing to show yet. */
+export function Empty({children}:{children:ReactNode}){return <p className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-muted">{children}</p>;}
 export function Instruments({s}:{s:any}){
   const mid=s?.book?.yesBid!=null&&s?.book?.yesAsk!=null?(s.book.yesBid+s.book.yesAsk)/2:null,d=s?.distance;
   return <Card className="rise grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-6 [animation-delay:120ms]">

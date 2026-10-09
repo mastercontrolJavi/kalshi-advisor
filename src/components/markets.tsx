@@ -1,5 +1,4 @@
 'use client';
-import {useEffect,useState} from 'react';
 import {Wallet,Info} from 'lucide-react';
 import {useLive} from './use-live';
 import {useSoundAlerts} from './use-sound-alerts';
@@ -8,18 +7,15 @@ import {SiteHeader} from './site-header';
 import {Card} from './ui/card';
 import {Pill,Stat,Heading} from './panels';
 import {PositionCardView} from './position-card';
+import {MarketsNav,useMarketsFilter,FILTERS} from './markets-nav';
 import {cn} from '@/lib/utils';
 import {dollars,signedDollars,ago} from './format';
-const FILTERS:[string,string][]=[['all','All'],['sports','Sports'],['combos','Combos'],['politics','Politics & econ'],['commodities','Commodities & crypto']];
-const KEY='markets:filter';
 /** Markets: every open Kalshi position outside the two Bitcoin series, from the separate markets process. */
 export default function Markets(){
   const m=useLive('/markets-ws'),st=m.fresh?m.state:null,sound=useSoundAlerts(null,false,'markets',{state:m.state,fresh:m.fresh});
-  const [filter,setFilterState]=useState('all');
-  // The chosen category is a per-browser convenience.
-  useEffect(()=>{try{const v=localStorage.getItem(KEY);if(v&&FILTERS.some(([k])=>k===v))setFilterState(v);}catch{}},[]);
-  const setFilter=(v:string)=>{setFilterState(v);try{localStorage.setItem(KEY,v);}catch{}};
+  const [filter,setFilter]=useMarketsFilter();
   const all:any[]=st?.positions??[],shown=filter==='all'?all:all.filter(p=>p.group===filter),now=st?.time??Date.now(),s=st?.summary;
+  const counts=Object.fromEntries(FILTERS.map(([k])=>[k,k==='all'?all.length:all.filter(p=>p.group===k).length]));
   const synced=st?.synced?.positions?`synced ${ago(Math.max(0,now-st.synced.positions))} ago`:'not synced yet';
   const urgent=shown.some(p=>p.notice);
   return <>
@@ -29,6 +25,7 @@ export default function Markets(){
       <Pill tone={m.fresh?'yes':'warn'}><span className={m.fresh?'pulse size-1.5 rounded-full bg-yes':'size-1.5 rounded-full bg-warn'}/>{m.fresh?'Live':m.connected?'Stale':'Reconnecting'}</Pill>
     </SiteHeader>
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 pt-4 pb-16 sm:px-6">
+      <MarketsNav current="positions" filter={filter} setFilter={setFilter} counts={st?counts:undefined}/>
       {!st?<Card className="space-y-1"><p className="text-sm">Markets engine unavailable.</p><p className="text-sm text-muted">{m.connected?'Waiting for its first update.':'It starts with the app; this page reconnects on its own.'} The Bitcoin pages are not affected.</p></Card>:<>
       {st.status==='no-credentials'?<Card><p className="text-sm">Kalshi credentials unavailable, so positions cannot be read. Add the API key in .env.local.</p></Card>:null}
       <Card className="rise grid grid-cols-2 gap-5 sm:grid-cols-4">
@@ -37,8 +34,6 @@ export default function Markets(){
         <Stat label="If held" sub="value at market odds">{dollars(s.holdAll)}</Stat>
         <Stat label="Realized today" tone={s.realizedToday>0?'yes':s.realizedToday<0?'no':'neutral'} sub="outside Bitcoin">{signedDollars(s.realizedToday)}</Stat>
       </Card>
-      <nav aria-label="Filter by category" className="flex flex-wrap gap-1">{FILTERS.map(([k,l])=>{const n=k==='all'?all.length:all.filter(p=>p.group===k).length;return <button key={k} type="button" aria-pressed={filter===k} onClick={()=>setFilter(k)}
-        className={cn('inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-xl px-3 text-sm transition-colors',filter===k?'bg-surface-2 text-fg':'text-muted hover:text-fg')}>{l}<span className="num text-xs text-faint">{n}</span></button>;})}</nav>
       {shown.length?<Card className={cn('rise',urgent?'border-warn/50':'border-info/30')}><Heading icon={<Wallet aria-hidden className="size-4 text-info"/>} title="Your other positions" aside={synced}/>
         <div className="mt-4">{shown.map(c=><PositionCardView key={c.ticker} c={c} now={now}/>)}</div></Card>
       :<Card className="flex min-h-14 flex-wrap items-center gap-3 py-3"><Wallet aria-hidden className="size-4 text-faint"/><span className="label">Your other positions</span><span className="ml-auto text-sm text-muted">{filter==='all'?'No open positions outside Bitcoin':'None in this category'} <span className="text-xs text-faint">· {synced}</span></span></Card>}

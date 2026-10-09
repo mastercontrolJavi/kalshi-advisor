@@ -20,7 +20,8 @@ it('your record by group and entry price, from real fills and settlements',()=>{
   const r=yourRecord(events,fills,t=>t.startsWith('KXMVE')?'combos':'sports');
   expect(r.byGroup.find(x=>x.bucket==='combos')).toMatchObject({markets:1,wins:0});expect(r.byGroup.find(x=>x.bucket==='combos')!.pnl).toBeCloseTo(-3.21);
   expect(r.byGroup.find(x=>x.bucket==='sports')!.pnl).toBeCloseTo(1.6);expect(r.byEntry.find(x=>x.bucket==='0–5¢')!.markets).toBe(1);expect(r.byEntry.find(x=>x.bucket==='80–100¢')!.wins).toBe(1);
-  expect(r.total.ret!).toBeCloseTo((1.6-3.21)/(8.4+3.21),3);});
+  expect(r.total.ret!).toBeCloseTo((1.6-3.21)/(8.4+3.21),3);
+  expect(r.entryBy.combos.find(x=>x.bucket==='0–5¢')!.markets).toBe(1);expect(r.entryBy.combos.find(x=>x.bucket==='80–100¢')!.markets).toBe(0);expect(r.entryBy.sports.find(x=>x.bucket==='80–100¢')!.wins).toBe(1);});
 it('an empty backfill gives empty accuracy and the stats, not zeros',()=>{
   const s=buildRecord({rows:[],events:[],fills:[],groupFor:()=>'sports',stats:{markets:0,priced:0,from:null,to:null},finished:null});
   expect(s.accuracy.all.p1.every(b=>b.n===0&&b.win===null&&b.ret===null)).toBe(true);expect(s.backfill.markets).toBe(0);expect(s.yours.total.markets).toBe(0);});
