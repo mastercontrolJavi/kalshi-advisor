@@ -12,3 +12,8 @@ it('prune keeps held snapshots forever and drops non-held ones after 14 days',()
 it('raw account records round-trip and dedupe by id; meta get/set',()=>{
   const j=new MarketsJournal(':memory:');const f={fill_id:'a',created_time:'2026-10-04T00:00:00Z',ticker:'X'};j.putRaw([f,f],[{ticker:'X',settled_time:'2026-10-05T00:00:00Z'}]);
   expect(j.raw().fills).toHaveLength(1);expect(j.raw().settlements).toHaveLength(1);j.set('k',{a:1});expect(j.get('k',null)).toEqual({a:1});j.db.close();});
+it('backfill rows insert once, wait for prices, and only priced rows are read back',()=>{
+  const j=new MarketsJournal(':memory:');const r={ticker:'A',event:'E',series:'S',grp:'sports' as const,title:'t',eventTs:100,settleTs:200,result:'yes' as const,volume:500};
+  j.putBackfill([r,r,{...r,ticker:'B',eventTs:50}]);expect(j.unpriced().map(x=>x.ticker).sort()).toEqual(['A','B']);
+  j.setPrices('A',{p24:.4,a24:.41,p1:.5,a1:.51,vwap:.45});expect(j.unpriced().map(x=>x.ticker)).toEqual(['B']);
+  expect(j.backfillRows()).toEqual([{...r,p24:.4,a24:.41,p1:.5,a1:.51,vwap:.45,priced:1}]);expect(j.backfillStats()).toEqual({markets:2,priced:1,from:50,to:100});j.db.close();});

@@ -3,6 +3,8 @@ import {mkdirSync} from 'node:fs';
 import {dirname} from 'node:path';
 import type {Group,Quote} from './types';
 const DAY=86400000;
+/** A settled market from the public backfill, with its YES mid and ask 24 h and 1 h before the event and the 24-h traded average. */
+export interface BackfillRow {ticker:string;event:string;series:string;grp:'sports'|'politics'|'commodities';title:string;eventTs:number;settleTs:number;result:'yes'|'no';volume:number;p24:number|null;a24:number|null;p1:number|null;a1:number|null;vwap:number|null;priced:0|1}
 /** data/markets.db: the markets process's own journal, so it never contends with the Bitcoin engine's writes. */
 export class MarketsJournal {
   db:Database.Database;
@@ -14,7 +16,9 @@ export class MarketsJournal {
       CREATE INDEX IF NOT EXISTS snapshots_time ON snapshots(time);
       CREATE TABLE IF NOT EXISTS notices(id INTEGER PRIMARY KEY,time INTEGER NOT NULL,ticker TEXT NOT NULL,kind TEXT NOT NULL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS account_raw(id TEXT PRIMARY KEY,type TEXT NOT NULL,time INTEGER NOT NULL,context TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,time INTEGER NOT NULL,event TEXT NOT NULL,context TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,time INTEGER NOT NULL,event TEXT NOT NULL,context TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS backfill(ticker TEXT PRIMARY KEY,event TEXT NOT NULL,series TEXT NOT NULL,grp TEXT NOT NULL,title TEXT NOT NULL,event_ts INTEGER NOT NULL,settle_ts INTEGER NOT NULL,result TEXT NOT NULL,volume REAL NOT NULL,p24 REAL,a24 REAL,p1 REAL,a1 REAL,vwap REAL,priced INTEGER NOT NULL DEFAULT 0);
+      CREATE INDEX IF NOT EXISTS backfill_priced ON backfill(priced,event_ts);`);
   }
   log(event:string,context:unknown){this.db.prepare('INSERT INTO events(time,event,context) VALUES(?,?,?)').run(Date.now(),event,JSON.stringify(context));}
   get<T>(key:string,fallback:T):T{const row=this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as {value:string}|undefined;return row?JSON.parse(row.value):fallback;}
@@ -41,6 +45,14 @@ export class MarketsJournal {
   }
   raw(){const rows=this.db.prepare('SELECT type,context FROM account_raw ORDER BY time').all() as {type:string;context:string}[];
     return {fills:rows.filter(r=>r.type==='fill').map(r=>JSON.parse(r.context)),settlements:rows.filter(r=>r.type==='settlement').map(r=>JSON.parse(r.context))};}
+  putBackfill(rows:{ticker:string;event:string;series:string;grp:string;title:string;eventTs:number;settleTs:number;result:string;volume:number}[]){
+    const put=this.db.prepare('INSERT OR IGNORE INTO backfill(ticker,event,series,grp,title,event_ts,settle_ts,result,volume) VALUES(?,?,?,?,?,?,?,?,?)');
+    this.db.transaction(()=>{for(const r of rows)put.run(r.ticker,r.event,r.series,r.grp,r.title,r.eventTs,r.settleTs,r.result,r.volume);})();
+  }
+  unpriced(limit=100000){return this.db.prepare('SELECT ticker,event_ts AS eventTs FROM backfill WHERE priced=0 ORDER BY event_ts LIMIT ?').all(limit) as {ticker:string;eventTs:number}[];}
+  setPrices(ticker:string,p:{p24:number|null;a24:number|null;p1:number|null;a1:number|null;vwap:number|null}){this.db.prepare('UPDATE backfill SET p24=?,a24=?,p1=?,a1=?,vwap=?,priced=1 WHERE ticker=?').run(p.p24,p.a24,p.p1,p.a1,p.vwap,ticker);}
+  backfillRows():BackfillRow[]{return this.db.prepare('SELECT ticker,event,series,grp,title,event_ts AS eventTs,settle_ts AS settleTs,result,volume,p24,a24,p1,a1,vwap,priced FROM backfill WHERE priced=1 ORDER BY event_ts').all() as BackfillRow[];}
+  backfillStats(){return this.db.prepare('SELECT COUNT(*) AS markets,COALESCE(SUM(priced),0) AS priced,MIN(event_ts) AS "from",MAX(event_ts) AS "to" FROM backfill').get() as {markets:number;priced:number;from:number|null;to:number|null};}
   /** Snapshots of markets you hold are kept for good; others (the scanner, from stage 4) for 14 days. */
   prune(now=Date.now()){this.db.prepare('DELETE FROM snapshots WHERE held=0 AND time<?').run(now-14*DAY);}
 }
