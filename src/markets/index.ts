@@ -12,6 +12,7 @@ import {buildPositions,summarize,snapshotRows,sparkKey,sparkCache,type MarketsSt
 import {isBitcoin} from './categories';
 import type {MarketMemory} from './holdsell';
 import {BackfillRefresher} from './refresh';
+import {buildRecord,type RecordState} from './record';
 /**
  * Markets process (127.0.0.1:3002): every open Kalshi position outside the two Bitcoin series, read-only. Runs apart from
  * the Bitcoin engine so its polling can never stall that engine's 4 Hz loop.
@@ -40,12 +41,20 @@ function build(){
     bitcoin:data.positions.filter(p=>isBitcoin(String(p.ticker))&&Math.abs(Number(p.position_fp))>1e-9).length,
     summary:summarize(cards,data.events,dayKey(now),t=>dayKey(t)),synced:{positions:data.positionsUpdated||null,quotes:data.quotesUpdated||null}};
 }
+// The Record tab is historical: built on request, at most once a minute.
+let record:{at:number;body:RecordState&{refreshing:boolean}}|null=null;
+function recordState(now=Date.now()){
+  if(!record||now-record.at>=60000)record={at:now,body:{...buildRecord({rows:journal.backfillRows(),events:data.events,fills:journal.raw().fills.filter((f:any)=>!isBitcoin(String(f.ticker??f.market_ticker))),
+    groupFor:t=>data.groupFor(t),stats:journal.backfillStats(),finished:journal.get<number|null>('backfillFinished',null)}),refreshing:refresher.running}};
+  return record.body;
+}
 const safe=(name:string,f:()=>unknown)=>{try{const r=f();if(r instanceof Promise)r.catch(e=>log(name,{message:(e as Error).message}));}catch(e){log(name,{message:(e as Error).message});}};
 const server=createServer((req,res)=>{
   res.setHeader('Cache-Control','no-store');
   if(!authorized(req.headers.authorization,req)){res.writeHead(401,{'WWW-Authenticate':'Basic realm="Kalshi Advisor"'});res.end('Authentication required');return;}
   const path=new URL(req.url??'/','http://127.0.0.1').pathname;
   if(req.method==='GET'&&path==='/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;}
+  if(req.method==='GET'&&path==='/record'){try{const body=JSON.stringify(recordState());res.setHeader('Content-Type','application/json');res.end(body);}catch(e){log('record-error',{message:(e as Error).message});res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}return;}
   res.writeHead(404);res.end('Not found');
 });
 const wss=new WebSocketServer({noServer:true});

@@ -16,3 +16,8 @@ it('polls held markets, then their combo legs, in batched requests; Bitcoin posi
 it('a failing Kalshi request is reported, not thrown, and keeps the last quotes',async()=>{
   const c=fakeClient(),d=new MarketsData(c as any,new MarketsJournal(':memory:'),()=>{});await d.syncAccount();await d.pollQuotes(1000);
   c.get=async()=>{throw new Error('HTTP 503');};await d.pollQuotes(2000);expect(d.error.quotes).toContain('503');expect(d.quotes.get('KXMVECROSSCATEGORY-S-A')!.updated).toBe(1000);});
+it('groups every traded ticker by its series category, combos apart, fetching each unknown series once',async()=>{
+  const c=fakeClient() as any;const pages=c.pages;c.pages=async(p:string)=>p.startsWith('/portfolio/fills')?[{fill_id:'f',ticker:'KXNFLGAME-OLD-KC',outcome_side:'yes',action:'buy',count_fp:'1',yes_price_dollars:'.5',fee_cost:'.01',created_time:'2026-10-01T00:00:00Z'}]:pages(p);
+  const d=new MarketsData(c as any,new MarketsJournal(':memory:'),()=>{});await d.syncAccount();
+  expect(d.groupFor('KXNFLGAME-OLD-KC')).toBe('sports');expect(d.groupFor('KXMVECROSSCATEGORY-S-A')).toBe('combos');expect(d.groupFor('KXUNKNOWN-X')).toBe('politics');
+  await d.syncAccount();expect(c.calls.filter((p:string)=>p==='/series/KXNFLGAME')).toHaveLength(1);});

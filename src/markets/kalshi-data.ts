@@ -5,7 +5,7 @@ import type {RealEvent} from '../engine/guardrails';
 import type {MarketsJournal} from './journal';
 import type {Quote} from './types';
 import {parseMarket} from './quotes';
-import {isBitcoin,groupOf} from './categories';
+import {isBitcoin,groupOf,seriesOf} from './categories';
 type Client=Pick<KalshiClient,'get'|'pages'|'authenticated'|'clockOffset'>;
 const BATCH=50;
 /** Read-only Kalshi data for Markets: your positions and fills, and quotes for every held market and combo leg. */
@@ -13,6 +13,8 @@ export class MarketsData {
   positions:any[]=[];quotes=new Map<string,Quote>();series=new Map<string,{category:string|null;schedule:FeeSchedule}>();open=new Map<string,OpenCost>();events:RealEvent[]=[];
   positionsUpdated=0;quotesUpdated=0;error:{account:string|null;quotes:string|null}={account:null,quotes:null};private busy=false;
   constructor(private client:Client,private journal:MarketsJournal,private log:(e:string,d:unknown)=>void){}
+  /** Page group of any ticker: combos by structure, others by their series category (politics when unknown). */
+  groupFor(ticker:string){return groupOf(this.series.get(seriesOf(ticker))?.category,ticker.startsWith('KXMVE'));}
   held(){return this.positions.filter(p=>!isBitcoin(String(p.ticker))&&Math.abs(Number(p.position_fp))>1e-9);}
   async syncAccount(){
     if(!this.client.authenticated||this.busy)return;this.busy=true;
@@ -24,6 +26,8 @@ export class MarketsData {
       this.journal.putRaw(fills,settlements);this.journal.set('historicalBackfill',true);
       const raw=this.journal.raw(),open=new Map<string,OpenCost>();
       this.events=normalizeAccount(raw.fills,raw.settlements,t=>!isBitcoin(t),open);this.open=open;this.error.account=null;
+      // The Record tab groups past trades by category: look up each traded series once.
+      for(const t of new Set(raw.fills.map((f:any)=>String(f.ticker??f.market_ticker)).filter((t:string)=>!isBitcoin(t))))await this.seriesInfo(seriesOf(t),t.split('-').slice(0,2).join('-'));
     }catch(e){this.error.account=(e as Error).message;this.log('account-error',{message:this.error.account});}finally{this.busy=false;}
   }
   private async fetch(tickers:string[],now:number){
