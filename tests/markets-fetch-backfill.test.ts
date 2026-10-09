@@ -22,3 +22,10 @@ it('resumes: stored markets are not refetched for candles, and a failed candle b
   const c=fake();const r=await runBackfill(c,j,{now:NOW,traded:new Set(),log:()=>{}});expect(r.priced).toBe(2);expect(j.unpriced()).toHaveLength(0);
   const again=fake();await runBackfill(again,j,{now:NOW,traded:new Set(),log:()=>{}});expect(again.calls.filter(p=>p.startsWith('/markets/candlesticks'))).toHaveLength(0);
   expect(again.calls.find(p=>p.startsWith('/markets?series_ticker=KXNFLGAME'))).toContain(`min_close_ts=${NOW-2*86400}`);});
+import {BackfillRefresher} from '../src/markets/refresh';
+it('the daily refresh never starts a second backfill while one is running (fresh heartbeat), and starts once it is stale',()=>{
+  const j=new MarketsJournal(':memory:'),t0=Date.now();const r=new BackfillRefresher(()=>{},j,t0-3600e3);let starts=0;r.start=()=>{starts++;};
+  j.set('backfillHeartbeat',t0-60e3);r.tick(t0);expect(starts).toBe(0);
+  j.set('backfillHeartbeat',t0-11*60e3);r.tick(t0);expect(starts).toBe(1);});
+it('a running backfill keeps its heartbeat fresh',async()=>{
+  const j=new MarketsJournal(':memory:');const before=Date.now();await runBackfill(fake(),j,{now:NOW,traded:new Set(),log:()=>{}});expect(j.get<number>('backfillHeartbeat',0)).toBeGreaterThanOrEqual(before);});

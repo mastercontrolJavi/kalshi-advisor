@@ -8,10 +8,14 @@ import type {MarketsJournal} from './journal';
  * at most one attempt an hour), runs scripts/markets-backfill.ts as a separate below-normal-priority process, like the
  * Bitcoin backtest refresh. Output goes to logs/markets-backfill.log.
  */
+export const HEARTBEAT_STALE_MS=10*60000;
 export class BackfillRefresher {
   running=false;lastAttempt=0;private child:ChildProcess|null=null;
   constructor(private log:(event:string,data:unknown)=>void,private journal:MarketsJournal,private started=Date.now()){}
-  tick(now=Date.now()){if(refreshDue(this.journal.get<number|null>('backfillFinished',null),now,{running:this.running,lastAttempt:this.lastAttempt,started:this.started}))this.start();}
+  tick(now=Date.now()){
+    // A backfill started by hand (npm run markets-backfill) beats every few seconds; leave it alone while it is alive.
+    if(now-this.journal.get<number>('backfillHeartbeat',0)<HEARTBEAT_STALE_MS)return;
+    if(refreshDue(this.journal.get<number|null>('backfillFinished',null),now,{running:this.running,lastAttempt:this.lastAttempt,started:this.started}))this.start();}
   start(){
     this.running=true;this.lastAttempt=Date.now();mkdirSync('logs',{recursive:true});const out=openSync('logs/markets-backfill.log','a');
     try{

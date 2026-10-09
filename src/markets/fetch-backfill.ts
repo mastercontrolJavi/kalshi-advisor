@@ -16,6 +16,8 @@ async function pages(client:Client,path:string){
  * the YES mid and ask 24 h and 1 h before the event, and the volume-weighted price over those 24 h. Re-runnable and resumable.
  */
 export async function runBackfill(client:Client,journal:MarketsJournal,o:{now:number;traded:Set<string>;log:(m:string)=>void;perGroup?:number;perSeries?:number;minVolume?:number}){
+  // Heartbeat: the daily refresher (in the markets process) will not start a second run while this one is alive.
+  const beat=()=>journal.set('backfillHeartbeat',Date.now());beat();
   const cutoff=Math.floor(Date.parse((await client.get('/historical/cutoff')).market_settled_ts)/1000);
   const last=journal.get<number|null>('backfillTo',null),from=Math.max(cutoff,last!==null?last-2*DAY:0);
   const series=(await pages(client,'/series?include_volume=true')).map((s:any)=>({ticker:String(s.ticker),category:s.category??null,volume:Number(s.volume_fp)||0}));
@@ -23,6 +25,7 @@ export async function runBackfill(client:Client,journal:MarketsJournal,o:{now:nu
   o.log(`backfill: ${chosen.length} series, settled since ${new Date(from*1000).toISOString().slice(0,10)}`);
   let listed=0;
   for(const s of chosen){
+    beat();
     try{
       const ms=(await pages(client,`/markets?series_ticker=${encodeURIComponent(s)}&status=settled&min_close_ts=${from}&max_close_ts=${o.now}`))
         .filter(m=>(m.result==='yes'||m.result==='no')&&(Number(m.volume_fp)||0)>=(o.minVolume??100)&&eventTime(m)!==null)
@@ -35,7 +38,7 @@ export async function runBackfill(client:Client,journal:MarketsJournal,o:{now:nu
   journal.set('backfillTo',o.now);
   let priced=0;const groups=candleGroups(journal.unpriced().map(r=>({ticker:r.ticker,event:r.eventTs})));
   for(let i=0;i<groups.length;i++){
-    const g=groups[i],start=g[0].event-25*H,end=g.at(-1)!.event;
+    const g=groups[i],start=g[0].event-25*H,end=g.at(-1)!.event;if(i%10===0)beat();
     try{
       const r=await client.get(`/markets/candlesticks?market_tickers=${encodeURIComponent(g.map(x=>x.ticker).join(','))}&start_ts=${start}&end_ts=${end}&period_interval=60`);
       const got=new Map<string,any[]>((r.markets??[]).map((m:any)=>[m.market_ticker,m.candlesticks??[]]));
