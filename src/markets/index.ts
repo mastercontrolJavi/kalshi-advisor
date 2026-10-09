@@ -45,7 +45,7 @@ function build(){
 let record:{at:number;body:RecordState&{refreshing:boolean}}|null=null;
 function recordState(now=Date.now()){
   if(!record||now-record.at>=60000)record={at:now,body:{...buildRecord({rows:journal.backfillRows(),events:data.events,fills:journal.raw().fills.filter((f:any)=>!isBitcoin(String(f.ticker??f.market_ticker))),
-    groupFor:t=>data.groupFor(t),stats:journal.backfillStats(),finished:journal.get<number|null>('backfillFinished',null)}),refreshing:refresher.running}};
+    groupFor:t=>data.groupFor(t),stats:journal.backfillStats(),finished:journal.get<number|null>('backfillFinished',null)}),refreshing:refresher.active(now)}};
   return record.body;
 }
 const safe=(name:string,f:()=>unknown)=>{try{const r=f();if(r instanceof Promise)r.catch(e=>log(name,{message:(e as Error).message}));}catch(e){log(name,{message:(e as Error).message});}};

@@ -14,8 +14,11 @@ export class BackfillRefresher {
   constructor(private log:(event:string,data:unknown)=>void,private journal:MarketsJournal,private started=Date.now()){}
   tick(now=Date.now()){
     // A backfill started by hand (npm run markets-backfill) beats every few seconds; leave it alone while it is alive.
-    if(now-this.journal.get<number>('backfillHeartbeat',0)<HEARTBEAT_STALE_MS)return;
+    if(this.beating(now))return;
     if(refreshDue(this.journal.get<number|null>('backfillFinished',null),now,{running:this.running,lastAttempt:this.lastAttempt,started:this.started}))this.start();}
+  private beating(now:number){return now-this.journal.get<number>('backfillHeartbeat',0)<HEARTBEAT_STALE_MS;}
+  /** A backfill is under way: started here, or by hand elsewhere and still beating. */
+  active(now=Date.now()){return this.running||this.beating(now);}
   start(){
     this.running=true;this.lastAttempt=Date.now();mkdirSync('logs',{recursive:true});const out=openSync('logs/markets-backfill.log','a');
     try{

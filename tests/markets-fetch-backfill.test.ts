@@ -29,3 +29,6 @@ it('the daily refresh never starts a second backfill while one is running (fresh
   j.set('backfillHeartbeat',t0-11*60e3);r.tick(t0);expect(starts).toBe(1);});
 it('a running backfill keeps its heartbeat fresh',async()=>{
   const j=new MarketsJournal(':memory:');const before=Date.now();await runBackfill(fake(),j,{now:NOW,traded:new Set(),log:()=>{}});expect(j.get<number>('backfillHeartbeat',0)).toBeGreaterThanOrEqual(before);});
+it('a backfill counts as running when this process started it or another one is beating',()=>{
+  const j=new MarketsJournal(':memory:'),t0=Date.now(),r=new BackfillRefresher(()=>{},j,t0);
+  expect(r.active(t0)).toBe(false);j.set('backfillHeartbeat',t0-60e3);expect(r.active(t0)).toBe(true);expect(r.active(t0+11*60e3)).toBe(false);});
