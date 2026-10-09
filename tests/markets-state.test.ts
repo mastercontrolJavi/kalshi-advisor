@@ -1,0 +1,21 @@
+import {it,expect} from 'vitest';
+import {buildPositions,summarize} from '../src/markets/state';
+import {parseMarket} from '../src/markets/quotes';
+import {baseFees} from '../src/engine/model/fees';
+import {defaults} from '../src/engine/config';
+const now=10_000;
+const quotes=new Map([['KXNFLGAME-X-KC',parseMarket({ticker:'KXNFLGAME-X-KC',event_ticker:'KXNFLGAME-X',title:'KC vs LV Winner?',yes_sub_title:'Kansas City',status:'active',result:'',yes_bid_dollars:'.6',yes_ask_dollars:'.62',no_bid_dollars:'.38',no_ask_dollars:'.4'},now)]]);
+const series=new Map([['KXNFLGAME',{category:'Sports',schedule:baseFees}]]);
+const positions=[{ticker:'KXNFLGAME-X-KC',position_fp:'4',market_exposure_dollars:'2.4',fees_paid_dollars:'.06'},{ticker:'KXBTC15M-Y',position_fp:'3',market_exposure_dollars:'1.5'},{ticker:'KXNFLGAME-Z-LV',position_fp:'0.00',market_exposure_dollars:'0'}];
+it('builds one card per open non-Bitcoin position with title, group and spark',()=>{
+  const {cards,memory}=buildPositions({positions,quotes,series,open:new Map(),cfg:defaults,memory:new Map(),now,spark:()=>[{t:1,mid:.5}]});
+  expect(cards).toHaveLength(1);expect(cards[0]).toMatchObject({title:'Kansas City',marketTitle:'KC vs LV Winner?',group:'sports',verdict:'HOLD',seriesTicker:'KXNFLGAME'});expect(cards[0].spark).toHaveLength(1);expect(memory.has('KXNFLGAME-X-KC')).toBe(true);});
+it('a combo position gets its legs and is titled by leg count',()=>{
+  const combo=parseMarket({ticker:'KXMVECROSSCATEGORY-S-A',event_ticker:'KXMVECROSSCATEGORY-S',title:'yes Kansas City',yes_sub_title:'yes Kansas City',status:'active',result:'',yes_bid_dollars:'.001',yes_ask_dollars:'.9',mve_selected_legs:[{event_ticker:'KXNFLGAME-X',market_ticker:'KXNFLGAME-X-KC',side:'yes'}]},now);
+  const q=new Map(quotes);q.set(combo.ticker,combo);
+  const {cards}=buildPositions({positions:[{ticker:combo.ticker,position_fp:'100',market_exposure_dollars:'.5',fees_paid_dollars:'.01'}],quotes:q,series:new Map([...series,['KXMVECROSSCATEGORY',{category:'Exotics',schedule:baseFees}]]),open:new Map(),cfg:defaults,memory:new Map(),now,spark:()=>[]});
+  expect(cards[0].group).toBe('combos');expect(cards[0].title).toBe('1-leg combo');expect(cards[0].combo!.value).toBeCloseTo(.61);});
+it('summary sums cost, sell and hold values, and today\'s realized P&L',()=>{
+  const {cards}=buildPositions({positions,quotes,series,open:new Map(),cfg:defaults,memory:new Map(),now,spark:()=>[]});
+  const s=summarize(cards,[{id:'a',time:5,ticker:'X',type:'fill',pnl:1.5,contracts:1},{id:'b',time:1,ticker:'X',type:'fill',pnl:-9,contracts:1}],'D',t=>t>=5?'D':'C');
+  expect(s.count).toBe(1);expect(s.atRisk).toBeCloseTo(2.46);expect(s.holdAll).toBeCloseTo(2.44);expect(s.realizedToday).toBeCloseTo(1.5);});

@@ -1,0 +1,29 @@
+import {baseFees,type FeeSchedule} from '../engine/model/fees';
+import type {OpenCost} from '../engine/account';
+import type {RealEvent} from '../engine/guardrails';
+import type {ExitConfig} from '../engine/exits';
+import type {Group,Quote} from './types';
+import {comboView,type ComboView} from './combos';
+import {positionView,type MarketMemory,type PositionView} from './holdsell';
+import {groupOf,isBitcoin,seriesOf} from './categories';
+import {sideLabel} from './quotes';
+export interface PositionCard extends PositionView {title:string;marketTitle:string;group:Group;closeTime:number|null;expectedExpiration:number|null;combo:ComboView|null;spark:{t:number;mid:number}[];seriesTicker:string}
+export interface MarketsState {time:number;status:'live'|'no-credentials'|'starting';error:string|null;positions:PositionCard[];bitcoin:number;summary:{count:number;atRisk:number;sellAll:number|null;holdAll:number|null;realizedToday:number|null};synced:{positions:number|null;quotes:number|null}}
+/** One card per open non-Bitcoin position, most urgent first; returns the per-position memory for the next pass. */
+export function buildPositions(a:{positions:any[];quotes:Map<string,Quote>;series:Map<string,{category:string|null;schedule:FeeSchedule}>;open:Map<string,OpenCost>;cfg:ExitConfig;memory:Map<string,MarketMemory>;now:number;spark:(ticker:string)=>{t:number;mid:number}[]}){
+  const cards:PositionCard[]=[],memory=new Map<string,MarketMemory>();
+  for(const p of a.positions){const ticker=String(p.ticker);if(isBitcoin(ticker))continue;
+    const q=a.quotes.get(ticker)??null,info=a.series.get(seriesOf(ticker)),combo=q?.legs?comboView(q.legs,a.quotes):null;
+    const r=positionView({position:p,quote:q,combo,open:a.open.get(ticker),schedule:info?.schedule??baseFees,cfg:a.cfg,memory:a.memory.get(ticker),now:a.now});if(!r)continue;
+    memory.set(ticker,r.memory);
+    cards.push({...r.view,title:combo?`${combo.legs.length}-leg combo`:q?sideLabel(q,r.view.side):ticker,marketTitle:combo?combo.legs.map(l=>l.label).join(' · '):q?.title??'',
+      group:groupOf(info?.category,!!q?.legs),closeTime:q?.closeTime??null,expectedExpiration:q?.expectedExpiration??null,combo,spark:a.spark(ticker),seriesTicker:seriesOf(ticker)});}
+  // Most urgent first: a standing notice, then the largest amount at risk.
+  cards.sort((x,y)=>Number(!!y.notice)-Number(!!x.notice)||(y.contracts*(y.avgCost??0))-(x.contracts*(x.avgCost??0)));
+  return {cards,memory};
+}
+const sum=(xs:(number|null)[])=>xs.some(x=>x===null)?null:xs.reduce((s:number,x)=>s+(x as number),0);
+export function summarize(cards:PositionCard[],events:RealEvent[],today:string,dayOf:(t:number)=>string):MarketsState['summary']{
+  return {count:cards.length,atRisk:cards.reduce((s,c)=>s+c.contracts*(c.avgCost??0),0),sellAll:sum(cards.map(c=>c.verdict==='DEAD'?0:c.unrealized)),holdAll:sum(cards.map(c=>c.holdValue)),
+    realizedToday:events.filter(e=>dayOf(e.time)===today).reduce((s,e)=>s+e.pnl,0)};
+}

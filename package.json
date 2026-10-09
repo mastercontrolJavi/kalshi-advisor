@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev:all": "concurrently -k \"tsx watch src/engine/index.ts\" \"tsx scripts/web.ts --dev\"",
+    "dev:all": "concurrently -k \"tsx watch src/engine/index.ts\" \"tsx watch src/markets/index.ts\" \"tsx scripts/web.ts --dev\"",
+    "markets": "tsx src/markets/index.ts",
     "engine": "tsx src/engine/index.ts",
     "build": "next build",
     "trade": "node scripts/trade.mjs",
