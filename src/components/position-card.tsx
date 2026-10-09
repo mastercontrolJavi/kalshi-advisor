@@ -10,23 +10,27 @@ function until(t:number|null,now:number){
   if(!t)return null;const s=Math.round((t-now)/1000);if(s<=0)return 'result due';
   const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return `result in ${d?`${d}d ${h}h`:h?`${h}h ${m}m`:`${m}m`}`;
 }
-/** YES price since you entered, from the 30-s snapshots. */
-function Spark({points}:{points:{t:number;mid:number}[]}){
+/** The YES price (for a combo, its value at leg odds) since you entered, from the 30-s snapshots. */
+function Spark({points,label}:{points:{t:number;mid:number}[];label:string}){
   if(points.length<2)return <div className="text-xs text-faint">Price line builds every 30 s.</div>;
   const t0=points[0].t,t1=points.at(-1)!.t,lo=Math.min(...points.map(p=>p.mid)),hi=Math.max(...points.map(p=>p.mid)),w=160,h=40;
   const d=points.map((p,k)=>`${k?'L':'M'}${((p.t-t0)/Math.max(1,t1-t0)*w).toFixed(1)},${(h-(p.mid-lo)/Math.max(1e-9,hi-lo)*h).toFixed(1)}`).join(' ');
-  return <svg viewBox={`0 0 ${w} ${h}`} className="h-10 w-40" role="img" aria-label={`YES price from ${price(points[0].mid)} to ${price(points.at(-1)!.mid)}`}><path d={d} fill="none" stroke="var(--color-info)" strokeWidth="1.5" vectorEffect="non-scaling-stroke"/></svg>;
+  return <svg viewBox={`0 0 ${w} ${h}`} className="h-10 w-40" role="img" aria-label={`${label} from ${price(points[0].mid)} to ${price(points.at(-1)!.mid)}`}><path d={d} fill="none" stroke="var(--color-info)" strokeWidth="1.5" vectorEffect="non-scaling-stroke"/></svg>;
 }
 /** One open position: the hold-or-sell verdict and P&L, cost, any heads-up, the reasoning, combo legs, and the sell/hold numbers. */
 export function PositionCardView({c,now}:{c:any;now:number}){
   const pnlTone:Tone=c.unrealized>.005?'yes':c.unrealized<-.005?'no':'neutral';
-  const verdictTone:Tone=c.verdict==='DEAD'?'no':c.verdict==='SELL BEATS HOLD'?'warn':c.verdict==='HOLD'?pnlTone:'neutral';
+  // A combo's bid sits on an almost empty book (often 0.1¢), so P&L at the bid says little about where it stands; the
+  // headline compares its value at leg odds with what it cost. P&L if sold stays in the numbers on the right.
+  const cost=c.avgCost!=null?c.contracts*c.avgCost:null,atLegs=c.probSource==='legs'&&c.holdValue!=null&&cost?c.holdValue-cost:null;
+  const head=atLegs??c.unrealized,headPct=atLegs!=null&&cost?atLegs/cost:c.unrealizedPct,headTone:Tone=head>.005?'yes':head<-.005?'no':'neutral';
+  const verdictTone:Tone=c.verdict==='DEAD'?'no':c.verdict==='SELL BEATS HOLD'?'warn':c.verdict==='HOLD'?headTone:'neutral';
   const due=until(c.expectedExpiration??c.closeTime,now);
   return <div className="grid gap-4 border-t border-line pt-4 first:border-0 first:pt-0 lg:grid-cols-[1fr_auto]">
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2 text-sm"><Pill tone="neutral">{groupLabel[c.group]??c.group}</Pill><span className="font-medium">{c.title}</span><span className="min-w-0 truncate text-muted">{c.marketTitle}</span></div>
       <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1"><div className={cn('font-display text-5xl leading-none font-bold uppercase',toneText[verdictTone],c.stale&&'opacity-60')}>{c.verdict}</div>
-        {c.unrealized!=null&&!['SETTLING','DEAD'].includes(c.verdict)?<div className={cn('num text-2xl font-semibold',toneText[pnlTone])}>{c.unrealized>=0?'UP':'DOWN'} {signedDollars(c.unrealized)} <span className="text-base">({sp(c.unrealizedPct)})</span></div>:null}</div>
+        {head!=null&&!['SETTLING','DEAD'].includes(c.verdict)?<div className={cn('num text-2xl font-semibold',toneText[headTone])}>{head>=0?'UP':'DOWN'} {signedDollars(head)} <span className="text-base">({sp(headPct)})</span>{atLegs!=null?<span className="ml-1.5 font-sans text-sm font-normal text-muted">at leg odds</span>:null}</div>:null}</div>
       <div className="mt-2 text-sm"><span className="num">{qty(c.contracts)}</span> {c.side.toUpperCase()} · cost <span className="num">{price(c.avgCost)}</span> incl. fees{c.costSource==='estimate'?<span className="text-faint"> (estimated)</span>:null} · win chance <span className="num">{pct(c.winProb,c.winProb!=null&&c.winProb<.01?2:0)}</span>{due?<> · {due}</>:null}{c.stale?<span className="text-warn"> · prices stale</span>:null}</div>
       {c.peakPct!=null&&c.probSource==='market'?<div className="mt-1 text-xs text-muted">Best {sp(c.peakPct)} · worst {sp(c.troughPct)} so far</div>:null}
       {c.notice?<Notice notice={c.notice}/>:null}
@@ -41,6 +45,6 @@ export function PositionCardView({c,now}:{c:any;now:number}){
       <Stat label="P&L if sold" tone={pnlTone} sub={c.unrealizedPct!=null?`${sp(c.unrealizedPct)} of cost`:undefined}>{signedDollars(c.unrealized)}</Stat>
       <Stat label="Sell now" sub={c.bid!=null?`bid ${price(c.bid)} − ${dollars(c.sellFee)} fee`:'no bid'}>{dollars(c.sellValue)}</Stat>
       <Stat label="Hold value" sub={c.probSource==='legs'?'legs × $1':c.probSource==='settled'?'payout':'market odds × $1'}>{dollars(c.holdValue)}</Stat></div>
-      <Spark points={c.spark??[]}/></div>
+      <Spark points={c.spark??[]} label={c.combo?'Value at leg odds':'YES price'}/></div>
   </div>;
 }

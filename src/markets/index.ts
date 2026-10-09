@@ -8,7 +8,7 @@ import {defaults,validateConfig,type Config} from '../engine/config';
 import {dayKey} from '../engine/guardrails';
 import {MarketsJournal} from './journal';
 import {MarketsData} from './kalshi-data';
-import {buildPositions,summarize,type MarketsState} from './state';
+import {buildPositions,summarize,snapshotRows,sparkKey,type MarketsState} from './state';
 import {isBitcoin} from './categories';
 import type {MarketMemory} from './holdsell';
 /**
@@ -31,7 +31,7 @@ let state:MarketsState={time:Date.now(),status:client.authenticated?'starting':'
 function build(){
   const now=Date.now();
   // The price line starts at your first fill in that market (or a day back if fills have not synced yet).
-  const spark=(t:string)=>journal.spark(t,data.events.find(e=>e.ticker===t&&e.type==='fill')?.time??now-86400000);
+  const spark=(t:string)=>journal.spark(sparkKey(data.quotes.get(t),t),data.events.find(e=>e.ticker===t&&e.type==='fill')?.time??now-86400000);
   const {cards,memory:next}=buildPositions({positions:data.positions,quotes:data.quotes,series:data.series,open:data.open,cfg,memory,now,spark});
   for(const c of cards){const before=memory.get(c.ticker)?.notice??null;if(c.notice&&c.notice.kind!==before)journal.notice(now,c.ticker,c.notice.kind,{notice:c.notice,bid:c.bid,winProb:c.winProb,unrealized:c.unrealized});}
   memory=next;
@@ -60,8 +60,7 @@ async function boot(){
 void boot();
 setInterval(()=>safe('account-sync-error',()=>data.syncAccount()),30000);
 setInterval(()=>safe('quotes-error',()=>data.pollQuotes(Date.now())),5000);
-// Every quote polled is a held market or a leg of a held combo: all are kept for good.
-setInterval(()=>safe('snapshot-error',()=>{const now=Date.now();journal.snapshot([...data.quotes.values()].map(q=>({ticker:q.ticker,time:now,yesBid:q.yesBid,yesAsk:q.yesAsk,last:q.last,volume24h:q.volume24h,held:true})));}),30000);
+setInterval(()=>safe('snapshot-error',()=>journal.snapshot(snapshotRows(data.quotes,state.positions,Date.now()))),30000);
 setInterval(()=>safe('memory-save-error',()=>journal.set('memory',Object.fromEntries(memory))),30000);
 setInterval(()=>safe('config-error',loadConfig),60000);
 setInterval(()=>safe('prune-error',()=>journal.prune()),3600000);

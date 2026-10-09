@@ -19,3 +19,11 @@ it('summary sums cost, sell and hold values, and today\'s realized P&L',()=>{
   const {cards}=buildPositions({positions,quotes,series,open:new Map(),cfg:defaults,memory:new Map(),now,spark:()=>[]});
   const s=summarize(cards,[{id:'a',time:5,ticker:'X',type:'fill',pnl:1.5,contracts:1},{id:'b',time:1,ticker:'X',type:'fill',pnl:-9,contracts:1}],'D',t=>t>=5?'D':'C');
   expect(s.count).toBe(1);expect(s.atRisk).toBeCloseTo(2.46);expect(s.holdAll).toBeCloseTo(2.44);expect(s.realizedToday).toBeCloseTo(1.5);});
+import {snapshotRows,sparkKey} from '../src/markets/state';
+it('snapshots every quote, plus each combo\'s leg value under its own key for the price line',()=>{
+  const combo=parseMarket({ticker:'KXMVECROSSCATEGORY-S-A',event_ticker:'KXMVECROSSCATEGORY-S',status:'active',result:'',yes_bid_dollars:'.001',yes_ask_dollars:'.9',mve_selected_legs:[{event_ticker:'KXNFLGAME-X',market_ticker:'KXNFLGAME-X-KC',side:'yes'}]},now);
+  const q=new Map(quotes);q.set(combo.ticker,combo);
+  const {cards}=buildPositions({positions:[{ticker:combo.ticker,position_fp:'100',market_exposure_dollars:'.5'}],quotes:q,series,open:new Map(),cfg:defaults,memory:new Map(),now,spark:()=>[]});
+  const rows=snapshotRows(q,cards,now);expect(rows.map(r=>r.ticker).sort()).toEqual(['KXMVECROSSCATEGORY-S-A','KXMVECROSSCATEGORY-S-A#legs','KXNFLGAME-X-KC']);
+  const legs=rows.find(r=>r.ticker.endsWith('#legs'))!;expect(legs.last).toBeCloseTo(.61);expect(legs.yesBid).toBeNull();expect(rows.every(r=>r.held&&r.time===now)).toBe(true);
+  expect(sparkKey(combo)).toBe('KXMVECROSSCATEGORY-S-A#legs');expect(sparkKey(quotes.get('KXNFLGAME-X-KC')!)).toBe('KXNFLGAME-X-KC');});

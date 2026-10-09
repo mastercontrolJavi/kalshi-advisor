@@ -27,3 +27,11 @@ export function summarize(cards:PositionCard[],events:RealEvent[],today:string,d
   return {count:cards.length,atRisk:cards.reduce((s,c)=>s+c.contracts*(c.avgCost??0),0),sellAll:sum(cards.map(c=>c.verdict==='DEAD'?0:c.unrealized)),holdAll:sum(cards.map(c=>c.holdValue)),
     realizedToday:events.filter(e=>dayOf(e.time)===today).reduce((s,e)=>s+e.pnl,0)};
 }
+/** A combo's own book is nearly empty, so its price line tracks the legs' combined value, stored under `<ticker>#legs`. */
+export const sparkKey=(q:Quote|undefined|null,ticker=q?.ticker??'')=>q?.legs?ticker+'#legs':ticker;
+/** The 30-s snapshot: every polled quote (all are held markets or legs of held combos), plus each combo's leg value. */
+export function snapshotRows(quotes:Map<string,Quote>,cards:PositionCard[],now:number){
+  const rows=[...quotes.values()].map(q=>({ticker:q.ticker,time:now,yesBid:q.yesBid,yesAsk:q.yesAsk,last:q.last,volume24h:q.volume24h,held:true}));
+  for(const c of cards)if(c.combo?.value!=null)rows.push({ticker:c.ticker+'#legs',time:now,yesBid:null,yesAsk:null,last:c.combo.value,volume24h:null,held:true});
+  return rows;
+}

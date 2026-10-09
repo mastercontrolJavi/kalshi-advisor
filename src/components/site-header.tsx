@@ -9,7 +9,7 @@ export function SiteHeader({current,aside,children,bottom}:{current:'/'|'/hourly
       <a href="/" className="flex items-center gap-2.5"><img src="/icon.svg" alt="" width={28} height={28} className="size-7"/><span className="font-display text-xl font-bold tracking-wide">KALSHI<span className="text-yes">/ADVISOR</span></span></a>
       {aside}
       <nav aria-label="Pages" className="order-last flex w-full gap-1 sm:order-none sm:ml-2 sm:w-auto">{links.map(l=><a key={l.href} href={l.href} aria-current={current===l.href?'page':undefined}
-        className={cn('inline-flex min-h-10 flex-1 items-center justify-center rounded-xl px-2 text-sm sm:px-3 transition-colors sm:flex-none',current===l.href?'bg-surface-2 text-fg':'text-muted hover:text-fg')}>{l.label}</a>)}</nav>
+        className={cn('inline-flex min-h-10 flex-1 items-center justify-center whitespace-nowrap rounded-xl px-1.5 text-sm sm:px-3 transition-colors sm:flex-none',current===l.href?'bg-surface-2 text-fg':'text-muted hover:text-fg')}>{l.label}</a>)}</nav>
       <div className="ml-auto flex items-center gap-2 text-sm">{children}</div>
     </div>
     {bottom}
