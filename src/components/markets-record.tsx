@@ -14,7 +14,8 @@ import {dollars,signedDollars,pct} from './format';
 const Reliability=dynamic(()=>import('./calibration-charts').then(m=>m.ReliabilityChart),{ssr:false});
 const REFRESH_MS=60000;
 const groupLabel:Record<string,string>={sports:'Sports',combos:'Combos',politics:'Politics & econ',commodities:'Commodities & crypto'};
-const HORIZONS:[string,string][]=[['p1','1 h before'],['p24','24 h before'],['vwap','Average traded']];
+// 24 h is the default: for team sports Kalshi's event time is about when the result is due, so 1 h before is late in the game.
+const HORIZONS:[string,string][]=[['p24','24 h before'],['p1','1 h before'],['vwap','Average traded']];
 const tone=(v:number|null|undefined)=>v==null||v===0?'':v>0?'text-yes':'text-no';
 const band=(lo:number,hi:number)=>`${Math.round(lo*100)}–${Math.round(hi*100)}¢`;
 const range=(lo:number|null,hi:number|null,f:(v:number)=>string)=>lo==null||hi==null?'—':`${f(lo)} to ${f(hi)}`;
@@ -28,7 +29,7 @@ function RecordTable({title,rows,first}:{title:string;rows:any[];first:string}){
 /** Markets → Record: your own results outside Bitcoin, and how accurate Kalshi's prices were (public history). */
 export default function MarketsRecord(){
   const m=useLive('/markets-ws'),sound=useSoundAlerts(null,false,'markets',{state:m.state,fresh:m.fresh});
-  const [filter,setFilter]=useMarketsFilter(),[h,setH]=useState('p1');
+  const [filter,setFilter]=useMarketsFilter(),[h,setH]=useState('p24');
   const [r,setR]=useState<any>(null),[error,setError]=useState('');
   const load=useCallback(async()=>{try{const res=await fetch('/api/markets/record',{cache:'no-store'});if(!res.ok)throw new Error(`HTTP ${res.status}`);setR(await res.json());setError('');}catch(e){setError((e as Error).message);}},[]);
   // Historical page: refresh once a minute, like Analytics.
@@ -58,7 +59,7 @@ export default function MarketsRecord(){
         <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-semibold">How accurate Kalshi&apos;s prices were</h2>
           <nav aria-label="When the price was taken" className="flex flex-wrap gap-1">{HORIZONS.map(([k,l])=><button key={k} type="button" aria-pressed={h===k} onClick={()=>setH(k)}
             className={cn('inline-flex min-h-10 cursor-pointer items-center rounded-xl px-3 text-sm transition-colors',h===k?'bg-surface-2 text-fg':'text-muted hover:text-fg')}>{l}</button>)}</nav></div>
-        <p className="mt-1 max-w-4xl text-sm text-muted">Settled Kalshi markets{filter!=='all'&&filter!=='combos'?` in ${groupLabel[filter]}`:''}, grouped by their YES price {h==='p1'?'1 hour before the game or event':h==='p24'?'24 hours before the game or event':'averaged over the 24 hours before it, weighted by volume'}. If prices are accurate, contracts priced at 30¢ win about 30% of the time.</p>
+        <p className="mt-1 max-w-4xl text-sm text-muted">Settled Kalshi markets{filter!=='all'&&filter!=='combos'?` in ${groupLabel[filter]}`:''}, grouped by their YES price {h==='p1'?'1 hour before the result was due (for team sports usually late in the game)':h==='p24'?'24 hours before the result was due (for team sports, the pre-game line)':'averaged over the 24 hours before the result was due, weighted by volume'}. If prices are accurate, contracts priced at 30¢ win about 30% of the time.</p>
         {filter==='combos'?<div className="mt-4"><Empty>Combos almost never trade publicly on Kalshi, so there is no price history to score. Your own combo results are above.</Empty></div>
         :!shown.length?<div className="mt-4"><Empty>{bf?.finished?'No settled market in this category had a tradable price at this time.':bf?.markets?`History is downloading: ${bf.priced.toLocaleString()} of ${bf.markets.toLocaleString()} settled markets priced so far; the tables appear when the first download finishes.`:'History is still loading: the first download starts about 10 minutes after the app starts and takes a few minutes.'}</Empty></div>:<>
         <div className="mt-4"><Reliability data={shown.map(b=>({bucket:band(b.lo,b.hi),predicted:b.price,actual:b.win}))}/></div>

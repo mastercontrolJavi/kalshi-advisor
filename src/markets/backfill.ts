@@ -7,7 +7,11 @@ export function parseCandle(c:any):Candle{
   return {end:Number(c.end_period_ts),bid:bid!==null&&bid>0?bid:null,ask:ask!==null&&ask>0&&ask<1?ask:null,mean,volume:num(c.volume_fp)??0};
 }
 const secs=(v:unknown)=>{const t=typeof v==='string'?Date.parse(v):NaN;return Number.isFinite(t)?Math.floor(t/1000):null;};
-/** When the outcome is decided in practice: a game's start (occurrence) if before settlement, else settlement (or close). */
+/**
+ * When the result is due: Kalshi's occurrence time if before settlement, else settlement (or close). For team sports the
+ * occurrence time is about the end of the game (settlement follows a median 0.2 h later for MLB/NFL/NHL), so 24 h before is
+ * the pre-game line and 1 h before is usually in play.
+ */
 export function eventTime(m:any):number|null{
   const settle=secs(m.settlement_ts)??secs(m.close_time),occ=secs(m.occurrence_datetime);
   return occ!==null&&settle!==null&&occ<settle?occ:settle;
