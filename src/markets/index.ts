@@ -11,6 +11,7 @@ import {MarketsData} from './kalshi-data';
 import {buildPositions,summarize,snapshotRows,sparkKey,sparkCache,type MarketsState} from './state';
 import {isBitcoin} from './categories';
 import type {MarketMemory} from './holdsell';
+import {BackfillRefresher} from './refresh';
 /**
  * Markets process (127.0.0.1:3002): every open Kalshi position outside the two Bitcoin series, read-only. Runs apart from
  * the Bitcoin engine so its polling can never stall that engine's 4 Hz loop.
@@ -64,6 +65,8 @@ setInterval(()=>safe('snapshot-error',()=>journal.snapshot(snapshotRows(data.quo
 setInterval(()=>safe('memory-save-error',()=>journal.set('memory',Object.fromEntries(memory))),30000);
 setInterval(()=>safe('config-error',loadConfig),60000);
 setInterval(()=>safe('prune-error',()=>journal.prune()),3600000);
+// History for the Record tab: refreshed daily in a low-priority child process (first run 10 min after start).
+const refresher=new BackfillRefresher(log,journal);setInterval(()=>safe('backfill-refresh-error',()=>refresher.tick()),5*60000);
 setInterval(()=>{safe('build-error',build);const message=JSON.stringify(state);for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);},1000);
-const stop=()=>{try{journal.set('memory',Object.fromEntries(memory));journal.db.close();}catch{}process.exit(0);};
+const stop=()=>{refresher.stop();try{journal.set('memory',Object.fromEntries(memory));journal.db.close();}catch{}process.exit(0);};
 process.on('SIGINT',stop);process.on('SIGTERM',stop);

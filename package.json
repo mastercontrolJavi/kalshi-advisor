@@ -5,6 +5,7 @@
   "scripts": {
     "dev:all": "concurrently -k \"tsx watch src/engine/index.ts\" \"tsx watch src/markets/index.ts\" \"tsx scripts/web.ts --dev\"",
     "markets": "tsx src/markets/index.ts",
+    "markets-backfill": "tsx scripts/markets-backfill.ts",
     "engine": "tsx src/engine/index.ts",
     "build": "next build",
     "trade": "node scripts/trade.mjs",
