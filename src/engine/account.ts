@@ -4,9 +4,9 @@ import {fillWarnings,type RealEvent} from './guardrails';
 /** FIFO realized accounting, including canonical directional fills and complementary-side netting. */
 /** Open position cost per contract, including the actual fees paid on the fills still open (FIFO). */
 export interface OpenCost {ticker:string;side:'yes'|'no';contracts:number;avgCost:number}
-export function normalizeAccount(fills:any[],settlements:any[],series:string[]=['KXBTC15M'],open?:Map<string,OpenCost>):RealEvent[]{
+export function normalizeAccount(fills:any[],settlements:any[],series:string[]|((ticker:string)=>boolean)=['KXBTC15M'],open?:Map<string,OpenCost>):RealEvent[]{
   const lots=new Map<string,{count:number;cost:number}[]>(),events:RealEvent[]=[],cashFlows=new Map<string,number>();
-  const wanted=(ticker:unknown)=>typeof ticker==='string'&&series.some(s=>ticker.startsWith(s+'-'));
+  const wanted=(ticker:unknown)=>typeof ticker==='string'&&(typeof series==='function'?series(ticker):series.some(s=>ticker.startsWith(s+'-')));
   for(const f of [...fills].sort((a,b)=>Date.parse(a.created_time)-Date.parse(b.created_time))){
     const ticker=f.ticker??f.market_ticker;if(!wanted(ticker))continue;
     // Direction comes from outcome_side/book_side: yes = buy YES or sell NO. Live fills mirror it into the

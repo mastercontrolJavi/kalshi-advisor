@@ -9,7 +9,9 @@ export const bookPrice=(side:'yes'|'no',yesPrice:number)=>side==='no'?1-yesPrice
 export function effectiveFees(series:any,changes:any[],event:string,now:number):FeeSchedule {
   const change=changes.filter(c=>c.event_ticker===event&&Date.parse(c.scheduled_ts)<=now).sort((a,b)=>Date.parse(b.scheduled_ts)-Date.parse(a.scheduled_ts))[0];
   const type=change?.fee_type_override??series.fee_type,m=Number(change?.fee_multiplier_override??series.fee_multiplier??1);
-  return {...baseFees,takerMultiplier:m,makerMultiplier:type==='quadratic_with_maker_fees'?m:0,verified:['quadratic','quadratic_with_maker_fees'].includes(type)&&Number.isFinite(m)&&m>=0};
+  // Combo series (quadratic_with_combo_maker_fees) charge the same quadratic taker fee; verified on a real fill (2,777.77 at 0.33¢ paid $0.639559).
+  const quadratic=['quadratic','quadratic_with_maker_fees','quadratic_with_combo_maker_fees'];
+  return {...baseFees,takerMultiplier:m,makerMultiplier:type==='quadratic_with_maker_fees'||type==='quadratic_with_combo_maker_fees'?m:0,verified:quadratic.includes(type)&&Number.isFinite(m)&&m>=0};
 }
 export function signedHeaders(key:KeyObject,id:string,path:string,timestamp:number){
   const ts=String(Math.round(timestamp));
@@ -20,7 +22,7 @@ export function signedHeaders(key:KeyObject,id:string,path:string,timestamp:numb
 export interface Market {ticker:string;event_ticker:string;open_time:string;close_time:string;floor_strike?:number;status:string;result?:string;expiration_value?:string;rules_primary?:string;rules_secondary?:string;price_ranges?:{start:string;end:string;step:string}[]}
 export class KalshiClient {
   private key?:KeyObject;clockOffset=0;clockSynced=false;private tail:Promise<unknown>=Promise.resolve();limits:unknown=null;
-  constructor(private id=process.env.KALSHI_API_KEY_ID??'',private keyPath=process.env.KALSHI_PRIVATE_KEY_PATH??''){
+  constructor(private id=process.env.KALSHI_API_KEY_ID??'',private keyPath=process.env.KALSHI_PRIVATE_KEY_PATH??'',private spacingMs=100){
     if(id&&keyPath&&existsSync(keyPath)){this.key=createPrivateKey(readFileSync(keyPath));if(!['rsa','ed25519'].includes(this.key.asymmetricKeyType??''))throw new Error('Kalshi keys must be Ed25519 or RSA PEM');}
   }
   get authenticated(){return !!this.key&&!!this.id;}
@@ -38,7 +40,7 @@ export class KalshiClient {
         return response.json();
       }throw new Error('Kalshi rate limit exhausted retries');
     };
-    const task=this.tail.then(run,run);this.tail=task.catch(()=>{}).then(()=>new Promise(r=>setTimeout(r,100)));return task;
+    const task=this.tail.then(run,run);this.tail=task.catch(()=>{}).then(()=>new Promise(r=>setTimeout(r,this.spacingMs)));return task;
   }
   async pages(path:string,field:string){const result:any[]=[];let cursor='';const seen=new Set<string>();do{const page=await this.get(path+(path.includes('?')?'&':'?')+'limit=1000'+(cursor?'&cursor='+encodeURIComponent(cursor):''),true);result.push(...(page[field]??[]));cursor=page.cursor??'';if(cursor&&seen.has(cursor))throw new Error('Repeated pagination cursor');seen.add(cursor);}while(cursor);return result;}
   async schedule(event:string):Promise<FeeSchedule>{

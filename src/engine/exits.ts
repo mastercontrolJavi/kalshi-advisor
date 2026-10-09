@@ -57,10 +57,10 @@ export function entryCost(position:Position,open:{side:string;contracts:number;a
  * arm level, the win chance falling 25 points since entry, a gain past the arm level. Each stays on until its condition
  * clearly clears (80% of the threshold), so a 1¢ wobble does not re-fire it.
  */
-export function holdNotice(unrealized:number|null,u:number|null,peak:number|null,arm:number|null,winProb:number,entryProb:number,bid:number|null,sellValue:number|null,contracts:number,cfg:ExitConfig,prev:ExitNotice['kind']|null):ExitNotice|null{
+export function holdNotice(unrealized:number|null,u:number|null,peak:number|null,arm:number|null,winProb:number,entryProb:number,bid:number|null,sellValue:number|null,contracts:number,cfg:ExitConfig,prev:ExitNotice['kind']|null,note='In the backtest, selling early did worse than holding on average; your call.'):ExitNotice|null{
   if(u===null||unrealized===null||bid===null)return null;
   const was=(k:ExitNotice['kind'])=>prev===k,usd=(x:number)=>`$${Math.abs(x).toFixed(2)}`,wp=`${(winProb*100).toFixed(0)}%`,ep=`${(entryProb*100).toFixed(0)}%`;
-  const sell=`Selling now (bid ${c(bid)}) would ${unrealized>=0?'lock in':'lose'} ${usd(unrealized)}`,backtest='In the backtest, selling early did worse than holding on average; your call.';
+  const sell=`Selling now (bid ${c(bid)}) would ${unrealized>=0?'lock in':'lose'} ${usd(unrealized)}`,backtest=note;
   if(u<=-cfg.stopLossPct||was('loss')&&u<=-cfg.stopLossPct*.8)return {kind:'loss',tone:'no',title:`Down ${pctTxt(u)}`,text:`${sell} and keep ${sellValue!==null?usd(sellValue):'what is left'}; holding risks it on a ${wp} win chance (${ep} when you bought). ${backtest}`};
   if(peak!==null&&arm!==null&&peak>=arm){const level=Math.max(cfg.trailFloor,peak*(1-cfg.trailGiveback));
     if(u<=level||was('giveback')&&u<=peak*(1-cfg.trailGiveback*.8))return {kind:'giveback',tone:'warn',title:'Gave back part of the gain',text:`Peak ${pctTxt(peak)} → now ${pctTxt(u)}. ${sell}. ${backtest}`};}
