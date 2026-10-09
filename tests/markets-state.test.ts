@@ -27,3 +27,8 @@ it('snapshots every quote, plus each combo\'s leg value under its own key for th
   const rows=snapshotRows(q,cards,now);expect(rows.map(r=>r.ticker).sort()).toEqual(['KXMVECROSSCATEGORY-S-A','KXMVECROSSCATEGORY-S-A#legs','KXNFLGAME-X-KC']);
   const legs=rows.find(r=>r.ticker.endsWith('#legs'))!;expect(legs.last).toBeCloseTo(.61);expect(legs.yesBid).toBeNull();expect(rows.every(r=>r.held&&r.time===now)).toBe(true);
   expect(sparkKey(combo)).toBe('KXMVECROSSCATEGORY-S-A#legs');expect(sparkKey(quotes.get('KXNFLGAME-X-KC')!)).toBe('KXNFLGAME-X-KC');});
+import {sparkCache} from '../src/markets/state';
+it('the price line is read from SQLite at most once per 30 s per market, not on every 1-s build',()=>{
+  const calls:string[]=[],read=sparkCache((t:string)=>{calls.push(t);return [{t:calls.length,mid:.5}];});
+  read('A',0);read('A',1000);read('A',29999);expect(calls).toEqual(['A']);read('B',1000);expect(calls).toEqual(['A','B']);
+  expect(read('A',30000)[0].t).toBe(3);expect(calls).toEqual(['A','B','A']);});

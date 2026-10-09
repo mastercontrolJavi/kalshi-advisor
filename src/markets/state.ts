@@ -35,3 +35,8 @@ export function snapshotRows(quotes:Map<string,Quote>,cards:PositionCard[],now:n
   for(const c of cards)if(c.combo?.value!=null)rows.push({ticker:c.ticker+'#legs',time:now,yesBid:null,yesAsk:null,last:c.combo.value,volume24h:null,held:true});
   return rows;
 }
+/** The price line changes only with each 30-s snapshot; the 1-s build reads it from SQLite at most that often. */
+export function sparkCache(read:(ticker:string)=>{t:number;mid:number}[],ttlMs=30000){
+  const cache=new Map<string,{at:number;points:{t:number;mid:number}[]}>();
+  return (ticker:string,now:number)=>{const hit=cache.get(ticker);if(hit&&now-hit.at<ttlMs)return hit.points;const points=read(ticker);cache.set(ticker,{at:now,points});return points;};
+}

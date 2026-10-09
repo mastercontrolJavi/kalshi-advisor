@@ -8,7 +8,7 @@ import {defaults,validateConfig,type Config} from '../engine/config';
 import {dayKey} from '../engine/guardrails';
 import {MarketsJournal} from './journal';
 import {MarketsData} from './kalshi-data';
-import {buildPositions,summarize,snapshotRows,sparkKey,type MarketsState} from './state';
+import {buildPositions,summarize,snapshotRows,sparkKey,sparkCache,type MarketsState} from './state';
 import {isBitcoin} from './categories';
 import type {MarketMemory} from './holdsell';
 /**
@@ -28,10 +28,10 @@ function loadConfig(){
   catch(e){log('config-unavailable',{message:(e as Error).message});}
 }
 let state:MarketsState={time:Date.now(),status:client.authenticated?'starting':'no-credentials',error:null,positions:[],bitcoin:0,summary:{count:0,atRisk:0,sellAll:null,holdAll:null,realizedToday:null},synced:{positions:null,quotes:null}};
+// The price line starts at your first fill in that market (or a day back if fills have not synced yet).
+const readSpark=sparkCache(t=>journal.spark(sparkKey(data.quotes.get(t),t),data.events.find(e=>e.ticker===t&&e.type==='fill')?.time??Date.now()-86400000));
 function build(){
-  const now=Date.now();
-  // The price line starts at your first fill in that market (or a day back if fills have not synced yet).
-  const spark=(t:string)=>journal.spark(sparkKey(data.quotes.get(t),t),data.events.find(e=>e.ticker===t&&e.type==='fill')?.time??now-86400000);
+  const now=Date.now(),spark=(t:string)=>readSpark(t,now);
   const {cards,memory:next}=buildPositions({positions:data.positions,quotes:data.quotes,series:data.series,open:data.open,cfg,memory,now,spark});
   for(const c of cards){const before=memory.get(c.ticker)?.notice??null;if(c.notice&&c.notice.kind!==before)journal.notice(now,c.ticker,c.notice.kind,{notice:c.notice,bid:c.bid,winProb:c.winProb,unrealized:c.unrealized});}
   memory=next;
