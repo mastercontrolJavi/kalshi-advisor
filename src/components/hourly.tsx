@@ -14,7 +14,7 @@ const hm=(sec:number)=>sec>=3600?`${Math.floor(sec/3600)}:${mmss(sec%3600)}`:mms
 const HORIZONS:[string,string][]=[['2700','45m'],['1800','30m'],['900','15m'],['300','5m'],['60','1m']];
 function Kpi({label,children,sub,tone}:{label:string;children:React.ReactNode;sub?:React.ReactNode;tone?:string}){return <div className="min-w-0"><div className="label">{label}</div><div className={cn('num mt-1.5 text-xl sm:text-2xl',tone)}>{children}</div>{sub?<div className="mt-0.5 truncate text-xs text-muted">{sub}</div>:null}</div>;}
 export default function Hourly(){
-  const {state:s,connected,fresh}=useLive(),h=fresh?s?.hourly:null,up=h?.up,best=h?.ideas?.[0],sound=useSoundAlerts(s,fresh,'hourly');
+  const {state:s,connected,fresh}=useLive(),markets=useLive('/markets-ws'),h=fresh?s?.hourly:null,up=h?.up,best=h?.ideas?.[0],sound=useSoundAlerts(s,fresh,'hourly',{state:markets.state,fresh:markets.fresh});
   const tone:Tone=best?(best.side==='yes'?'yes':'no'):'neutral';
   const spotStrike=h?.rungs?.length&&h.spot!=null?h.rungs.reduce((b:any,r:any)=>Math.abs(r.strike-h.spot)<Math.abs(b.strike-h.spot)?r:b,h.rungs[0]).ticker:null;
   const refStrike=h?.rungs?.length&&h.kHour!=null?h.rungs.reduce((b:any,r:any)=>Math.abs(r.strike-h.kHour)<Math.abs(b.strike-h.kHour)?r:b,h.rungs[0]).ticker:null;

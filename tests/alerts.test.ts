@@ -40,3 +40,18 @@ it('a hold-mode heads-up plays once when it appears or changes, not when it clea
   expect(detectEvents({...base,notices:{A:'gain'}},{...base,notices:{A:'gain'}})).toEqual([]);
   expect(detectEvents({...base,notices:{A:'gain'}},{...base,notices:{A:'giveback'}})).toEqual(['positionMove']);
   expect(detectEvents({...base,notices:{A:'loss'}},{...base,notices:{A:null}})).toEqual([]);});
+import {marketsSnapshot,detectMarketEvents,claimOnce} from '../src/components/alert-events';
+it('markets: a new notice kind on a position plays its sound once; first sight and clearing are silent',()=>{
+  const s=(kind:string|null)=>marketsSnapshot({positions:[{ticker:'C',notice:kind?{kind}:null}]},true);
+  expect(detectMarketEvents(null,s('dead'))).toEqual([]);
+  expect(detectMarketEvents(s(null),s('one-left'))).toEqual([{ticker:'C',kind:'one-left',sound:'oneLeft'}]);
+  expect(detectMarketEvents(s('one-left'),s('dead')).map(e=>e.sound)).toEqual(['comboDead']);
+  expect(detectMarketEvents(s(null),s('leg-won')).map(e=>e.sound)).toEqual(['legWon']);
+  expect(detectMarketEvents(s(null),s('loss')).map(e=>e.sound)).toEqual(['marketMove']);
+  expect(detectMarketEvents(s('loss'),s(null))).toEqual([]);expect(detectMarketEvents(s(null),marketsSnapshot(null,false))).toEqual([]);
+  expect(detectMarketEvents({},s('dead'))).toEqual([]);});
+it('claimOnce lets only one tab play a markets sound within the window',()=>{
+  const m=new Map<string,string>(),store={getItem:(k:string)=>m.get(k)??null,setItem:(k:string,v:string)=>void m.set(k,v)};
+  expect(claimOnce('C:dead',1000,store)).toBe(true);expect(claimOnce('C:dead',1500,store)).toBe(false);expect(claimOnce('C:dead',62000,store)).toBe(true);expect(claimOnce('D:dead',1500,store)).toBe(true);});
+it('the markets sound category is on by default, and old saved prefs gain it switched on',()=>{
+  expect(defaultPrefs.categories.markets).toBe(true);expect(migratePrefs({version:2,enabled:true,volume:.5,categories:{signals:false},repeatSell:true}).categories.markets).toBe(true);});

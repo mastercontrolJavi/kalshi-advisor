@@ -14,7 +14,7 @@ export function snapshot(s:any,fresh:boolean,page:'15m'|'hourly'='15m'):AlertSna
     liveDir:fresh?s?.liveCall?.direction??null:null,unreliable:!fresh||s?.quality?.level==='unreliable',locked:!!s?.guards?.locked};
 }
 // Most important first; the player spaces them out and caps how many play per update.
-export const priority:SoundName[]=['cutLoss','takeProfit','sell','positionMove','lock','buyYes','buyNo','win','loss','warning','setup','hold','closingUp','closingDown','flipUp','flipDown','newWindow','entryWindow','finalMinute'];
+export const priority:SoundName[]=['cutLoss','takeProfit','sell','positionMove','comboDead','oneLeft','marketMove','legWon','lock','buyYes','buyNo','win','loss','warning','setup','hold','closingUp','closingDown','flipUp','flipDown','newWindow','entryWindow','finalMinute'];
 export function detectEvents(prev:AlertSnapshot|null,next:AlertSnapshot):SoundName[]{
   if(!prev)return [];
   const out=new Set<SoundName>();
@@ -33,4 +33,17 @@ export function detectEvents(prev:AlertSnapshot|null,next:AlertSnapshot):SoundNa
   // Hold-mode heads-up: a new or different notice on a position (not when it clears).
   for(const [ticker,kind] of Object.entries(next.notices??{}))if(kind&&kind!==(prev.notices?.[ticker]??null))out.add('positionMove');
   return priority.filter(n=>out.has(n));
+}
+const MARKET_SOUNDS:Record<string,SoundName>={dead:'comboDead','one-left':'oneLeft','leg-won':'legWon'};
+/** Notice kind per held market from the markets process; empty when its state is not fresh (silence, not a change). */
+export function marketsSnapshot(m:any,fresh:boolean):Record<string,string|null>{return fresh&&m?Object.fromEntries((m.positions??[]).map((p:any)=>[p.ticker,p.notice?.kind??null])):{};}
+/** A new or different notice on a position already seen. A position seen for the first time is the silent baseline. */
+export function detectMarketEvents(prev:Record<string,string|null>|null,next:Record<string,string|null>){
+  if(!prev)return [];const out:{ticker:string;kind:string;sound:SoundName}[]=[];
+  for(const [ticker,kind] of Object.entries(next))if(kind&&ticker in prev&&kind!==prev[ticker])out.push({ticker,kind,sound:MARKET_SOUNDS[kind]??'marketMove'});
+  return out;
+}
+/** Every open dashboard tab sees the same markets notice; the first tab to claim it plays it. */
+export function claimOnce(key:string,now:number,store:Pick<Storage,'getItem'|'setItem'>,windowMs=60000){
+  try{const k='ka-claim:'+key,raw=store.getItem(k),last=raw===null?NaN:Number(raw);if(Number.isFinite(last)&&now-last<windowMs)return false;store.setItem(k,String(now));return true;}catch{return true;}
 }

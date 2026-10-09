@@ -17,7 +17,7 @@ import {finalMinuteEvidence} from '@/backtest/verdict';
 const ProbabilityChart=dynamic(()=>import('./probability-chart'),{ssr:false,loading:()=><div className="chart animate-pulse rounded-xl bg-surface-2"/>});
 
 export default function Dashboard(){
-  const {state:s,connected,fresh}=useLive(),[override,setOverride]=useState(''),[error,setError]=useState(''),sound=useSoundAlerts(s,fresh);
+  const {state:s,connected,fresh}=useLive(),markets=useLive('/markets-ws'),[override,setOverride]=useState(''),[error,setError]=useState(''),sound=useSoundAlerts(s,fresh,'15m',{state:markets.state,fresh:markets.fresh});
   async function unlock(){try{const r=await fetch('/api/engine/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:override})});const data=await r.json();if(!r.ok)throw new Error(data.error);setOverride('');}catch(e){setError((e as Error).message);}}
   const action=fresh?s?.evaluation?.action??'NO TRADE':'NO TRADE',tone=actionTone(action),healthy=s?.venues?.filter((v:any)=>v.healthy).length??0;
   const ambient=!fresh?'warn':tone==='yes'||tone==='no'?tone:'none';

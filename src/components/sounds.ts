@@ -1,18 +1,19 @@
 'use client';
 /** Synthesized alert sounds (Web Audio, no files). Each event has a distinct contour so it is recognisable without looking. */
-export type SoundName='buyYes'|'buyNo'|'sell'|'hold'|'win'|'loss'|'flipUp'|'flipDown'|'newWindow'|'entryWindow'|'finalMinute'|'closingUp'|'closingDown'|'setup'|'takeProfit'|'cutLoss'|'warning'|'lock'|'positionMove';
-export type Category='signals'|'positions'|'results'|'calls'|'timing'|'warnings';
+export type SoundName='buyYes'|'buyNo'|'sell'|'hold'|'win'|'loss'|'flipUp'|'flipDown'|'newWindow'|'entryWindow'|'finalMinute'|'closingUp'|'closingDown'|'setup'|'takeProfit'|'cutLoss'|'warning'|'lock'|'positionMove'|'marketMove'|'comboDead'|'legWon'|'oneLeft';
+export type Category='signals'|'positions'|'results'|'calls'|'timing'|'warnings'|'markets';
 export const soundCatalog:{name:SoundName;label:string;category:Category}[]=[
   {name:'buyYes',label:'BUY YES signal',category:'signals'},{name:'buyNo',label:'BUY NO signal',category:'signals'},{name:'setup',label:'Scalp / dip setup appears',category:'signals'},
   {name:'takeProfit',label:'TAKE PROFIT on your position (repeats)',category:'positions'},{name:'cutLoss',label:'CUT LOSS on your position (repeats)',category:'positions'},{name:'sell',label:'SELL NOW on your position (repeats)',category:'positions'},{name:'hold',label:'HOLD your position',category:'positions'},{name:'positionMove',label:'Big move on your position (hold-mode heads-up)',category:'positions'},
   {name:'win',label:'Win / profit',category:'results'},{name:'loss',label:'Loss',category:'results'},
   {name:'flipUp',label:'Live call flips UP',category:'calls'},{name:'flipDown',label:'Live call flips DOWN',category:'calls'},
   {name:'newWindow',label:'New 15-min window',category:'timing'},{name:'entryWindow',label:'Entry window opens (5:00 left)',category:'timing'},{name:'finalMinute',label:'Final minute (no call)',category:'timing'},{name:'closingUp',label:'Closing call: UP into the final minute',category:'calls'},{name:'closingDown',label:'Closing call: DOWN into the final minute',category:'calls'},
-  {name:'warning',label:'Data unreliable / connection lost',category:'warnings'},{name:'lock',label:'Guardrail lock',category:'warnings'}
+  {name:'warning',label:'Data unreliable / connection lost',category:'warnings'},{name:'lock',label:'Guardrail lock',category:'warnings'},
+  {name:'marketMove',label:'Big move on another market you hold',category:'markets'},{name:'oneLeft',label:'Combo: one leg left',category:'markets'},{name:'legWon',label:'Combo: a leg won',category:'markets'},{name:'comboDead',label:'Combo: a leg lost',category:'markets'}
 ];
-export const categoryLabels:Record<Category,string>={signals:'Trade signals',positions:'Hold / sell',results:'Wins & losses',calls:'Live call flips',timing:'Window timing',warnings:'Warnings'};
+export const categoryLabels:Record<Category,string>={signals:'Trade signals',positions:'Hold / sell',results:'Wins & losses',calls:'Live call flips',timing:'Window timing',warnings:'Warnings',markets:'Other markets'};
 export interface SoundPrefs {enabled:boolean;volume:number;categories:Record<Category,boolean>;repeatSell:boolean}
-export const defaultPrefs:SoundPrefs={enabled:true,volume:.6,categories:{signals:true,positions:true,results:true,calls:true,timing:true,warnings:true},repeatSell:true};
+export const defaultPrefs:SoundPrefs={enabled:true,volume:.6,categories:{signals:true,positions:true,results:true,calls:true,timing:true,warnings:true,markets:true},repeatSell:true};
 const KEY='kalshi-advisor-sounds',VERSION=2;
 export function savePrefs(p:SoundPrefs){try{localStorage.setItem(KEY,JSON.stringify({...p,version:VERSION}));}catch{}}
 /** v2 (user request, 2026-10-07): sound is on by default on every page. Prefs saved before v2 are switched back on once
@@ -44,7 +45,11 @@ const scores:Record<SoundName,Note[]>={
   setup:[[1568,0,.08,'sine',.7],[2093,.1,.14,'sine',.6]],
   warning:[[220,0,.18,'sawtooth',.5],[220,.26,.18,'sawtooth',.5]],
   lock:[[150,0,.22,'square',.5],[150,.3,.22,'square',.5],[110,.6,.4,'square',.5]],
-  positionMove:[[E5,0,.12,'triangle',.8],[A4,.14,.12,'triangle',.8],[E5,.28,.2,'triangle',.8]]
+  positionMove:[[E5,0,.12,'triangle',.8],[A4,.14,.12,'triangle',.8],[E5,.28,.2,'triangle',.8]],
+  marketMove:[[A4,0,.12,'triangle',.8],[E5,.14,.12,'triangle',.8],[A4,.28,.2,'triangle',.8]],
+  oneLeft:[[C5,0,.12,'sine'],[E5,.12,.12,'sine'],[G5,.24,.12,'sine'],[G5,.4,.25,'sine',.7]],
+  legWon:[[G5,0,.1,'triangle',.7],[C6,.1,.25,'triangle',.7]],
+  comboDead:[[G4,0,.3,'sine',.8,B3],[B3,.3,.45,'sine',.7]]
 };
 export class SoundEngine {
   private ctx:AudioContext|null=null;
