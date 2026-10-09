@@ -7,7 +7,7 @@ import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,ago,opensAt,mainten
 import {ruleVerdict,exitVerdict,finalMinuteEvidence} from '@/backtest/verdict';
 
 export type Tone='yes'|'no'|'warn'|'neutral';
-const toneText:Record<Tone,string>={yes:'text-yes',no:'text-no',warn:'text-warn',neutral:'text-fg'};
+export const toneText:Record<Tone,string>={yes:'text-yes',no:'text-no',warn:'text-warn',neutral:'text-fg'};
 const toneBorder:Record<Tone,string>={yes:'border-yes/40',no:'border-no/40',warn:'border-warn/40',neutral:'border-line'};
 export const actionTone=(action:string):Tone=>action==='BUY YES'?'yes':action==='BUY NO'?'no':'neutral';
 
@@ -22,7 +22,7 @@ export function Collapsible({title,icon,aside,open=false,remember,className,chil
     <summary className="flex min-h-14 items-center gap-3 px-5 py-3"><ChevronRight aria-hidden className="chev size-4 text-faint"/>{icon}<span className="font-medium">{title}</span><span className="ml-auto text-xs text-muted">{aside}</span></summary>
     <div className="border-t border-line px-5 pb-5 pt-4">{children}</div></details></Card>;
 }
-function Heading({icon,title,aside}:{icon?:ReactNode;title:string;aside?:ReactNode}){
+export function Heading({icon,title,aside}:{icon?:ReactNode;title:string;aside?:ReactNode}){
   return <div className="flex flex-wrap items-center gap-2">{icon}<h2 className="label">{title}</h2>{aside?<div className="ml-auto text-xs text-muted">{aside}</div>:null}</div>;
 }
 export function Pill({tone,children,title}:{tone:Tone;children:ReactNode;title?:string}){
@@ -118,8 +118,13 @@ function NextWindow({s,fresh}:{s:any;fresh:boolean}){
     :<p className="mt-2 text-sm text-muted">Available once the model is live.</p>}
   </section>;
 }
-function Stat({label,children,sub,tone='neutral'}:{label:string;children:ReactNode;sub?:ReactNode;tone?:Tone}){
+export function Stat({label,children,sub,tone='neutral'}:{label:string;children:ReactNode;sub?:ReactNode;tone?:Tone}){
   return <div className="min-w-0"><div className="label">{label}</div><div className={cn('num mt-1.5 text-xl font-medium sm:text-2xl',toneText[tone])}>{children}</div>{sub?<div className="mt-0.5 truncate text-xs text-muted">{sub}</div>:null}</div>;
+}
+const noticeStyle:Record<string,string>={yes:'border-yes/40 bg-yes-dim/30',warn:'border-warn/40 bg-warn-dim/30',no:'border-no/40 bg-no-dim/30'};
+/** A heads-up box: what moved and what selling now would do. Shared by the Bitcoin positions box and Markets. */
+export function Notice({notice}:{notice:{tone:'yes'|'warn'|'no';title:string;text:string}}){
+  return <div role="status" className={cn('mt-3 rounded-xl border px-3 py-2 text-sm',noticeStyle[notice.tone])}><div className={cn('font-medium',toneText[notice.tone])}>{notice.title}</div><div className="text-fg/85">{notice.text}</div></div>;
 }
 export function Instruments({s}:{s:any}){
   const mid=s?.book?.yesBid!=null&&s?.book?.yesAsk!=null?(s.book.yesBid+s.book.yesAsk)/2:null,d=s?.distance;
@@ -140,13 +145,12 @@ export function Positions({s,fresh}:{s:any;fresh:boolean}){
   const tones:Record<string,Tone>={'SETTLING':'neutral','RIDE':'yes','TAKE PROFIT':'yes','LET IT SETTLE':'yes','CUT LOSS':'no','SELL NOW':'warn','HOLD':'neutral','TOO LATE':'neutral','NO MODEL':'neutral'};
   const hold=s?.config?.exitMode==='hold',urgent=exits.some(e=>['TAKE PROFIT','CUT LOSS','SELL NOW'].includes(e.action)||e.notice);
   const sp=(x:number|null|undefined)=>x==null?'—':`${x>=0?'+':'−'}${Math.abs(x*100).toFixed(0)}%`;
-  const noticeStyle:Record<string,string>={yes:'border-yes/40 bg-yes-dim/30',warn:'border-warn/40 bg-warn-dim/30',no:'border-no/40 bg-no-dim/30'};
   return <Card className={cn('rise',urgent?'border-warn/50':'border-info/30')}><Heading icon={<Wallet aria-hidden className="size-4 text-info"/>} title="Your positions · exit plan" aside={s?.config?.exitMode==='hold'?`hold to settlement · ${synced}`:s?.config?.exitMode==='ev'?'expected-value mode':`ride from +${Math.round((s?.config?.takeProfitPct??.25)*100)}% · trail ${Math.round((s?.config?.trailGiveback??.5)*100)}% give-back · stop −${Math.round((s?.config?.stopLossPct??.5)*100)}% or < ${Math.round((s?.config?.stopWinProb??.25)*100)}%`}/>
     {exits.map(e=>{const pnlTone:Tone=e.unrealized>0.005?'yes':e.unrealized<-0.005?'no':'neutral',t=hold&&e.action==='HOLD'?pnlTone:tones[e.action]??'neutral',[why,plan]=String(e.reason).split(' Plan: ');return <div key={e.ticker} className="mt-4 grid gap-4 border-t border-line pt-4 first-of-type:border-0 first-of-type:pt-0 lg:grid-cols-[1fr_auto]">
       <div><div className="flex flex-wrap items-baseline gap-x-4 gap-y-1"><div className={cn('font-display text-5xl leading-none font-bold uppercase',toneText[t],e.action==='TOO LATE'&&'text-muted')}>{e.action}</div>
         {e.unrealized!=null&&e.action!=='SETTLING'?<div className={cn('num text-2xl font-semibold',toneText[pnlTone])}>{e.unrealized>=0?'UP':'DOWN'} {signedDollars(e.unrealized)} <span className="text-base">({sp(e.unrealizedPct)})</span></div>:null}</div><div className="mt-2 text-sm"><span className="num">{qty(e.contracts)}</span> {e.side.toUpperCase()} · cost <span className="num">{cents(e.avgCost)}</span>{e.costSource==='exposure'?' (before fees)':' incl. fees'}{e.costSource==='estimate'?<span className="text-faint"> (fee estimated)</span>:null} · win chance <span className="num">{pct(e.winProb,0)}</span> <span className="num ml-1 text-xs text-faint">{e.ticker}</span></div>
         {e.action!=='SETTLING'&&(e.peakPct!=null||e.entryWinProb!=null)?<div className="mt-1 text-xs text-muted">Best {sp(e.peakPct)} · worst {sp(e.troughPct)} so far{e.entryWinProb!=null?<> · win chance {pct(e.winProb,0)} (was {pct(e.entryWinProb,0)} when you bought)</>:null}</div>:null}
-        {e.notice?<div role="status" className={cn('mt-3 rounded-xl border px-3 py-2 text-sm',noticeStyle[e.notice.tone])}><div className={cn('font-medium',toneText[e.notice.tone as Tone])}>{e.notice.title}</div><div className="text-fg/85">{e.notice.text}</div></div>:null}
+        {e.notice?<Notice notice={e.notice}/>:null}
         <p className="mt-2 text-sm text-fg/90">{why}</p>
         {plan&&e.action!=='SETTLING'?<div className="mt-2 flex flex-wrap gap-2 text-xs">{e.trailBid!=null?<Pill tone="yes">Trailing stop at bid ≤ {cents(e.trailBid)} · peak {e.peakPct>=0?'+':''}{Math.round((e.peakPct??0)*100)}%</Pill>:<><Pill tone="yes">Ride from bid ≥ {cents(e.takeProfitBid)}</Pill><Pill tone="no">Cut loss at bid ≤ {cents(e.stopBid)}</Pill></>}<Pill tone="neutral">or win chance &lt; {Math.round((s?.config?.stopWinProb??.25)*100)}%</Pill></div>:null}</div>
       <div className="grid grid-cols-3 gap-5 self-start text-right"><Stat label="P&L if sold" tone={e.unrealized>0?'yes':e.unrealized<0?'no':'neutral'} sub={e.unrealizedPct!=null?`${e.unrealizedPct>=0?'+':'−'}${Math.abs(e.unrealizedPct*100).toFixed(0)}% of cost`:undefined}>{signedDollars(e.unrealized)}</Stat><Stat label="Sell now" sub={`bid ${cents(e.bid)} − ${dollars(e.sellFee)} fee`}>{dollars(e.sellValue)}</Stat><Stat label="Hold value" sub="forecast × $1">{dollars(e.holdValue)}</Stat></div></div>;})}
