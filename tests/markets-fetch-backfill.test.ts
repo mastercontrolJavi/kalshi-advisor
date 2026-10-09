@@ -12,14 +12,14 @@ function fake(fail=false){const calls:string[]=[];const occ=NOW-2*86400;return {
   if(p.startsWith('/markets/candlesticks')){if(fail)throw new Error('HTTP 503');const t=decodeURIComponent(p.split('market_tickers=')[1].split('&')[0]).split(',');
     return {markets:t.map(x=>({market_ticker:x,candlesticks:[candle(occ-24*H,'0.40','0.42'),candle(occ-H,'0.60','0.62')]}))};}
   throw new Error('unexpected '+p);}};}
-it('lists settled markets of the chosen series since the cutoff, skips thin ones, prices them from candles',async()=>{
+it('lists settled markets of the chosen series since the cutoff and prices them from candles',async()=>{
   const j=new MarketsJournal(':memory:'),c=fake();const r=await runBackfill(c,j,{now:NOW,traded:new Set(),log:()=>{}});
-  expect(r).toEqual({listed:2,priced:2});expect(c.calls.some(p=>p.includes('KXBTC15M'))).toBe(false);
+  expect(r).toEqual({listed:3,priced:3});expect(c.calls.some(p=>p.includes('KXBTC15M'))).toBe(false);
   expect(c.calls.find(p=>p.startsWith('/markets?series_ticker=KXNFLGAME'))).toContain(`min_close_ts=${CUTOFF}`);
   const kc=j.backfillRows().find(x=>x.ticker.endsWith('-KC'))!;expect(kc).toMatchObject({grp:'sports',result:'yes',a1:.62,a24:.42});expect(kc.p1).toBeCloseTo(.61,9);expect(kc.p24).toBeCloseTo(.41,9);expect(kc.vwap).toBeCloseTo(.6,9);});
 it('resumes: stored markets are not refetched for candles, and a failed candle batch stays unpriced for next time',async()=>{
-  const j=new MarketsJournal(':memory:');await runBackfill(fake(true),j,{now:NOW,traded:new Set(),log:()=>{}});expect(j.unpriced()).toHaveLength(2);
-  const c=fake();const r=await runBackfill(c,j,{now:NOW,traded:new Set(),log:()=>{}});expect(r.priced).toBe(2);expect(j.unpriced()).toHaveLength(0);
+  const j=new MarketsJournal(':memory:');await runBackfill(fake(true),j,{now:NOW,traded:new Set(),log:()=>{}});expect(j.unpriced()).toHaveLength(3);
+  const c=fake();const r=await runBackfill(c,j,{now:NOW,traded:new Set(),log:()=>{}});expect(r.priced).toBe(3);expect(j.unpriced()).toHaveLength(0);
   const again=fake();await runBackfill(again,j,{now:NOW,traded:new Set(),log:()=>{}});expect(again.calls.filter(p=>p.startsWith('/markets/candlesticks'))).toHaveLength(0);
   expect(again.calls.find(p=>p.startsWith('/markets?series_ticker=KXNFLGAME'))).toContain(`min_close_ts=${NOW-2*86400}`);});
 import {BackfillRefresher} from '../src/markets/refresh';
@@ -34,4 +34,9 @@ it('a backfill counts as running when this process started it or another one is 
   expect(r.active(t0)).toBe(false);j.set('backfillHeartbeat',t0-60e3);expect(r.active(t0)).toBe(true);expect(r.active(t0+11*60e3)).toBe(false);});
 it('a finished backfill stores the accuracy tables, so the markets process never computes them',async()=>{
   const j=new MarketsJournal(':memory:');await runBackfill(fake(),j,{now:NOW,traded:new Set(),log:()=>{}});
-  const t=j.get<any>('accuracy',null);expect(t.sports.p1.find((b:any)=>b.lo===.5).n).toBe(2);expect(t.politics.p1.every((b:any)=>b.n===0)).toBe(true);});
+  const t=j.get<any>('accuracy',null);expect(t.sports.p1.find((b:any)=>b.lo===.5).n).toBe(3);expect(t.politics.p1.every((b:any)=>b.n===0)).toBe(true);});
+it('selection never depends on volume or outcome: thin markets are kept, and a per-series cap samples by ticker hash',async()=>{
+  const j=new MarketsJournal(':memory:');await runBackfill(fake(),j,{now:NOW,traded:new Set(),log:()=>{}});expect(j.backfillStats().markets).toBe(3);
+  const pick=async(vols:string[])=>{const k=new MarketsJournal(':memory:'),c=fake(),get=c.get;c.get=async(p:string)=>p.startsWith('/markets?series_ticker=KXNFLGAME')?{markets:['A','B','C','D'].map((t,i)=>market('KXNFLGAME-G-'+t,NOW-2*86400,'yes',vols[i]))}:get(p);
+    await runBackfill(c,k,{now:NOW,traded:new Set(),log:()=>{},perSeries:2});return k.unpriced().map(x=>x.ticker).concat(k.backfillRows().map(x=>x.ticker)).sort();};
+  expect(await pick(['1','2','3','4000'])).toEqual(await pick(['4000','3','2','1']));});

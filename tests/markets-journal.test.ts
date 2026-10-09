@@ -17,3 +17,7 @@ it('backfill rows insert once, wait for prices, and only priced rows are read ba
   j.putBackfill([r,r,{...r,ticker:'B',eventTs:50}]);expect(j.unpriced().map(x=>x.ticker).sort()).toEqual(['A','B']);
   j.setPrices('A',{p24:.4,a24:.41,p1:.5,a1:.51,vwap:.45});expect(j.unpriced().map(x=>x.ticker)).toEqual(['B']);
   expect(j.backfillRows()).toEqual([{...r,p24:.4,a24:.41,p1:.5,a1:.51,vwap:.45,priced:1}]);expect(j.backfillStats()).toEqual({markets:2,priced:1,from:50,to:100});j.db.close();});
+it('resetBackfill clears the history and its run markers so the next run starts from the cutoff',()=>{
+  const j=new MarketsJournal(':memory:');j.putBackfill([{ticker:'A',event:'E',series:'S',grp:'sports',title:'t',eventTs:1,settleTs:2,result:'yes',volume:1}]);
+  for(const k of ['backfillTo','backfillFinished','accuracy'])j.set(k,1);j.resetBackfill();
+  expect(j.backfillStats().markets).toBe(0);for(const k of ['backfillTo','backfillFinished','accuracy'])expect(j.get(k,null)).toBeNull();j.db.close();});

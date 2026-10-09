@@ -73,3 +73,13 @@
   - The combo headline and price line use the leg-implied value (snapshot key <ticker>#legs), because a combo's own book is nearly empty (a 0.11¢ bid against a 0.62¢ value).
   - Markets notices sound on every page; a localStorage claim lets only one open tab play each (60 s window). Exit settings are read read-only from advisor.db, so Settings stays the single place to change them.
   - The web server proxies HTTP by prefix (/api/engine, /api/markets) and WebSockets by path (/ws, /markets-ws), with auth and origin checks unchanged.
+
+47. Markets, stage 2 (Record tab and public backfill):
+  - Window: from Kalshi's historical cutoff (2026-08-10) forward, about 60 days and growing, not the spec's 90 days. Before the cutoff, /historical/markets ignores filters and pages every market newest-first, and more than 60,000 non-combo markets settle per day.
+  - Coverage is chosen, not exhaustive: the top 20 series per group by lifetime volume_fp, plus the user's traded series. Within a series, markets are sampled by ticker hash (at most 4,000 per run) with no volume filter. The first run chose the 4,000 most-traded markets, and that produced a false result: sports 5–20¢ appeared to return +31–53% per $1. A longshot that wins draws heavy trading after the horizon, so ranking by total volume kept mostly the longshots that won. Selection must never use anything observed after the horizon; a two-sided book at the horizon is the only liquidity requirement.
+  - No Kalshi-wide combo calibration: one day had 2,000 settled combos, all with zero volume and no price history.
+  - Horizons are measured before the event (occurrence_datetime when it is before settlement, else settlement), so sports prices are pre-game lines rather than in-play prices. A horizon price is the hourly-candle YES mid, ≤ 2 h stale, with a two-sided book ≤ 20¢ wide; otherwise null and excluded.
+  - Win-rate ranges are Wilson 95%. Return per $1 buys YES at the ask plus the taker fee, with a bootstrap 95% range over events (both sides of a game, or one ladder, share an event).
+  - The accuracy tables take ~2.6 s per 44k markets with the bootstrap, so the backfill child computes them once per run and stores them in meta. The markets process only reads them.
+  - The daily refresh is skipped while a backfill heartbeat is under 10 minutes old, so a manual run and the scheduled one never overlap.
+  - Kpi and Empty moved from Analytics into panels.tsx (shared). The Markets tabs (Positions · Record) and category chips are one MarketsNav component; the chosen category is shared across tabs.
