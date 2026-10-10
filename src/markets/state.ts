@@ -9,7 +9,7 @@ import {groupOf,isBitcoin,seriesOf} from './categories';
 import {sideLabel} from './quotes';
 import type {Reference} from './references';
 export interface PositionCard extends PositionView {title:string;marketTitle:string;group:Group;closeTime:number|null;expectedExpiration:number|null;combo:ComboView|null;spark:{t:number;mid:number}[];seriesTicker:string}
-export interface MarketsState {time:number;status:'live'|'no-credentials'|'starting';error:string|null;positions:PositionCard[];bitcoin:number;summary:{count:number;atRisk:number;sellAll:number|null;holdAll:number|null;realizedToday:number|null};synced:{positions:number|null;quotes:number|null}}
+export interface MarketsState {time:number;status:'live'|'no-credentials'|'starting';error:string|null;positions:PositionCard[];bitcoin:number;summary:{count:number;atRisk:number;sellAll:number|null;holdAll:number|null;realizedToday:number|null};synced:{positions:number|null;quotes:number|null};sources:{name:string;ok:boolean;updated:number|null;error:string|null;detail:string}[]}
 /** One card per open non-Bitcoin position, most urgent first; returns the per-position memory for the next pass. */
 export function buildPositions(a:{positions:any[];quotes:Map<string,Quote>;series:Map<string,{category:string|null;schedule:FeeSchedule}>;open:Map<string,OpenCost>;cfg:ExitConfig;memory:Map<string,MarketMemory>;now:number;spark:(ticker:string)=>{t:number;mid:number}[];reference?:(ticker:string)=>Reference|null}){
   const refFor=a.reference??(()=>null);

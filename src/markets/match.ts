@@ -8,14 +8,15 @@ const H=3600000;
 const LEAGUES:[string,string][]=[['KXNCAAMB','cbb'],['KXNCAAF','cfb'],['KXWNBA','wnba'],['KXNFL','nfl'],['KXMLB','mlb'],['KXNBA','nba'],['KXNHL','nhl']];
 export const leagueOf=(series:string)=>LEAGUES.find(([p])=>series.startsWith(p))?.[1]??null;
 /**
- * The one outside game that is this Kalshi game, or null. Kalshi's expected time is about the end of the game, so the outside
- * start must fall in [end − 8 h, end + 1 h]. Both teams must pair up, in exactly one order, with exactly one candidate:
+ * The one outside game that is this Kalshi game, or null. Kalshi's expected time is usually about the end of the game but is
+ * sometimes a placeholder hours before kickoff (Minnesota–Purdue: 20:00Z vs a 00:00Z start), so the outside start must fall in
+ * [end − 8 h, end + 6 h]. Both teams must pair up, in exactly one order, with exactly one candidate (a doubleheader is none):
  * anything ambiguous is no match rather than a guess.
  */
 export function matchGame(k:KalshiGame,games:RefGame[]):{game:RefGame;swap:boolean}|null{
   const found:{game:RefGame;swap:boolean}[]=[];
   for(const g of games){
-    if(g.league!==k.league||g.start<k.expectedEnd-8*H||g.start>k.expectedEnd+H)continue;
+    if(g.league!==k.league||g.start<k.expectedEnd-8*H||g.start>k.expectedEnd+6*H)continue;
     const straight=teamMatches(k.teams[0],g.teams[0])&&teamMatches(k.teams[1],g.teams[1]),crossed=teamMatches(k.teams[0],g.teams[1])&&teamMatches(k.teams[1],g.teams[0]);
     if(straight!==crossed)found.push({game:g,swap:crossed});
   }
@@ -28,4 +29,21 @@ export function refProb(k:KalshiGame,m:{game:RefGame;swap:boolean}):{prob:number
   if(k.kind==='totals'&&k.line!==null&&k.yesIsOver!==null){market=m.game.markets.find(x=>x.kind==='totals'&&x.line===k.line);idx=market?market.outcomes.findIndex(o=>o.toLowerCase()===(k.yesIsOver?'over':'under')):-1;}
   const prob=market&&idx>=0?market.probs[idx]:NaN;
   return market&&Number.isFinite(prob)?{prob,market}:null;
+}
+/** A Kalshi event as kalshiGameFrom needs it: its title ("PHI Eagles vs JAC Jaguars") and its team markets. */
+export interface KalshiEvent {title:string;markets:{ticker:string;yes_sub_title?:string}[]}
+const codeOf=(ticker:string)=>ticker.split('-').at(-1)??'';
+/**
+ * The Kalshi side of a sports match: league, time, every name for each team, and what YES means. Moneyline for …GAME
+ * series; full-game totals for …TOTAL series (pass the sibling GAME event for the team names). Spreads are not matched.
+ */
+export function kalshiGameFrom(q:{ticker:string;seriesTicker:string;yesLabel:string;expectedExpiration:number|null;closeTime:number|null},ev:KalshiEvent):KalshiGame|null{
+  const league=leagueOf(q.seriesTicker),end=q.expectedExpiration??q.closeTime,kind=q.seriesTicker.endsWith('GAME')?'moneyline':q.seriesTicker.endsWith('TOTAL')?'totals':null;
+  if(!league||end===null||!kind)return null;
+  const parts=ev.title.replace(/^[^:]*:\s*/,'').split(/\s+vs\.?\s+/i);if(parts.length!==2)return null;
+  const teams:[string[],string[]]=[[parts[0].trim()],[parts[1].trim()]];
+  for(const m of ev.markets){const names=[m.yes_sub_title??'',codeOf(m.ticker)].filter(Boolean),hits=[0,1].filter(i=>teamMatches(names,teams[i]));if(hits.length===1)teams[hits[0]].push(...names);}
+  if(kind==='moneyline'){const code=codeOf(q.ticker),yesTeam=teams[0].includes(code)?0:teams[1].includes(code)?1:null;return yesTeam===null?null:{league,expectedEnd:end,teams,yesTeam,kind,line:null,yesIsOver:null};}
+  const line=Number(/(\d+(?:\.\d+)?)/.exec(q.yesLabel)?.[1]),over=/^over\b/i.test(q.yesLabel),under=/^under\b/i.test(q.yesLabel);
+  return Number.isFinite(line)&&(over||under)?{league,expectedEnd:end,teams,yesTeam:null,kind,line,yesIsOver:over}:null;
 }

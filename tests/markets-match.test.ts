@@ -16,7 +16,12 @@ it('matches the NFL game in the time window and maps the YES team to its outcome
 it('crossed team order is a swap; the other league or a start outside the window does not match',()=>{
   const g=game('x','nfl','2026-10-11T13:30:00Z',['Jaguars','jax'],['Eagles','phi'],[ml([.7,.3],['Jaguars','Eagles'])]);
   const m=matchGame(kg({}),[g])!;expect(m.swap).toBe(true);expect(refProb(kg({}),m)!.prob).toBeCloseTo(.3);
-  expect(matchGame(kg({}),[{...g,league:'cfb'}])).toBeNull();expect(matchGame(kg({}),[{...g,start:T('2026-10-11T03:00:00Z')}])).toBeNull();expect(matchGame(kg({}),[{...g,start:T('2026-10-11T18:00:00Z')}])).toBeNull();});
+  expect(matchGame(kg({}),[{...g,league:'cfb'}])).toBeNull();expect(matchGame(kg({}),[{...g,start:T('2026-10-11T03:00:00Z')}])).toBeNull();expect(matchGame(kg({}),[{...g,start:T('2026-10-11T22:31:00Z')}])).toBeNull();});
+it('Kalshi times can be placeholders: a game starting up to 6 h after the Kalshi time still matches (Minnesota–Purdue, 2026-10-10)',()=>{
+  const k=kg({league:'cfb',expectedEnd:T('2026-10-10T20:00:00Z'),teams:[['Minnesota','MINN'],['Purdue','PUR']]});
+  expect(matchGame(k,[game('cfb-minnst-pur-2026-10-10','cfb','2026-10-11T00:00:00Z',['Minnesota','minnst'],['Purdue','pur'])])?.game.id).toBe('cfb-minnst-pur-2026-10-10');
+  const dh=[game('a','mlb','2026-10-11T17:00:00Z',['Cubs','chc'],['Cardinals','stl']),game('b','mlb','2026-10-11T21:00:00Z',['Cubs','chc'],['Cardinals','stl'])];
+  expect(matchGame(kg({league:'mlb',expectedEnd:T('2026-10-11T20:00:00Z'),teams:[['Chicago C','CHC'],['St. Louis','STL']]}),dh)).toBeNull();});
 it('a shared word in two games never makes a wrong pairing: both teams must match one game uniquely',()=>{
   const games=[game('iowa-wash','cfb','2026-10-10T01:00:00Z',['Iowa','iowa'],['Washington','wash']),game('iowast-byu','cfb','2026-10-10T01:30:00Z',['Iowa State','iowast'],['BYU','byu'])];
   const k=kg({league:'cfb',expectedEnd:T('2026-10-10T04:00:00Z'),teams:[['Iowa','IOWA'],['Washington','WASH']]});
@@ -30,3 +35,18 @@ it('totals match only on an equal line, and YES is Over',()=>{
 it('a reference with no usable probability is no reference',()=>{
   const g=game('x','nfl','2026-10-11T13:30:00Z',['Eagles','phi'],['Jaguars','jax'],[ml([NaN,NaN],['Eagles','Jaguars'])]);expect(refProb(kg({}),matchGame(kg({}),[g])!)).toBeNull();});
 it('maps Kalshi series to leagues',()=>{expect(leagueOf('KXNCAAFTOTAL')).toBe('cfb');expect(leagueOf('KXNFLGAME')).toBe('nfl');expect(leagueOf('KXMLBTOTAL')).toBe('mlb');expect(leagueOf('KXATPMATCH')).toBeNull();});
+import {kalshiGameFrom} from '../src/markets/match';
+import {parseMarket} from '../src/markets/quotes';
+const q=(ticker:string,label:string,exp='2026-10-11T16:30:00Z')=>parseMarket({ticker,event_ticker:ticker.split('-').slice(0,2).join('-'),yes_sub_title:label,status:'active',result:'',expected_expiration_time:exp},1);
+it('builds the Kalshi side of a match from the event title and its team markets',()=>{
+  const ev={title:'PHI Eagles vs JAC Jaguars',markets:[{ticker:'KXNFLGAME-26OCT11PHIJAC-JAC',yes_sub_title:'Jacksonville'},{ticker:'KXNFLGAME-26OCT11PHIJAC-PHI',yes_sub_title:'Philadelphia'}]};
+  const g=kalshiGameFrom(q('KXNFLGAME-26OCT11PHIJAC-PHI','Philadelphia'),ev)!;expect(g).toMatchObject({league:'nfl',kind:'moneyline',yesTeam:0,expectedEnd:Date.parse('2026-10-11T16:30:00Z')});
+  expect(g.teams[0]).toEqual(expect.arrayContaining(['PHI Eagles','Philadelphia','PHI']));expect(g.teams[1]).toEqual(expect.arrayContaining(['JAC Jaguars','Jacksonville','JAC']));
+  expect(kalshiGameFrom(q('KXNFLGAME-26OCT11PHIJAC-JAC','Jacksonville'),ev)!.yesTeam).toBe(1);
+  const mlb=kalshiGameFrom(q('KXMLBGAME-26OCT102000CWSCLE-CWS','Chicago WS'),{title:'Game 5: Chicago WS vs Cleveland',markets:[{ticker:'KXMLBGAME-26OCT102000CWSCLE-CWS',yes_sub_title:'Chicago WS'},{ticker:'KXMLBGAME-26OCT102000CWSCLE-CLE',yes_sub_title:'Cleveland'}]})!;
+  expect(mlb.teams[0][0]).toBe('Chicago WS');expect(mlb.yesTeam).toBe(0);});
+it('totals take the line and side from the YES label and the teams from the game event; spreads and unknown leagues are not matched',()=>{
+  const game={title:'Georgia vs Alabama',markets:[{ticker:'KXNCAAFGAME-26OCT10UGAALA-UGA',yes_sub_title:'Georgia'},{ticker:'KXNCAAFGAME-26OCT10UGAALA-ALA',yes_sub_title:'Alabama'}]};
+  const t=kalshiGameFrom(q('KXNCAAFTOTAL-26OCT10UGAALA-52','Over 51.5 points'),game)!;expect(t).toMatchObject({league:'cfb',kind:'totals',line:51.5,yesIsOver:true,yesTeam:null});expect(t.teams[1]).toContain('Alabama');
+  expect(kalshiGameFrom(q('KXNFLSPREAD-26OCT11PHIJAC-PHI7','Philadelphia wins by over 6.5 points'),game)).toBeNull();
+  expect(kalshiGameFrom(q('KXATPMATCH-26OCT10AB-A','A'),{title:'A vs B',markets:[]})).toBeNull();});
