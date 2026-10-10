@@ -6,7 +6,8 @@ import {SUGGEST_MIN} from './similarity';
 export type Source='polymarket'|'sportsbooks';
 /** An outside chance for a Kalshi market's YES. Trusted only when auto-matched (sports) or confirmed by you, and fresh. */
 export interface Reference {source:Source;prob:number;time:number;stale:boolean;status:'auto'|'confirmed'|'suggested';title:string;url:string;refId:string}
-export interface HeldRef {ticker:string;title:string;kalshiGame:KalshiGame|null}
+/** held false = a market the scanner only looks at: Polymarket sports matching only (no Odds API quota, no title search). */
+export interface HeldRef {ticker:string;title:string;kalshiGame:KalshiGame|null;held?:boolean}
 export interface SourceHealth {name:string;ok:boolean;updated:number|null;error:string|null;detail:string}
 export const PM_STALE=15*60000,ODDS_STALE=2*3600000,PM_EVERY=5*60000,SNAP_EVERY=5*60000,SEARCH_EVERY=6*3600000;
 // In play, prices move by the minute: refresh Polymarket every minute while a held game is on.
@@ -49,14 +50,14 @@ export class References {
   async refresh(held:HeldRef[],now:number){
     for(const league of new Set(held.map(h=>h.kalshiGame?.league).filter((l):l is string=>!!l))){
       const sports=held.filter(h=>h.kalshiGame?.league===league),live=sports.some(h=>now>=h.kalshiGame!.expectedEnd-4*H&&now<=h.kalshiGame!.expectedEnd+2*H);
-      for(const [source,games] of [['polymarket',await this.pmGames(league,now,live)],['sportsbooks',await this.oddsGames(league,held,now)]] as [Source,RefGame[]][]){
+      for(const [source,games] of [['polymarket',await this.pmGames(league,now,live)],['sportsbooks',sports.some(h=>h.held!==false)?await this.oddsGames(league,held,now):this.games.get('odds:'+league)?.games??[]]] as [Source,RefGame[]][]){
         const at=source==='polymarket'?this.games.get('pm:'+league)?.at:this.games.get('odds:'+league)?.at;
         for(const h of sports){const m=matchGame(h.kalshiGame!,games),p=m?refProb(h.kalshiGame!,m):null;if(!m||!p)continue;
           this.journal.setMatch({ticker:h.ticker,source,refId:p.market.id,method:'auto',status:'auto',score:null,title:m.game.id,url:m.game.url});
           this.put(h.ticker,{source,prob:p.prob,time:at??now,stale:false,status:'auto',title:m.game.id,url:m.game.url,refId:p.market.id});}
       }
     }
-    for(const h of held.filter(x=>!x.kalshiGame)){
+    for(const h of held.filter(x=>!x.kalshiGame&&x.held!==false)){
       const rows=this.journal.matchesFor(h.ticker).filter(r=>r.source==='polymarket'),open=rows.find(r=>r.status==='confirmed')??rows.find(r=>r.status==='suggested');
       try{
         if(open){if(now-(this.refreshed.get(h.ticker)??-Infinity)>=PM_EVERY){const prob=await polymarketMarket(this.o.fetchJson,open.refId);this.refreshed.set(h.ticker,now);this.pm={updated:now,error:null};

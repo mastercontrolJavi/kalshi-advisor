@@ -54,6 +54,7 @@ export class MarketsJournal {
   openFlagTickers():string[]{return (this.db.prepare('SELECT DISTINCT ticker FROM flags WHERE result IS NULL ORDER BY ticker').all() as {ticker:string}[]).map(r=>r.ticker);}
   /** Score a settled market's open flags: P&L per contract = (1 if the flagged side won) − ask − fee. Only yes/no results count. */
   settleFlags(ticker:string,result:'yes'|'no',now:number){this.db.prepare('UPDATE flags SET result=?,pnl=(CASE WHEN side=? THEN 1 ELSE 0 END)-price-fee,settled_at=? WHERE ticker=? AND result IS NULL').run(result,result,now,ticker);}
+  flagsSince(since:number){return this.db.prepare('SELECT id,time,ticker,event,grp AS "group",type,side,price,fee,edge,result,pnl FROM flags WHERE time>=? ORDER BY time DESC').all(since) as FlagRow[];}
   flagRows(){return this.db.prepare('SELECT id,time,ticker,event,grp AS "group",type,side,price,fee,edge,result,pnl FROM flags ORDER BY time').all() as FlagRow[];}
   /** YES mid (or last trade) since `since`, thinned to about `points` values for a sparkline. */
   spark(ticker:string,since:number,points=120):{t:number;mid:number}[]{

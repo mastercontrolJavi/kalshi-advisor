@@ -51,3 +51,8 @@ it('the fresher trusted price wins: sportsbooks only beat Polymarket when they a
   const r=new References(j,{fetchJson:pm().fetchJson,fetchRes:async()=>res(200,oddsBody,'300'),oddsKey:'KEY',log:()=>{}});
   await r.refresh(held,live);expect(r.reference(held[0].ticker,live)!.source).toBe('sportsbooks');
   await r.refresh(held,live+20*60e3);expect(r.reference(held[0].ticker,live+20*60e3)!.source).toBe('polymarket');});
+it('markets only scanned (not held) get Polymarket sports matches but never the Odds API or a title search',async()=>{
+  const calls:string[]=[],p=pm(),j=new MarketsJournal(':memory:');
+  const r=new References(j,{fetchJson:p.fetchJson,fetchRes:async(u:string)=>{calls.push(u);return res(200,oddsBody,'300');},oddsKey:'KEY',log:()=>{}});
+  await r.refresh(held.map(h=>({...h,held:false})),NOW);expect(calls).toHaveLength(0);expect(p.calls.some(u=>u.includes('/public-search'))).toBe(false);
+  expect(r.reference(held[0].ticker,NOW)!.source).toBe('polymarket');});
