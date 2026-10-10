@@ -16,15 +16,15 @@ export class MarketsData {
   constructor(private client:Client,private journal:MarketsJournal,private log:(e:string,d:unknown)=>void){}
   private eventCache=new Map<string,KalshiEvent>();
   /** An event's title and team markets, fetched once (a failure is retried on the next call). */
-  async eventInfo(eventTicker:string):Promise<KalshiEvent|null>{
+  async eventInfo(eventTicker:string,client:Pick<KalshiClient,'get'>=this.client):Promise<KalshiEvent|null>{
     const hit=this.eventCache.get(eventTicker);if(hit)return hit;
-    try{const r=await this.client.get('/events/'+encodeURIComponent(eventTicker));const ev={title:String(r.event?.title??''),markets:(r.markets??[]).map((m:any)=>({ticker:String(m.ticker),yes_sub_title:m.yes_sub_title}))};this.eventCache.set(eventTicker,ev);return ev;}
+    try{const r=await client.get('/events/'+encodeURIComponent(eventTicker));const ev={title:String(r.event?.title??''),markets:(r.markets??[]).map((m:any)=>({ticker:String(m.ticker),yes_sub_title:m.yes_sub_title}))};this.eventCache.set(eventTicker,ev);return ev;}
     catch(e){this.log('event-error',{eventTicker,message:(e as Error).message});return null;}
   }
   /** The sports-match description of a quote; totals borrow team names from the same game's GAME event. */
-  async kalshiGame(q:Quote):Promise<KalshiGame|null>{
+  async kalshiGame(q:Quote,client:Pick<KalshiClient,'get'>=this.client):Promise<KalshiGame|null>{
     if(!leagueOf(q.seriesTicker))return null;
-    const ev=await this.eventInfo(q.eventTicker.replace(/^([A-Z0-9]+?)(TOTAL|SPREAD)-/,'$1GAME-'));return ev?kalshiGameFrom(q,ev):null;
+    const ev=await this.eventInfo(q.eventTicker.replace(/^([A-Z0-9]+?)(TOTAL|SPREAD)-/,'$1GAME-'),client);return ev?kalshiGameFrom(q,ev):null;
   }
   /** Page group of any ticker: combos by structure, others by their series category (politics when unknown). */
   groupFor(ticker:string){return groupOf(this.series.get(seriesOf(ticker))?.category,ticker.startsWith('KXMVE'));}

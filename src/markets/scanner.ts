@@ -29,7 +29,7 @@ export const kalshiUrl=(series:string,event:string)=>`https://kalshi.com/markets
  */
 export class Scanner {
   updated=0;error:string|null=null;private list:Entry[]=[];private series:{at:number;chosen:string[];category:Map<string,string|null>}|null=null;
-  constructor(private client:Client,private journal:MarketsJournal,private refs:Pick<References,'refresh'|'reference'>,private data:{kalshiGame(q:Quote):Promise<KalshiGame|null>;held():any[]},private log:(e:string,d:unknown)=>void){}
+  constructor(private client:Client,private journal:MarketsJournal,private refs:Pick<References,'refresh'|'reference'>,private data:{kalshiGame(q:Quote,client?:Client):Promise<KalshiGame|null>;held():any[]},private log:(e:string,d:unknown)=>void){}
   get count(){return this.list.length;}
   private async chosenSeries(now:number){
     if(this.series&&now-this.series.at<SERIES_EVERY)return this.series;
@@ -48,7 +48,7 @@ export class Scanner {
       for(const e of kept)this.journal.upsertMarket(e.q,category.get(e.q.seriesTicker)??null,e.group);
       this.journal.snapshot(kept.map(e=>({ticker:e.q.ticker,time:now,yesBid:e.q.yesBid,yesAsk:e.q.yesAsk,last:e.q.last,volume24h:e.q.volume24h,held:e.held,volume:e.volume})));
       const sports:HeldRef[]=[];
-      for(const e of kept.filter(x=>x.group==='sports')){const g=await this.data.kalshiGame(e.q);if(g)sports.push({ticker:e.q.ticker,title:e.q.title,kalshiGame:g,held:e.held});}
+      for(const e of kept.filter(x=>x.group==='sports')){const g=await this.data.kalshiGame(e.q,this.client);if(g)sports.push({ticker:e.q.ticker,title:e.q.title,kalshiGame:g,held:e.held});}
       try{await this.refs.refresh(sports,now);}catch(err){this.log('scanner-references-error',{message:(err as Error).message});}
       const tables=this.journal.get<AccuracyTables|null>('accuracy',null),last=(t:string,type:FlagType)=>this.journal.lastFlag(t,type),flags:Flag[]=[];
       for(const e of kept){

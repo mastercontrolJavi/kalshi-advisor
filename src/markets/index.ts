@@ -59,7 +59,8 @@ function build(){
 // The Record tab is historical: built on request, at most once a minute.
 let record:{at:number;body:RecordState&{refreshing:boolean;sources:SourceComparison[];flags:FlagStats[]}}|null=null;
 // Scanner: liquid open markets every 5 min (first sweep 2 min after start), flags paper-scored as they settle.
-const scanner=new Scanner(client,journal,references,data,log);
+// Its own request queue (2.5/s), so a sweep never delays the 5-s price updates of your positions; ~5 requests/s in all.
+const scanner=new Scanner(new KalshiClient(undefined,undefined,400),journal,references,data,log);
 let scan:{at:number;body:{rows:ScanRow[];updated:number|null;error:string|null;count:number;stats:FlagStats[]}}|null=null;
 function scanState(now=Date.now()){
   if(!scan||now-scan.at>=60000||scan.body.updated!==(scanner.updated||null)){const stats=flagStats(journal.flagRows());scan={at:now,body:{rows:scanner.rows(now,stats),updated:scanner.updated||null,error:scanner.error,count:scanner.count,stats}};}
