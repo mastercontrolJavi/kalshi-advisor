@@ -4,6 +4,8 @@ import {dirname} from 'node:path';
 import type {Group,Quote} from './types';
 const DAY=86400000;
 /** A settled market from the public backfill, with its YES mid and ask 24 h and 1 h before the event and the 24-h traded average. */
+/** A stored scanner flag; result and pnl stay null until its market settles yes or no. */
+export interface FlagRow {id:number;time:number;ticker:string;event:string;group:string;type:string;side:'yes'|'no';price:number;fee:number;edge:number;result:string|null;pnl:number|null}
 export interface BackfillRow {ticker:string;event:string;series:string;grp:'sports'|'politics'|'commodities';title:string;eventTs:number;settleTs:number;result:'yes'|'no';volume:number;p24:number|null;a24:number|null;p1:number|null;a1:number|null;vwap:number|null;priced:0|1}
 /** data/markets.db: the markets process's own journal, so it never contends with the Bitcoin engine's writes. */
 export class MarketsJournal {
@@ -20,7 +22,11 @@ export class MarketsJournal {
       CREATE TABLE IF NOT EXISTS backfill(ticker TEXT PRIMARY KEY,event TEXT NOT NULL,series TEXT NOT NULL,grp TEXT NOT NULL,title TEXT NOT NULL,event_ts INTEGER NOT NULL,settle_ts INTEGER NOT NULL,result TEXT NOT NULL,volume REAL NOT NULL,p24 REAL,a24 REAL,p1 REAL,a1 REAL,vwap REAL,priced INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX IF NOT EXISTS backfill_priced ON backfill(priced,event_ts);
       CREATE TABLE IF NOT EXISTS matches(ticker TEXT NOT NULL,source TEXT NOT NULL,ref_id TEXT NOT NULL,method TEXT NOT NULL,status TEXT NOT NULL,score REAL,title TEXT,url TEXT,decided_at INTEGER,PRIMARY KEY(ticker,source,ref_id));
-      CREATE TABLE IF NOT EXISTS refs(ticker TEXT NOT NULL,source TEXT NOT NULL,time INTEGER NOT NULL,prob REAL NOT NULL,PRIMARY KEY(ticker,source,time));`);
+      CREATE TABLE IF NOT EXISTS refs(ticker TEXT NOT NULL,source TEXT NOT NULL,time INTEGER NOT NULL,prob REAL NOT NULL,PRIMARY KEY(ticker,source,time));
+      CREATE TABLE IF NOT EXISTS flags(id INTEGER PRIMARY KEY,time INTEGER NOT NULL,ticker TEXT NOT NULL,event TEXT NOT NULL,grp TEXT NOT NULL,type TEXT NOT NULL,side TEXT NOT NULL,price REAL NOT NULL,fee REAL NOT NULL,edge REAL NOT NULL,context TEXT NOT NULL,result TEXT,pnl REAL,settled_at INTEGER);
+      CREATE INDEX IF NOT EXISTS flags_open ON flags(result,ticker);CREATE INDEX IF NOT EXISTS flags_last ON flags(ticker,type,time);`);
+    // Cumulative traded contracts per snapshot (the scanner's 1-hour volume); added after stage 1, so older databases gain it here.
+    if(!(this.db.prepare('PRAGMA table_info(snapshots)').all() as {name:string}[]).some(c=>c.name==='volume'))this.db.exec('ALTER TABLE snapshots ADD COLUMN volume REAL');
   }
   log(event:string,context:unknown){this.db.prepare('INSERT INTO events(time,event,context) VALUES(?,?,?)').run(Date.now(),event,JSON.stringify(context));}
   get<T>(key:string,fallback:T):T{const row=this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as {value:string}|undefined;return row?JSON.parse(row.value):fallback;}
@@ -30,10 +36,25 @@ export class MarketsJournal {
       ON CONFLICT(ticker) DO UPDATE SET category=excluded.category,grp=excluded.grp,title=excluded.title,yes_label=excluded.yes_label,close_time=excluded.close_time,expected_expiration=excluded.expected_expiration,legs=excluded.legs,result=excluded.result,updated=excluded.updated`)
       .run(q.ticker,q.eventTicker,q.seriesTicker,category,group,q.title,q.yesLabel,q.closeTime,q.expectedExpiration,q.legs?1:0,q.legs?JSON.stringify(q.legs):null,q.result,q.updated,q.updated);
   }
-  snapshot(rows:{ticker:string;time:number;yesBid:number|null;yesAsk:number|null;last:number|null;volume24h:number|null;held:boolean}[]){
-    const put=this.db.prepare('INSERT OR IGNORE INTO snapshots VALUES(?,?,?,?,?,?,?)');
-    this.db.transaction(()=>{for(const r of rows)put.run(r.ticker,r.time,r.yesBid,r.yesAsk,r.last,r.volume24h,r.held?1:0);})();
+  snapshot(rows:{ticker:string;time:number;yesBid:number|null;yesAsk:number|null;last:number|null;volume24h:number|null;held:boolean;volume?:number|null}[]){
+    const put=this.db.prepare('INSERT OR IGNORE INTO snapshots(ticker,time,yes_bid,yes_ask,last,volume_24h,held,volume) VALUES(?,?,?,?,?,?,?,?)');
+    this.db.transaction(()=>{for(const r of rows)put.run(r.ticker,r.time,r.yesBid,r.yesAsk,r.last,r.volume24h,r.held?1:0,r.volume??null);})();
   }
+  /** YES mid (or last trade) and cumulative volume per snapshot since `since`, for the scanner's 1-hour move. */
+  recentMids(ticker:string,since:number):{t:number;mid:number;volume:number|null}[]{
+    return (this.db.prepare('SELECT time AS t,CASE WHEN yes_bid IS NOT NULL AND yes_ask IS NOT NULL THEN (yes_bid+yes_ask)/2 ELSE last END AS mid,volume FROM snapshots WHERE ticker=? AND time>=? ORDER BY time').all(ticker,since) as {t:number;mid:number|null;volume:number|null}[])
+      .filter((r):r is {t:number;mid:number;volume:number|null}=>r.mid!==null);
+  }
+  /** Scanner flags, each a one-contract paper trade scored when its market settles. */
+  putFlags(flags:{time:number;ticker:string;event:string;group:string;type:string;side:string;price:number;fee:number;edge:number;context:unknown}[]){
+    const put=this.db.prepare('INSERT INTO flags(time,ticker,event,grp,type,side,price,fee,edge,context) VALUES(?,?,?,?,?,?,?,?,?,?)');
+    this.db.transaction(()=>{for(const f of flags)put.run(f.time,f.ticker,f.event,f.group,f.type,f.side,f.price,f.fee,f.edge,JSON.stringify(f.context));})();
+  }
+  lastFlag(ticker:string,type:string):{time:number;edge:number}|null{return (this.db.prepare('SELECT time,edge FROM flags WHERE ticker=? AND type=? ORDER BY time DESC LIMIT 1').get(ticker,type) as {time:number;edge:number}|undefined)??null;}
+  openFlagTickers():string[]{return (this.db.prepare('SELECT DISTINCT ticker FROM flags WHERE result IS NULL ORDER BY ticker').all() as {ticker:string}[]).map(r=>r.ticker);}
+  /** Score a settled market's open flags: P&L per contract = (1 if the flagged side won) − ask − fee. Only yes/no results count. */
+  settleFlags(ticker:string,result:'yes'|'no',now:number){this.db.prepare('UPDATE flags SET result=?,pnl=(CASE WHEN side=? THEN 1 ELSE 0 END)-price-fee,settled_at=? WHERE ticker=? AND result IS NULL').run(result,result,now,ticker);}
+  flagRows(){return this.db.prepare('SELECT id,time,ticker,event,grp AS "group",type,side,price,fee,edge,result,pnl FROM flags ORDER BY time').all() as FlagRow[];}
   /** YES mid (or last trade) since `since`, thinned to about `points` values for a sparkline. */
   spark(ticker:string,since:number,points=120):{t:number;mid:number}[]{
     const rows=this.db.prepare('SELECT time AS t,CASE WHEN yes_bid IS NOT NULL AND yes_ask IS NOT NULL THEN (yes_bid+yes_ask)/2 ELSE last END AS mid FROM snapshots WHERE ticker=? AND time>=? ORDER BY time').all(ticker,since) as {t:number;mid:number|null}[];
@@ -73,7 +94,7 @@ export class MarketsJournal {
       FROM r JOIN m ON m.ticker=r.ticker JOIN k ON k.ticker=r.ticker WHERE k.kalshi IS NOT NULL ORDER BY r.ticker,r.source`).all() as {ticker:string;source:string;y:0|1;kalshi:number;ref:number}[];
   }
   /** Matched markets whose result is due but not stored yet (they may have left your positions when they settled). */
-  awaitingResult(now:number):string[]{return (this.db.prepare(`SELECT ticker FROM markets WHERE result IS NULL AND COALESCE(expected_expiration,close_time)<? AND ticker IN (SELECT DISTINCT ticker FROM refs) ORDER BY ticker`).all(now) as {ticker:string}[]).map(r=>r.ticker);}
+  awaitingResult(now:number):string[]{return (this.db.prepare(`SELECT ticker FROM markets WHERE result IS NULL AND COALESCE(expected_expiration,close_time)<? AND ticker IN (SELECT ticker FROM refs UNION SELECT ticker FROM flags WHERE result IS NULL) ORDER BY ticker`).all(now) as {ticker:string}[]).map(r=>r.ticker);}
   /** Start the public history over (after a change to how markets are chosen). */
   resetBackfill(){this.db.transaction(()=>{this.db.prepare('DELETE FROM backfill').run();this.db.prepare("DELETE FROM meta WHERE key IN ('backfillTo','backfillFinished','accuracy')").run();})();}
   unpriced(limit=1000000){return this.db.prepare('SELECT ticker,event_ts AS eventTs FROM backfill WHERE priced=0 ORDER BY event_ts LIMIT ?').all(limit) as {ticker:string;eventTs:number}[];}
