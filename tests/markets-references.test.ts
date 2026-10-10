@@ -42,3 +42,7 @@ it('Odds API: no key means no call; under 50 requests left means no call; a reje
   j.set('oddsRemaining',40);r=new References(j,{fetchJson:pm().fetchJson,fetchRes,oddsKey:'KEY',log:()=>{}});await r.refresh(held,NOW+7*3600e3);expect(calls).toHaveLength(1);
   j.set('oddsRemaining',300);const bad=async(u:string)=>{calls.push(u);return res(401,{message:'invalid key'},null);};
   r=new References(j,{fetchJson:pm().fetchJson,fetchRes:bad,oddsKey:'BAD',log:()=>{}});await r.refresh(held,NOW+7*3600e3);await r.refresh(held,NOW+14*3600e3);expect(calls).toHaveLength(2);expect(r.health().find(h=>h.name==='Sportsbooks')!.detail).toBe('key rejected');});
+it('while a held game is in play, Polymarket is refreshed every minute instead of every 5',async()=>{
+  const j=new MarketsJournal(':memory:'),p=pm(),r=new References(j,{fetchJson:p.fetchJson,log:()=>{}}),live=Date.parse('2026-10-11T15:00:00Z');
+  await r.refresh(held,live);await r.refresh(held,live+61e3);expect(p.calls.filter(u=>u.includes('/events?')).length).toBe(2);
+  const q=pm(),r2=new References(j,{fetchJson:q.fetchJson,log:()=>{}});await r2.refresh(held,NOW);await r2.refresh(held,NOW+61e3);expect(q.calls.filter(u=>u.includes('/events?')).length).toBe(1);});

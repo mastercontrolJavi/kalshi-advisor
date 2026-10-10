@@ -9,7 +9,8 @@ export interface Reference {source:Source;prob:number;time:number;stale:boolean;
 export interface HeldRef {ticker:string;title:string;kalshiGame:KalshiGame|null}
 export interface SourceHealth {name:string;ok:boolean;updated:number|null;error:string|null;detail:string}
 export const PM_STALE=15*60000,ODDS_STALE=2*3600000,PM_EVERY=5*60000,SNAP_EVERY=5*60000,SEARCH_EVERY=6*3600000;
-const ODDS_SOON=30*60000,ODDS_LATER=6*3600000,ODDS_MIN_LEFT=50,H=3600000;
+// In play, prices move by the minute: refresh Polymarket every minute while a held game is on.
+const PM_EVERY_LIVE=60000,ODDS_SOON=30*60000,ODDS_LATER=6*3600000,ODDS_MIN_LEFT=50,H=3600000;
 export const trusted=(r:Reference|null|undefined):r is Reference=>!!r&&!r.stale&&(r.status==='auto'||r.status==='confirmed')&&Number.isFinite(r.prob);
 const nextMonth=(now:number)=>{const d=new Date(now);return Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,1);};
 /**
@@ -26,8 +27,8 @@ export class References {
   constructor(private journal:MarketsJournal,private o:{fetchJson:FetchJson;fetchRes?:FetchRes;oddsKey?:string;log:(e:string,d:unknown)=>void}){}
   private put(ticker:string,r:Reference){(this.latest.get(ticker)??this.latest.set(ticker,new Map()).get(ticker)!).set(r.source,r);
     const key=ticker+'|'+r.source;if((r.status==='auto'||r.status==='confirmed')&&r.time-(this.snapped.get(key)??-Infinity)>=SNAP_EVERY){this.journal.putRef(ticker,r.source,r.time,r.prob);this.snapped.set(key,r.time);}}
-  private async pmGames(league:string,now:number){
-    const key='pm:'+league,hit=this.games.get(key);if(hit&&now-hit.at<PM_EVERY)return hit.games;
+  private async pmGames(league:string,now:number,live=false){
+    const key='pm:'+league,hit=this.games.get(key);if(hit&&now-hit.at<(live?PM_EVERY_LIVE:PM_EVERY))return hit.games;
     try{const games=await polymarketGames(this.o.fetchJson,league,now-12*H,now+8*24*H);this.games.set(key,{at:now,games});this.pm={updated:now,error:null};return games;}
     catch(e){this.pm.error=(e as Error).message;this.o.log('polymarket-error',{league,message:this.pm.error});return hit?.games??[];}
   }
@@ -47,8 +48,8 @@ export class References {
   }
   async refresh(held:HeldRef[],now:number){
     for(const league of new Set(held.map(h=>h.kalshiGame?.league).filter((l):l is string=>!!l))){
-      const sports=held.filter(h=>h.kalshiGame?.league===league);
-      for(const [source,games] of [['polymarket',await this.pmGames(league,now)],['sportsbooks',await this.oddsGames(league,held,now)]] as [Source,RefGame[]][]){
+      const sports=held.filter(h=>h.kalshiGame?.league===league),live=sports.some(h=>now>=h.kalshiGame!.expectedEnd-4*H&&now<=h.kalshiGame!.expectedEnd+2*H);
+      for(const [source,games] of [['polymarket',await this.pmGames(league,now,live)],['sportsbooks',await this.oddsGames(league,held,now)]] as [Source,RefGame[]][]){
         const at=source==='polymarket'?this.games.get('pm:'+league)?.at:this.games.get('odds:'+league)?.at;
         for(const h of sports){const m=matchGame(h.kalshiGame!,games),p=m?refProb(h.kalshiGame!,m):null;if(!m||!p)continue;
           this.journal.setMatch({ticker:h.ticker,source,refId:p.market.id,method:'auto',status:'auto',score:null,title:m.game.id,url:m.game.url});
