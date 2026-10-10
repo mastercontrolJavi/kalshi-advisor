@@ -58,3 +58,25 @@ No actual taker signal or maker paper fill was observed without credentials. Mak
   - a heads-up firing on a real move (covered by unit tests);
   - sounds playing in the browser (the transition logic is unit-tested);
   - the supervised start under npm run trade (it starts on the next launch from the desktop shortcut).
+
+## Markets stage 2 — 2026-10-09 (Record tab, public backfill)
+
+- First backfill (`npm run markets-backfill -- --reset`, public data, ≤ 5 requests/s): 60 series, 109,161 settled markets since 2026-08-10, all priced, in 1,125 s.
+  - Sports: 28,533 markets (9,037 with a price 24 h before, 25,559 at 1 h before).
+  - Politics & economics: 13,210 markets (1,922 at 24 h, 1,567 at 1 h).
+  - Commodities & crypto: 67,418 markets, mostly 15-minute and strike-ladder markets. Only 1,048 have a 24 h price, so the volume-weighted view covers that category best.
+- Bias caught before release:
+  - The first run kept the 4,000 most-traded markets per series. That showed sports 5–20¢ returning +31–53% per $1, with ranges above zero.
+  - Cause: ranking by total volume keeps longshots that won, because they trade heavily after the horizon.
+  - Hash-sampled again, that result vanished. All categories, 24 h before: 0–5¢ returned −61% per $1 (95% range −85% to −32%); 20–35¢ −10% (−17 to −3); 35–50¢ −6% (−11 to −1); 80–90¢ won 2.9 points more often than priced.
+- Event timing, measured: MLB/NFL/NHL settle a median 0.2 h after Kalshi's occurrence time, so occurrence ≈ end of game. The labels say "before the result", and 24 h is the default view.
+- Your record (real account): 16 settled non-Bitcoin markets, 5 won, −$66.02 (−42% on $157.20 spent).
+  - Combos: 0 of 3 won, −$16.33.
+  - Commodities & crypto: 1 of 6 won, −$31.77.
+  - Sports: 4 of 7 won, −$17.92.
+- The /record endpoint reads precomputed tables. Computing them took 2.6 s per 44k markets, so the backfill child does it.
+- Browser, side instance on ports 3010/3012:
+  - Tabs, category chips and horizon chips work; the combos note and empty states show.
+  - 375 px with no horizontal scroll; no console errors.
+  - The Positions tab is unchanged apart from the tab bar.
+- 198 tests pass, tsc is clean, and next build is green.
