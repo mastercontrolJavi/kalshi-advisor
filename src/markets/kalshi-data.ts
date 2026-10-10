@@ -55,6 +55,8 @@ export class MarketsData {
     try{const {series:s}=await this.client.get('/series/'+encodeURIComponent(series));const schedule=effectiveFees(s,[],event,Date.now()+this.client.clockOffset);this.series.set(series,{category:s?.category??null,schedule:schedule.verified?schedule:baseFees});}
     catch(e){this.log('series-error',{series,message:(e as Error).message});this.series.set(series,{category:null,schedule:baseFees});}
   }
+  /** Fetch matched markets whose result is due (even after they left your positions) until Kalshi reports it. */
+  async settleCheck(now:number){try{await this.fetch(this.journal.awaitingResult(now),now);}catch(e){this.log('settle-check-error',{message:(e as Error).message});}}
   /** Held markets first, then the legs of any held combo (known only once the combo's own quote arrives). */
   async pollQuotes(now:number){
     try{

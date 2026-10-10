@@ -15,7 +15,7 @@ import {BackfillRefresher} from './refresh';
 import {References,type HeldRef} from './references';
 import {GAMMA} from './sources/polymarket';
 import {ODDS_HOST} from './sources/odds';
-import {buildRecord,type RecordState} from './record';
+import {buildRecord,compareSources,type RecordState,type SourceComparison} from './record';
 /**
  * Markets process (127.0.0.1:3002): every open Kalshi position outside the two Bitcoin series, read-only. Runs apart from
  * the Bitcoin engine so its polling can never stall that engine's 4 Hz loop.
@@ -55,10 +55,10 @@ function build(){
     summary:summarize(cards,data.events,dayKey(now),t=>dayKey(t)),synced:{positions:data.positionsUpdated||null,quotes:data.quotesUpdated||null},sources:references.health(now)};
 }
 // The Record tab is historical: built on request, at most once a minute.
-let record:{at:number;body:RecordState&{refreshing:boolean}}|null=null;
+let record:{at:number;body:RecordState&{refreshing:boolean;sources:SourceComparison[]}}|null=null;
 function recordState(now=Date.now()){
   if(!record||now-record.at>=60000)record={at:now,body:{...buildRecord({accuracy:journal.get('accuracy',null),events:data.events,fills:journal.raw().fills.filter((f:any)=>!isBitcoin(String(f.ticker??f.market_ticker))),
-    groupFor:t=>data.groupFor(t),stats:journal.backfillStats(),finished:journal.get<number|null>('backfillFinished',null)}),refreshing:refresher.active(now)}};
+    groupFor:t=>data.groupFor(t),stats:journal.backfillStats(),finished:journal.get<number|null>('backfillFinished',null)}),refreshing:refresher.active(now),sources:compareSources(journal.sourcePairs())}};
   return record.body;
 }
 const safe=(name:string,f:()=>unknown)=>{try{const r=f();if(r instanceof Promise)r.catch(e=>log(name,{message:(e as Error).message}));}catch(e){log(name,{message:(e as Error).message});}};
@@ -95,6 +95,8 @@ void boot();
 setInterval(()=>safe('account-sync-error',()=>data.syncAccount()),30000);
 setInterval(()=>safe('quotes-error',()=>data.pollQuotes(Date.now())),5000);
 setInterval(()=>safe('references-error',refreshReferences),60000);
+// Matched markets keep being checked after they leave your positions, so their results can be scored against the outside price.
+setInterval(()=>safe('settle-check-error',()=>data.settleCheck(Date.now())),15*60000);
 setInterval(()=>safe('snapshot-error',()=>journal.snapshot(snapshotRows(data.quotes,state.positions,Date.now()))),30000);
 setInterval(()=>safe('memory-save-error',()=>journal.set('memory',Object.fromEntries(memory))),30000);
 setInterval(()=>safe('config-error',loadConfig),60000);

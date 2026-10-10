@@ -28,3 +28,15 @@ it('an empty backfill gives empty accuracy and the stats, not zeros',()=>{
 it('category accuracy only uses its own markets',()=>{
   const s=buildRecord({accuracy:accuracyTables([row('A','E1',.5,'yes','sports'),row('B','E2',.5,'no','politics')]),events:[],fills:[],groupFor:()=>'sports',stats:{markets:2,priced:2,from:1,to:1},finished:5});
   expect(s.accuracy.sports.p1.find(x=>x.lo===.5)!.win).toBe(1);expect(s.accuracy.politics.p1.find(x=>x.lo===.5)!.win).toBe(0);expect(s.accuracy.all.p1.find(x=>x.lo===.5)!.n).toBe(2);});
+import {compareSources} from '../src/markets/record';
+import {MarketsJournal} from '../src/markets/journal';
+import {parseMarket} from '../src/markets/quotes';
+it('compares Brier scores of Kalshi and each outside source on matched settled markets',()=>{
+  const c=compareSources([{ticker:'A',source:'polymarket',y:1,kalshi:.6,ref:.7},{ticker:'B',source:'polymarket',y:0,kalshi:.3,ref:.4}]);
+  expect(c).toHaveLength(1);expect(c[0]).toMatchObject({source:'polymarket',n:2});expect(c[0].brierKalshi).toBeCloseTo((.16+.09)/2);expect(c[0].brierRef).toBeCloseTo((.09+.16)/2);expect(c[0].diff).toBeCloseTo(0);expect(compareSources([])).toEqual([]);});
+it('pairs each settled matched market with the last Kalshi and outside prices at least 1 h before the result',()=>{
+  const j=new MarketsJournal(':memory:'),H=3600e3,end=10*H;
+  j.upsertMarket({...parseMarket({ticker:'K-A',event_ticker:'K',status:'finalized',result:'yes',expected_expiration_time:new Date(end).toISOString()},1)},'Sports','sports');
+  j.snapshot([{ticker:'K-A',time:end-3*H,yesBid:.5,yesAsk:.52,last:null,volume24h:null,held:true},{ticker:'K-A',time:end-.5*H,yesBid:.9,yesAsk:.92,last:null,volume24h:null,held:true}]);
+  j.putRef('K-A','polymarket',end-2*H,.55);j.putRef('K-A','polymarket',end-.2*H,.95);
+  expect(j.sourcePairs()).toEqual([{ticker:'K-A',source:'polymarket',y:1,kalshi:.51,ref:.55}]);j.db.close();});

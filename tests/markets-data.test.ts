@@ -1,6 +1,7 @@
 import {it,expect} from 'vitest';
 import {MarketsData} from '../src/markets/kalshi-data';
 import {MarketsJournal} from '../src/markets/journal';
+import {parseMarket} from '../src/markets/quotes';
 const market=(ticker:string,extra:any={})=>({ticker,event_ticker:ticker.split('-').slice(0,2).join('-'),title:ticker,yes_sub_title:ticker,status:'active',result:'',yes_bid_dollars:'.4',yes_ask_dollars:'.42',...extra});
 function fakeClient(){const calls:string[]=[];return {calls,authenticated:true,clockOffset:0,
   async get(path:string){calls.push(path);
@@ -21,3 +22,9 @@ it('groups every traded ticker by its series category, combos apart, fetching ea
   const d=new MarketsData(c as any,new MarketsJournal(':memory:'),()=>{});await d.syncAccount();
   expect(d.groupFor('KXNFLGAME-OLD-KC')).toBe('sports');expect(d.groupFor('KXMVECROSSCATEGORY-S-A')).toBe('combos');expect(d.groupFor('KXUNKNOWN-X')).toBe('politics');
   await d.syncAccount();expect(c.calls.filter((p:string)=>p==='/series/KXNFLGAME')).toHaveLength(1);});
+it('a matched market that has left your positions is still fetched until its result is stored',async()=>{
+  const j=new MarketsJournal(':memory:'),c=fakeClient() as any,get=c.get;let settled=false;
+  c.get=async(p:string)=>p.startsWith('/markets?tickers=')&&p.includes('KXNFLGAME-OLD-KC')?{markets:[market('KXNFLGAME-OLD-KC',{status:settled?'finalized':'closed',result:settled?'yes':'',expected_expiration_time:'2026-10-01T00:00:00Z'})]}:get(p);
+  const d=new MarketsData(c,j,()=>{});j.upsertMarket(parseMarket(market('KXNFLGAME-OLD-KC',{expected_expiration_time:'2026-10-01T00:00:00Z'}),1),'Sports','sports');j.putRef('KXNFLGAME-OLD-KC','polymarket',1,.5);
+  const now=Date.parse('2026-10-02T00:00:00Z');expect(j.awaitingResult(now)).toEqual(['KXNFLGAME-OLD-KC']);
+  await d.settleCheck(now);expect(j.awaitingResult(now)).toEqual(['KXNFLGAME-OLD-KC']);settled=true;await d.settleCheck(now);expect(j.awaitingResult(now)).toEqual([]);});

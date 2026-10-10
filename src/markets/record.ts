@@ -50,3 +50,10 @@ export interface RecordState {yours:ReturnType<typeof yourRecord>;accuracy:Accur
 export function buildRecord(a:{accuracy:AccuracyTables|null;events:RealEvent[];fills:any[];groupFor:(t:string)=>string;stats:{markets:number;priced:number;from:number|null;to:number|null};finished:number|null}):RecordState{
   return {yours:yourRecord(a.events,a.fills,a.groupFor),accuracy:a.accuracy??accuracyTables([]),backfill:{...a.stats,finished:a.finished}};
 }
+export interface SourceComparison {source:string;n:number;brierKalshi:number;brierRef:number;diff:number;low:number|null;high:number|null}
+/** Brier score (lower is better) of Kalshi vs each outside source on the same settled markets; diff = outside − Kalshi, with a bootstrap 95% range over markets. */
+export function compareSources(pairs:{ticker:string;source:string;y:0|1;kalshi:number;ref:number}[]):SourceComparison[]{
+  return [...new Set(pairs.map(p=>p.source))].map(source=>{const xs=pairs.filter(p=>p.source===source),n=xs.length;
+    const bk=xs.reduce((s,p)=>s+(p.kalshi-p.y)**2,0)/n,br=xs.reduce((s,p)=>s+(p.ref-p.y)**2,0)/n,[l,u]=clusterCI(xs.map(p=>({sum:(p.ref-p.y)**2-(p.kalshi-p.y)**2,n:1})));
+    return {source,n,brierKalshi:bk,brierRef:br,diff:br-bk,low:Number.isFinite(l)?l:null,high:Number.isFinite(u)?u:null};});
+}

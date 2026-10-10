@@ -61,6 +61,19 @@ export class MarketsJournal {
   isRejected(ticker:string,source:string,refId:string){return !!this.db.prepare(`SELECT 1 FROM matches WHERE ticker=? AND source=? AND ref_id=? AND status='rejected'`).get(ticker,source,refId);}
   putRef(ticker:string,source:string,time:number,prob:number){this.db.prepare('INSERT OR IGNORE INTO refs VALUES(?,?,?,?)').run(ticker,source,time,prob);}
   refSeries(ticker:string,source:string,since:number){return this.db.prepare('SELECT time,prob FROM refs WHERE ticker=? AND source=? AND time>=? ORDER BY time').all(ticker,source,since) as {time:number;prob:number}[];}
+  /**
+   * Settled markets you held that had an outside match: the last Kalshi mid and the last outside price at least 1 h before
+   * the expected result (or close), with the outcome. For the Record tab's accuracy comparison.
+   */
+  sourcePairs():{ticker:string;source:string;y:0|1;kalshi:number;ref:number}[]{
+    return this.db.prepare(`WITH m AS (SELECT ticker,result,COALESCE(expected_expiration,close_time)-3600000 AS cut FROM markets WHERE result IN ('yes','no') AND COALESCE(expected_expiration,close_time) IS NOT NULL),
+      k AS (SELECT m.ticker,(SELECT (s.yes_bid+s.yes_ask)/2 FROM snapshots s WHERE s.ticker=m.ticker AND s.time<=m.cut AND s.yes_bid IS NOT NULL AND s.yes_ask IS NOT NULL ORDER BY s.time DESC LIMIT 1) AS kalshi FROM m),
+      r AS (SELECT DISTINCT m.ticker,refs.source FROM m JOIN refs ON refs.ticker=m.ticker AND refs.time<=m.cut)
+      SELECT r.ticker,r.source,CASE m.result WHEN 'yes' THEN 1 ELSE 0 END AS y,k.kalshi,(SELECT prob FROM refs WHERE refs.ticker=r.ticker AND refs.source=r.source AND refs.time<=m.cut ORDER BY time DESC LIMIT 1) AS ref
+      FROM r JOIN m ON m.ticker=r.ticker JOIN k ON k.ticker=r.ticker WHERE k.kalshi IS NOT NULL ORDER BY r.ticker,r.source`).all() as {ticker:string;source:string;y:0|1;kalshi:number;ref:number}[];
+  }
+  /** Matched markets whose result is due but not stored yet (they may have left your positions when they settled). */
+  awaitingResult(now:number):string[]{return (this.db.prepare(`SELECT ticker FROM markets WHERE result IS NULL AND COALESCE(expected_expiration,close_time)<? AND ticker IN (SELECT DISTINCT ticker FROM refs) ORDER BY ticker`).all(now) as {ticker:string}[]).map(r=>r.ticker);}
   /** Start the public history over (after a change to how markets are chosen). */
   resetBackfill(){this.db.transaction(()=>{this.db.prepare('DELETE FROM backfill').run();this.db.prepare("DELETE FROM meta WHERE key IN ('backfillTo','backfillFinished','accuracy')").run();})();}
   unpriced(limit=1000000){return this.db.prepare('SELECT ticker,event_ts AS eventTs FROM backfill WHERE priced=0 ORDER BY event_ts LIMIT ?').all(limit) as {ticker:string;eventTs:number}[];}
