@@ -46,3 +46,8 @@ it('while a held game is in play, Polymarket is refreshed every minute instead o
   const j=new MarketsJournal(':memory:'),p=pm(),r=new References(j,{fetchJson:p.fetchJson,log:()=>{}}),live=Date.parse('2026-10-11T15:00:00Z');
   await r.refresh(held,live);await r.refresh(held,live+61e3);expect(p.calls.filter(u=>u.includes('/events?')).length).toBe(2);
   const q=pm(),r2=new References(j,{fetchJson:q.fetchJson,log:()=>{}});await r2.refresh(held,NOW);await r2.refresh(held,NOW+61e3);expect(q.calls.filter(u=>u.includes('/events?')).length).toBe(1);});
+it('the fresher trusted price wins: sportsbooks only beat Polymarket when they are within 5 minutes of it',async()=>{
+  const live=Date.parse('2026-10-11T15:00:00Z'),j=new MarketsJournal(':memory:');
+  const r=new References(j,{fetchJson:pm().fetchJson,fetchRes:async()=>res(200,oddsBody,'300'),oddsKey:'KEY',log:()=>{}});
+  await r.refresh(held,live);expect(r.reference(held[0].ticker,live)!.source).toBe('sportsbooks');
+  await r.refresh(held,live+20*60e3);expect(r.reference(held[0].ticker,live+20*60e3)!.source).toBe('polymarket');});

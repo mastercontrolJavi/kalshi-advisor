@@ -69,15 +69,17 @@ export class References {
       }catch(e){this.pm.error=(e as Error).message;this.o.log('polymarket-error',{ticker:h.ticker,message:this.pm.error});}
     }
   }
-  /** Best reference: trusted sportsbooks, then trusted Polymarket, then anything else (suggested or stale) for display only. */
+  /** Best reference: the freshest trusted one (sportsbooks win ties within 5 min), else a suggested or stale one for display only. */
   reference(ticker:string,now:number):Reference|null{
     const rows=[...(this.latest.get(ticker)?.values()??[])].map(r=>{
       // A match decided since the last refresh (✓/✗) takes effect at once.
       const row=this.journal.matchesFor(ticker).find(m=>m.source===r.source&&m.refId===r.refId);if(row?.status==='rejected')return null;
       const status=row?.status==='confirmed'?'confirmed':r.status;
       return {...r,status,stale:now-r.time>(r.source==='sportsbooks'?ODDS_STALE:PM_STALE)} as Reference;}).filter((r):r is Reference=>!!r);
-    const rank=(r:Reference)=>(trusted(r)?0:2)+(r.source==='sportsbooks'?0:1);
-    return rows.sort((a,b)=>rank(a)-rank(b))[0]??null;
+    // Trusted first; among trusted the newest wins, with sportsbooks (more books, no single venue) preferred within 5 min.
+    // In play a 30-min-old book price must not outrank a 1-min-old Polymarket one.
+    const fresh=(r:Reference)=>r.time+(r.source==='sportsbooks'?5*60000:0);
+    return rows.sort((a,b)=>Number(trusted(b))-Number(trusted(a))||fresh(b)-fresh(a))[0]??null;
   }
   health(now=Date.now()):SourceHealth[]{
     const left=this.journal.get<number|null>('oddsRemaining',null),resetAt=this.journal.get<number>('oddsResetAt',0);

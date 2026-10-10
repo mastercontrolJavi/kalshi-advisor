@@ -93,3 +93,4 @@
   - **Settled matched markets keep being fetched** (every 15 min) until their result is stored. Otherwise they leave the positions list and could never be scored.
   - **POST /match on the markets process** is same-origin only, with the body capped at 4 KB.
   - **Fetchers are host-locked:** each only calls its own host, redirects fail, and the Odds API key goes to the Odds API only.
+  - **Live keys verified 2026-10-10.** Odds API: 498 of 500 left after the first fetch. Sportsbook consensus covered all 7 open combo legs; EIA answered (WTI $96.24, Oct 6). Among trusted references the freshest wins, and sportsbooks are preferred only within 5 min of the newest. During the live Iowa game a book price fetched every 30 min would otherwise have outranked a 1-min-old Polymarket price.
