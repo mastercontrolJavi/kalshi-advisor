@@ -52,6 +52,6 @@ export async function runBackfill(client:Client,journal:MarketsJournal,o:{now:nu
     if(i%25===0)o.log(`  candles ${i+1}/${groups.length}`);
   }
   journal.set('accuracy',accuracyTables(journal.backfillRows()));
-  journal.set('backfillFinished',Date.now());o.log(`backfill done: ${listed} listed, ${priced} priced`);
+  journal.set('backfillFinished',Date.now());journal.set('backfillHeartbeat',0);o.log(`backfill done: ${listed} listed, ${priced} priced`);
   return {listed,priced};
 }
