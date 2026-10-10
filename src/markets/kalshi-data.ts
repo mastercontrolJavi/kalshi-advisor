@@ -56,7 +56,12 @@ export class MarketsData {
     catch(e){this.log('series-error',{series,message:(e as Error).message});this.series.set(series,{category:null,schedule:baseFees});}
   }
   /** Fetch matched markets whose result is due (even after they left your positions) until Kalshi reports it. */
-  async settleCheck(now:number){try{await this.fetch(this.journal.awaitingResult(now),now);}catch(e){this.log('settle-check-error',{message:(e as Error).message});}}
+  async settleCheck(now:number){
+    try{const due=this.journal.awaitingResult(now);await this.fetch(due,now);
+      // Scanner flags are scored only on a yes/no result; a voided or non-binary settlement leaves them unscored.
+      for(const t of due){const r=this.quotes.get(t)?.result;if(r)this.journal.settleFlags(t,r,now);}}
+    catch(e){this.log('settle-check-error',{message:(e as Error).message});}
+  }
   /** Held markets first, then the legs of any held combo (known only once the combo's own quote arrives). */
   async pollQuotes(now:number){
     try{

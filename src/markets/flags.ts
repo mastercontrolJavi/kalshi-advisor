@@ -10,7 +10,7 @@ export interface Flag {time:number;ticker:string;event:string;group:Group;type:F
 export interface LastFlag {time:number;edge:number}
 export type LastLookup=(ticker:string,type:FlagType)=>LastFlag|null;
 export interface ScanMarket {ticker:string;event:string;group:Group;yesAsk:number|null;noAsk:number|null}
-const H=3600000,REF_EDGE=.04,REF_COOLDOWN=6*H,REF_REGROW=.02,MOVE=.1,MOVE_DOLLARS=500,MOVE_COOLDOWN=6*H,REF_EXPLAINS=.05,BIAS_N=200,BIAS_COOLDOWN=24*H;
+const H=3600000,REF_EDGE=.04,REF_COOLDOWN=6*H,REF_REGROW=.02,MOVE=.1,MOVE_DOLLARS=500,MOVE_COOLDOWN=6*H,REF_EXPLAINS=.05,BIAS_N=200,BIAS_COOLDOWN=24*H,BIAS_DUE=48*H;
 const flag=(m:ScanMarket,now:number,type:FlagType,side:'yes'|'no',price:number,edge:number,context:Record<string,unknown>):Flag=>({time:now,ticker:m.ticker,event:m.event,group:m.group,type,side,price,fee:takerFee(price),edge,context});
 const askOf=(m:ScanMarket,side:'yes'|'no')=>side==='yes'?m.yesAsk:m.noAsk;
 /** Outside chance of the side beats that side's ask plus the taker fee by ≥ 4¢. Again only after 6 h, or if the edge grew 2¢. */
@@ -44,10 +44,11 @@ export function moveFlags(m:ScanMarket,mids:{t:number;mid:number;volume:number|n
 }
 /**
  * The market's price band in its category has a settled history (Record tab, 24 h before) of ≥ 200 markets whose YES return
- * per $1 has a 95% range entirely below zero (flag the NO side) or above zero (flag YES). Once a day per market.
+ * per $1 has a 95% range entirely below zero (flag the NO side) or above zero (flag YES). Once a day per market, and only when
+ * the result is due within 48 h: that history is prices 24 h before the result, not a 2028 nomination market.
  */
-export function biasFlags(m:ScanMarket&{mid:number},tables:AccuracyTables|null,now:number,last:LastLookup):Flag[]{
-  if(!tables||m.group==='combos')return [];
+export function biasFlags(m:ScanMarket&{mid:number;due:number|null},tables:AccuracyTables|null,now:number,last:LastLookup):Flag[]{
+  if(!tables||m.group==='combos'||m.due===null||m.due<=now||m.due-now>BIAS_DUE)return [];
   const bands=tables[m.group]?.p24??[],b=bands.find((x,i)=>m.mid>=x.lo&&(m.mid<x.hi||i===bands.length-1&&m.mid<=x.hi));
   if(!b||b.n<BIAS_N||b.ret===null||b.retLow===null||b.retHigh===null)return [];
   if([last(m.ticker,'bias-no'),last(m.ticker,'bias-yes')].some(p=>p&&now-p.time<BIAS_COOLDOWN))return [];

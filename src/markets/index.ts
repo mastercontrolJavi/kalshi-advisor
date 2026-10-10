@@ -12,6 +12,8 @@ import {buildPositions,summarize,snapshotRows,sparkKey,sparkCache,type MarketsSt
 import {isBitcoin} from './categories';
 import type {MarketMemory} from './holdsell';
 import {BackfillRefresher} from './refresh';
+import {Scanner,type ScanRow} from './scanner';
+import {flagStats,type FlagStats} from './scoring';
 import {References,type HeldRef} from './references';
 import {GAMMA} from './sources/polymarket';
 import {ODDS_HOST} from './sources/odds';
@@ -55,10 +57,17 @@ function build(){
     summary:summarize(cards,data.events,dayKey(now),t=>dayKey(t)),synced:{positions:data.positionsUpdated||null,quotes:data.quotesUpdated||null},sources:references.health(now)};
 }
 // The Record tab is historical: built on request, at most once a minute.
-let record:{at:number;body:RecordState&{refreshing:boolean;sources:SourceComparison[]}}|null=null;
+let record:{at:number;body:RecordState&{refreshing:boolean;sources:SourceComparison[];flags:FlagStats[]}}|null=null;
+// Scanner: liquid open markets every 5 min (first sweep 2 min after start), flags paper-scored as they settle.
+const scanner=new Scanner(client,journal,references,data,log);
+let scan:{at:number;body:{rows:ScanRow[];updated:number|null;error:string|null;count:number;stats:FlagStats[]}}|null=null;
+function scanState(now=Date.now()){
+  if(!scan||now-scan.at>=60000||scan.body.updated!==(scanner.updated||null)){const stats=flagStats(journal.flagRows());scan={at:now,body:{rows:scanner.rows(now,stats),updated:scanner.updated||null,error:scanner.error,count:scanner.count,stats}};}
+  return scan.body;
+}
 function recordState(now=Date.now()){
   if(!record||now-record.at>=60000)record={at:now,body:{...buildRecord({accuracy:journal.get('accuracy',null),events:data.events,fills:journal.raw().fills.filter((f:any)=>!isBitcoin(String(f.ticker??f.market_ticker))),
-    groupFor:t=>data.groupFor(t),stats:journal.backfillStats(),finished:journal.get<number|null>('backfillFinished',null)}),refreshing:refresher.active(now),sources:compareSources(journal.sourcePairs())}};
+    groupFor:t=>data.groupFor(t),stats:journal.backfillStats(),finished:journal.get<number|null>('backfillFinished',null)}),refreshing:refresher.active(now),sources:compareSources(journal.sourcePairs()),flags:flagStats(journal.flagRows())}};
   return record.body;
 }
 const safe=(name:string,f:()=>unknown)=>{try{const r=f();if(r instanceof Promise)r.catch(e=>log(name,{message:(e as Error).message}));}catch(e){log(name,{message:(e as Error).message});}};
@@ -67,6 +76,7 @@ const server=createServer((req,res)=>{
   if(!authorized(req.headers.authorization,req)){res.writeHead(401,{'WWW-Authenticate':'Basic realm="Kalshi Advisor"'});res.end('Authentication required');return;}
   const path=new URL(req.url??'/','http://127.0.0.1').pathname;
   if(req.method==='GET'&&path==='/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;}
+  if(req.method==='GET'&&path==='/scan'){try{const body=JSON.stringify(scanState());res.setHeader('Content-Type','application/json');res.end(body);}catch(e){log('scan-error',{message:(e as Error).message});res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}return;}
   if(req.method==='GET'&&path==='/record'){try{const body=JSON.stringify(recordState());res.setHeader('Content-Type','application/json');res.end(body);}catch(e){log('record-error',{message:(e as Error).message});res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}return;}
   // You confirm or reject a suggested outside match from a position card. Same-origin only, like the engine's settings.
   if(req.method==='POST'&&path==='/match'){
@@ -97,6 +107,7 @@ setInterval(()=>safe('quotes-error',()=>data.pollQuotes(Date.now())),5000);
 setInterval(()=>safe('references-error',refreshReferences),60000);
 // Matched markets keep being checked after they leave your positions, so their results can be scored against the outside price.
 setInterval(()=>safe('settle-check-error',()=>data.settleCheck(Date.now())),15*60000);
+setTimeout(()=>{safe('scanner-error',()=>scanner.sweep(Date.now()));setInterval(()=>safe('scanner-error',()=>scanner.sweep(Date.now())),5*60000);},2*60000);
 setInterval(()=>safe('snapshot-error',()=>journal.snapshot(snapshotRows(data.quotes,state.positions,Date.now()))),30000);
 setInterval(()=>safe('memory-save-error',()=>journal.set('memory',Object.fromEntries(memory))),30000);
 setInterval(()=>safe('config-error',loadConfig),60000);

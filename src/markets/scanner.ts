@@ -57,13 +57,13 @@ export class Scanner {
         // An outside price that moved the same way explains a Kalshi move, so the move is not flagged.
         const hourAgo=ref?this.journal.refSeries(e.q.ticker,ref.source,now-65*60000)[0]:undefined;
         flags.push(...moveFlags(m,this.journal.recentMids(e.q.ticker,now-70*60000),ref&&hourAgo?ref.prob-hourAgo.prob:null,now,last));
-        if(mid!==null)flags.push(...biasFlags({...m,mid},tables,now,last));
+        if(mid!==null)flags.push(...biasFlags({...m,mid,due:e.q.expectedExpiration??e.q.closeTime},tables,now,last));
       }
       this.journal.putFlags(flags);this.list=kept;this.updated=now;this.error=null;
       if(flags.length)this.log('scanner-flags',{count:flags.length,types:[...new Set(flags.map(f=>f.type))]});
     }catch(e){this.error=(e as Error).message;this.log('scanner-error',{message:this.error});}
   }
-  /** Flagged markets (flags from the last 6 h), proven flag types first, then by the size of the reason. */
+  /** Flagged markets (flags from the last 6 h): proven first, then outside-price gaps, 1-hour moves, price bands; by size within. */
   rows(now:number,stats:FlagStats[]):ScanRow[]{
     const recent=new Map<string,FlagRow[]>();for(const f of this.journal.flagsSince(now-RECENT))(recent.get(f.ticker)??recent.set(f.ticker,[]).get(f.ticker)!).push(f);
     const out:ScanRow[]=[];
@@ -71,7 +71,8 @@ export class Scanner {
       const fs=recent.get(e.q.ticker);if(!fs?.length)continue;
       const latest=new Map<string,FlagRow>();for(const f of fs)if(!latest.has(f.type))latest.set(f.type,f);
       const flags=[...latest.values()].map(f=>({type:f.type as FlagType,side:f.side,edge:f.edge,price:f.price,time:f.time,evidence:evidence(stats,f.type,e.group)}));
-      const proven=flags.some(f=>f.evidence?.proven),size=Math.max(...flags.map(f=>f.type.startsWith('bias')?f.edge*10:f.edge*100));
+      // Tiers, so different units never compete: proven, then an outside-price gap, then a 1-hour move, then a price band.
+      const tier=(t:string)=>t.startsWith('ref-gap')?300:t.startsWith('move')?200:100,proven=flags.some(f=>f.evidence?.proven),size=Math.max(...flags.map(f=>tier(f.type)+Math.min(99,f.edge*100)));
       const ref=this.refs.reference(e.q.ticker,now),mid=sideProb(e.q,'yes');
       out.push({ticker:e.q.ticker,event:e.q.eventTicker,series:e.q.seriesTicker,title:e.q.title,yesLabel:e.q.yesLabel,group:e.group,yesBid:e.q.yesBid,yesAsk:e.q.yesAsk,
         spread:e.q.yesBid!==null&&e.q.yesAsk!==null?e.q.yesAsk-e.q.yesBid:null,volume24h:e.q.volume24h,dollarVolume:e.dollars,closeTime:e.q.expectedExpiration??e.q.closeTime,

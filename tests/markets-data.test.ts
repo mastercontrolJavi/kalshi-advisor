@@ -28,3 +28,9 @@ it('a matched market that has left your positions is still fetched until its res
   const d=new MarketsData(c,j,()=>{});j.upsertMarket(parseMarket(market('KXNFLGAME-OLD-KC',{expected_expiration_time:'2026-10-01T00:00:00Z'}),1),'Sports','sports');j.putRef('KXNFLGAME-OLD-KC','polymarket',1,.5);
   const now=Date.parse('2026-10-02T00:00:00Z');expect(j.awaitingResult(now)).toEqual(['KXNFLGAME-OLD-KC']);
   await d.settleCheck(now);expect(j.awaitingResult(now)).toEqual(['KXNFLGAME-OLD-KC']);settled=true;await d.settleCheck(now);expect(j.awaitingResult(now)).toEqual([]);});
+it('the settlement check also scores scanner flags once Kalshi reports the result',async()=>{
+  const j=new MarketsJournal(':memory:'),c=fakeClient() as any,get=c.get;
+  c.get=async(p:string)=>p.startsWith('/markets?tickers=')&&p.includes('KXNFLGAME-F-KC')?{markets:[market('KXNFLGAME-F-KC',{status:'finalized',result:'yes',close_time:'2026-10-01T00:00:00Z'})]}:get(p);
+  j.upsertMarket(parseMarket(market('KXNFLGAME-F-KC',{close_time:'2026-10-01T00:00:00Z'}),1),'Sports','sports');
+  j.putFlags([{time:1,ticker:'KXNFLGAME-F-KC',event:'KXNFLGAME-F',group:'sports',type:'ref-gap-yes',side:'yes',price:.6,fee:.02,edge:.05,context:{}}]);
+  await new MarketsData(c,j,()=>{}).settleCheck(Date.parse('2026-10-02T00:00:00Z'));expect(j.flagRows()[0].pnl).toBeCloseTo(.38);expect(j.openFlagTickers()).toEqual([]);});

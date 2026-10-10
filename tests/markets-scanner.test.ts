@@ -34,3 +34,8 @@ it('rows list flagged markets, a proven flag type first, with a Kalshi link',asy
   const rows=s.rows(NOW,[proven]);expect(rows.map(r=>r.ticker)).toEqual(['KXNFLGAME-26OCT11D-NO','KXNFLGAME-26OCT11A-KC']);
   expect(rows[0].flags[0].evidence!.proven).toBe(true);expect(rows[1].url).toBe('https://kalshi.com/markets/kxnflgame/x/kxnflgame-26oct11a');
   expect(rows[1].ref!.gap).toBeCloseTo(.75-.61);expect(s.rows(NOW,[]).map(r=>r.ticker)).toEqual(['KXNFLGAME-26OCT11A-KC','KXNFLGAME-26OCT11D-NO']);});
+it('an outside-price gap ranks above any price-band flag; a 1-hour move sits between them',async()=>{
+  const {s,j}=setup();await s.sweep(NOW);
+  j.putFlags([{time:NOW,ticker:'KXNFLGAME-26OCT11D-NO',event:'KXNFLGAME-26OCT11D',group:'sports',type:'bias-no',side:'no',price:.97,fee:.002,edge:.9,context:{}},
+    {time:NOW,ticker:'KXNFLGAME-26OCT11C-NE',event:'KXNFLGAME-26OCT11C',group:'sports',type:'move-follow',side:'yes',price:.32,fee:.015,edge:.3,context:{}}]);
+  expect(s.rows(NOW,[]).map(r=>r.ticker)).toEqual(['KXNFLGAME-26OCT11A-KC','KXNFLGAME-26OCT11C-NE','KXNFLGAME-26OCT11D-NO']);});
