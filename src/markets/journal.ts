@@ -18,7 +18,9 @@ export class MarketsJournal {
       CREATE TABLE IF NOT EXISTS account_raw(id TEXT PRIMARY KEY,type TEXT NOT NULL,time INTEGER NOT NULL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,time INTEGER NOT NULL,event TEXT NOT NULL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS backfill(ticker TEXT PRIMARY KEY,event TEXT NOT NULL,series TEXT NOT NULL,grp TEXT NOT NULL,title TEXT NOT NULL,event_ts INTEGER NOT NULL,settle_ts INTEGER NOT NULL,result TEXT NOT NULL,volume REAL NOT NULL,p24 REAL,a24 REAL,p1 REAL,a1 REAL,vwap REAL,priced INTEGER NOT NULL DEFAULT 0);
-      CREATE INDEX IF NOT EXISTS backfill_priced ON backfill(priced,event_ts);`);
+      CREATE INDEX IF NOT EXISTS backfill_priced ON backfill(priced,event_ts);
+      CREATE TABLE IF NOT EXISTS matches(ticker TEXT NOT NULL,source TEXT NOT NULL,ref_id TEXT NOT NULL,method TEXT NOT NULL,status TEXT NOT NULL,score REAL,title TEXT,url TEXT,decided_at INTEGER,PRIMARY KEY(ticker,source,ref_id));
+      CREATE TABLE IF NOT EXISTS refs(ticker TEXT NOT NULL,source TEXT NOT NULL,time INTEGER NOT NULL,prob REAL NOT NULL,PRIMARY KEY(ticker,source,time));`);
   }
   log(event:string,context:unknown){this.db.prepare('INSERT INTO events(time,event,context) VALUES(?,?,?)').run(Date.now(),event,JSON.stringify(context));}
   get<T>(key:string,fallback:T):T{const row=this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as {value:string}|undefined;return row?JSON.parse(row.value):fallback;}
@@ -49,6 +51,16 @@ export class MarketsJournal {
     const put=this.db.prepare('INSERT OR IGNORE INTO backfill(ticker,event,series,grp,title,event_ts,settle_ts,result,volume) VALUES(?,?,?,?,?,?,?,?,?)');
     this.db.transaction(()=>{for(const r of rows)put.run(r.ticker,r.event,r.series,r.grp,r.title,r.eventTs,r.settleTs,r.result,r.volume);})();
   }
+  /** Outside-market matches: auto (sports pairing) or suggested (title); the user confirms or rejects. A decision is never overwritten. */
+  setMatch(m:{ticker:string;source:string;refId:string;method:'auto'|'suggested';status:'auto'|'suggested';score:number|null;title:string;url:string}){
+    this.db.prepare(`INSERT INTO matches(ticker,source,ref_id,method,status,score,title,url) VALUES(?,?,?,?,?,?,?,?)
+      ON CONFLICT(ticker,source,ref_id) DO UPDATE SET title=excluded.title,url=excluded.url,score=excluded.score WHERE status NOT IN ('confirmed','rejected')`).run(m.ticker,m.source,m.refId,m.method,m.status,m.score,m.title,m.url);
+  }
+  matchesFor(ticker:string){return this.db.prepare('SELECT ticker,source,ref_id AS refId,method,status,score,title,url,decided_at AS decidedAt FROM matches WHERE ticker=?').all(ticker) as {ticker:string;source:string;refId:string;method:string;status:string;score:number|null;title:string;url:string;decidedAt:number|null}[];}
+  decideMatch(ticker:string,source:string,refId:string,status:'confirmed'|'rejected',now:number){return this.db.prepare('UPDATE matches SET status=?,decided_at=? WHERE ticker=? AND source=? AND ref_id=?').run(status,now,ticker,source,refId).changes>0;}
+  isRejected(ticker:string,source:string,refId:string){return !!this.db.prepare(`SELECT 1 FROM matches WHERE ticker=? AND source=? AND ref_id=? AND status='rejected'`).get(ticker,source,refId);}
+  putRef(ticker:string,source:string,time:number,prob:number){this.db.prepare('INSERT OR IGNORE INTO refs VALUES(?,?,?,?)').run(ticker,source,time,prob);}
+  refSeries(ticker:string,source:string,since:number){return this.db.prepare('SELECT time,prob FROM refs WHERE ticker=? AND source=? AND time>=? ORDER BY time').all(ticker,source,since) as {time:number;prob:number}[];}
   /** Start the public history over (after a change to how markets are chosen). */
   resetBackfill(){this.db.transaction(()=>{this.db.prepare('DELETE FROM backfill').run();this.db.prepare("DELETE FROM meta WHERE key IN ('backfillTo','backfillFinished','accuracy')").run();})();}
   unpriced(limit=1000000){return this.db.prepare('SELECT ticker,event_ts AS eventTs FROM backfill WHERE priced=0 ORDER BY event_ts LIMIT ?').all(limit) as {ticker:string;eventTs:number}[];}
