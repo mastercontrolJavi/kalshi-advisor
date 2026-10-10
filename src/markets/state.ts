@@ -7,14 +7,16 @@ import {comboView,type ComboView} from './combos';
 import {positionView,type MarketMemory,type PositionView} from './holdsell';
 import {groupOf,isBitcoin,seriesOf} from './categories';
 import {sideLabel} from './quotes';
+import type {Reference} from './references';
 export interface PositionCard extends PositionView {title:string;marketTitle:string;group:Group;closeTime:number|null;expectedExpiration:number|null;combo:ComboView|null;spark:{t:number;mid:number}[];seriesTicker:string}
 export interface MarketsState {time:number;status:'live'|'no-credentials'|'starting';error:string|null;positions:PositionCard[];bitcoin:number;summary:{count:number;atRisk:number;sellAll:number|null;holdAll:number|null;realizedToday:number|null};synced:{positions:number|null;quotes:number|null}}
 /** One card per open non-Bitcoin position, most urgent first; returns the per-position memory for the next pass. */
-export function buildPositions(a:{positions:any[];quotes:Map<string,Quote>;series:Map<string,{category:string|null;schedule:FeeSchedule}>;open:Map<string,OpenCost>;cfg:ExitConfig;memory:Map<string,MarketMemory>;now:number;spark:(ticker:string)=>{t:number;mid:number}[]}){
+export function buildPositions(a:{positions:any[];quotes:Map<string,Quote>;series:Map<string,{category:string|null;schedule:FeeSchedule}>;open:Map<string,OpenCost>;cfg:ExitConfig;memory:Map<string,MarketMemory>;now:number;spark:(ticker:string)=>{t:number;mid:number}[];reference?:(ticker:string)=>Reference|null}){
+  const refFor=a.reference??(()=>null);
   const cards:PositionCard[]=[],memory=new Map<string,MarketMemory>();
   for(const p of a.positions){const ticker=String(p.ticker);if(isBitcoin(ticker))continue;
-    const q=a.quotes.get(ticker)??null,info=a.series.get(seriesOf(ticker)),combo=q?.legs?comboView(q.legs,a.quotes):null;
-    const r=positionView({position:p,quote:q,combo,open:a.open.get(ticker),schedule:info?.schedule??baseFees,cfg:a.cfg,memory:a.memory.get(ticker),now:a.now});if(!r)continue;
+    const q=a.quotes.get(ticker)??null,info=a.series.get(seriesOf(ticker)),combo=q?.legs?comboView(q.legs,a.quotes,refFor):null;
+    const r=positionView({position:p,quote:q,combo,open:a.open.get(ticker),schedule:info?.schedule??baseFees,cfg:a.cfg,memory:a.memory.get(ticker),now:a.now,reference:combo?null:refFor(ticker)});if(!r)continue;
     memory.set(ticker,r.memory);
     cards.push({...r.view,title:combo?`${combo.legs.length}-leg combo`:q?sideLabel(q,r.view.side):ticker,marketTitle:combo?combo.legs.map(l=>l.label).join(' · '):q?.title??'',
       group:groupOf(info?.category,!!q?.legs),closeTime:q?.closeTime??null,expectedExpiration:q?.expectedExpiration??null,combo,spark:a.spark(ticker),seriesTicker:seriesOf(ticker)});}

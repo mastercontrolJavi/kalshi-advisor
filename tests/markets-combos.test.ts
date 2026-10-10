@@ -23,3 +23,8 @@ it('legs on the same game are correlated (winner + total of one matchup)',()=>{
   expect(gameKey('KXNCAAFTOTAL-26OCT10UGAALA')).toBe(gameKey('KXNCAAFGAME-26OCT10UGAALA'));
   const two:Leg[]=[{marketTicker:'KXNCAAFGAME-26OCT10UGAALA-UGA',eventTicker:'KXNCAAFGAME-26OCT10UGAALA',side:'yes'},legs[7]];
   expect(comboView(two,new Map([[two[0].marketTicker,q(two[0].marketTicker,'.6','.62')],[legs[7].marketTicker,q(legs[7].marketTicker,'.47','.48')]])).correlated).toBe(true);});
+it('outside odds: each leg uses its trusted reference where there is one, Kalshi otherwise, and says how many',()=>{
+  const ref=(prob:number,status:'auto'|'suggested'='auto')=>({source:'polymarket' as const,prob,time:1,stale:false,status,title:'',url:'',refId:'r'});
+  const refs:Record<string,any>={[legs[1].marketTicker]:ref(.5),[legs[2].marketTicker]:ref(.6),[legs[3].marketTicker]:ref(.9,'suggested')};
+  const c=comboView(legs.slice(0,4),quotes(),t=>refs[t]??null);expect(c.refLegs).toBe(2);expect(c.refValue!).toBeCloseTo(1*.5*.6*.455,6);expect(c.legs[1].ref).toBe(.5);expect(c.legs[3].ref).toBeNull();
+  expect(comboView(legs.slice(0,4),quotes()).refLegs).toBe(0);});

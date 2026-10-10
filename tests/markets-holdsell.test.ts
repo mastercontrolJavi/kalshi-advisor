@@ -23,12 +23,12 @@ it('a quote older than 30 s is stale and says so',()=>{
 it('no price at all: NO PRICE',()=>{
   const {view}=positionView(input({quote:quote('0','0')}))!;expect(view.verdict).toBe('NO PRICE');});
 it('SELL BEATS HOLD only when the bid nets more than the hold value by the margin',()=>{
-  const combo:ComboView={legs:[],value:.002,won:7,lost:0,pending:1,unknown:0,dead:false,oneLeft:true,correlated:false};
+  const combo:ComboView={legs:[],value:.002,won:7,lost:0,pending:1,unknown:0,dead:false,oneLeft:true,correlated:false,refValue:null,refLegs:0};
   const cq=quote('.03','.05');const {view}=positionView(input({quote:cq,combo,open:{ticker:'KXNFLGAME-X-KC',side:'yes',contracts:10,avgCost:.004}}))!;
   expect(view.probSource).toBe('legs');expect(view.winProb).toBeCloseTo(.002);expect(view.verdict).toBe('SELL BEATS HOLD');
   expect(positionView(input({quote:quote('.0021','.05'),combo,open:{ticker:'KXNFLGAME-X-KC',side:'yes',contracts:10,avgCost:.004}}))!.view.verdict).toBe('HOLD');});
 it('combo notices: dead stops everything; a newly won leg is announced; first sight is a silent baseline',()=>{
-  const base:ComboView={legs:[{ticker:'L1',side:'yes',label:'Iowa',status:'won',p:1,bid:null,ask:null,game:'g1'},{ticker:'L2',side:'yes',label:'USC',status:'pending',p:.5,bid:.49,ask:.51,game:'g2'},{ticker:'L3',side:'yes',label:'Ohio',status:'pending',p:.5,bid:.49,ask:.51,game:'g3'},{ticker:'L4',side:'yes',label:'Utah',status:'pending',p:.5,bid:.49,ask:.51,game:'g4'}],value:.125,won:1,lost:0,pending:3,unknown:0,dead:false,oneLeft:false,correlated:false};
+  const base:ComboView={legs:[{ticker:'L1',side:'yes',label:'Iowa',status:'won',p:1,bid:null,ask:null,game:'g1',ref:null,refSource:null},{ticker:'L2',side:'yes',label:'USC',status:'pending',p:.5,bid:.49,ask:.51,game:'g2',ref:null,refSource:null},{ticker:'L3',side:'yes',label:'Ohio',status:'pending',p:.5,bid:.49,ask:.51,game:'g3',ref:null,refSource:null},{ticker:'L4',side:'yes',label:'Utah',status:'pending',p:.5,bid:.49,ask:.51,game:'g4',ref:null,refSource:null}],value:.125,won:1,lost:0,pending:3,unknown:0,dead:false,oneLeft:false,correlated:false,refValue:null,refLegs:0};
   const first=positionView(input({combo:base,quote:quote('.001','.9')}))!;expect(first.view.notice).toBeNull();expect(first.memory.legsWon).toBe(1);
   const won={...base,legs:[base.legs[0],{...base.legs[1],status:'won' as const,p:1},base.legs[2],base.legs[3]],won:2,pending:2,value:.25};
   const second=positionView(input({combo:won,quote:quote('.001','.9'),memory:first.memory,now:2000}))!;expect(second.view.notice?.kind).toBe('leg-won');
@@ -41,3 +41,13 @@ it('single-market notices come from holdNotice with a neutral closing note',()=>
   const {view}=positionView(input({quote:quote('.20','.22'),open:{ticker:'KXNFLGAME-X-KC',side:'yes',contracts:10,avgCost:.6}}))!;
   expect(view.notice?.kind).toBe('loss');expect(view.notice?.text).not.toContain('backtest');expect(view.notice?.text).toContain('Your call.');});
 it('a flat position is nothing',()=>{expect(positionView(input({position:{ticker:'KXNFLGAME-X-KC',position_fp:'0.00'}}))).toBeNull();});
+import type {Reference} from '../src/markets/references';
+const refOf=(prob:number,o:Partial<Reference>={}):Reference=>({source:'polymarket',prob,time:1000,stale:false,status:'auto',title:'nfl-x',url:'u',refId:'r',...o});
+it('a trusted outside reference becomes the win chance; the verdict compares the bid with it',()=>{
+  const {view}=positionView(input({reference:refOf(.55)}))!;expect(view.winProb).toBeCloseTo(.55);expect(view.marketProb).toBeCloseTo(.67);expect(view.probSource).toBe('reference');
+  expect(view.holdValue).toBeCloseTo(5.5);expect(view.verdict).toBe('SELL BEATS HOLD');expect(view.reason).toContain('Polymarket 55.0%');expect(view.reason).toContain('Kalshi 67.0%');});
+it('a suggested or stale reference changes nothing, and the reason says why',()=>{
+  const s=positionView(input({reference:refOf(.3,{status:'suggested'})}))!.view;expect(s.winProb).toBeCloseTo(.67);expect(s.probSource).toBe('market');expect(s.reason).toContain('not confirmed');
+  const st=positionView(input({reference:refOf(.3,{stale:true})}))!.view;expect(st.winProb).toBeCloseTo(.67);expect(st.reason).toContain('stale');});
+it('a NO position uses one minus the reference',()=>{
+  expect(positionView(input({position:{ticker:'KXNFLGAME-X-KC',position_fp:'-5',market_exposure_dollars:'1.70'},open:undefined,reference:refOf(.55,{source:'sportsbooks'})}))!.view.winProb).toBeCloseTo(.45);});

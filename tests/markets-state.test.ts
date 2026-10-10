@@ -32,3 +32,11 @@ it('the price line is read from SQLite at most once per 30 s per market, not on 
   const calls:string[]=[],read=sparkCache((t:string)=>{calls.push(t);return [{t:calls.length,mid:.5}];});
   read('A',0);read('A',1000);read('A',29999);expect(calls).toEqual(['A']);read('B',1000);expect(calls).toEqual(['A','B']);
   expect(read('A',30000)[0].t).toBe(3);expect(calls).toEqual(['A','B','A']);});
+it('references reach single markets and combo legs',()=>{
+  const ref={source:'polymarket' as const,prob:.5,time:now,stale:false,status:'auto' as const,title:'g',url:'u',refId:'r'};
+  const {cards}=buildPositions({positions,quotes,series,open:new Map(),cfg:defaults,memory:new Map(),now,spark:()=>[],reference:t=>t==='KXNFLGAME-X-KC'?ref:null});
+  expect(cards[0].probSource).toBe('reference');expect(cards[0].holdValue).toBeCloseTo(2);
+  const combo=parseMarket({ticker:'KXMVECROSSCATEGORY-S-A',event_ticker:'KXMVECROSSCATEGORY-S',status:'active',result:'',yes_bid_dollars:'.001',yes_ask_dollars:'.9',mve_selected_legs:[{event_ticker:'KXNFLGAME-X',market_ticker:'KXNFLGAME-X-KC',side:'yes'}]},now);
+  const q=new Map(quotes);q.set(combo.ticker,combo);
+  const c=buildPositions({positions:[{ticker:combo.ticker,position_fp:'100',market_exposure_dollars:'.5'}],quotes:q,series,open:new Map(),cfg:defaults,memory:new Map(),now,spark:()=>[],reference:t=>t==='KXNFLGAME-X-KC'?ref:null}).cards[0];
+  expect(c.combo!.refLegs).toBe(1);expect(c.winProb).toBeCloseTo(.5);});
