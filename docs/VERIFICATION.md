@@ -80,3 +80,15 @@ No actual taker signal or maker paper fill was observed without credentials. Mak
   - 375 px with no horizontal scroll; no console errors.
   - The Positions tab is unchanged apart from the tab bar.
 - 198 tests pass, tsc is clean, and next build is green.
+
+## Markets stage 3 — 2026-10-10 (outside references; side instance on ports 3010/3012, live, read-only)
+
+- Polymarket matched all 7 open legs of the user's 8-leg combo automatically: the college-football moneylines plus Georgia–Alabama O/U 51.5. Example prices (Kalshi vs Polymarket): Iowa 41.5% / 41.5%, Arizona 60.5% / 61.5%, USC 47.5% / 46.5%, Over 51.5 48.5% / 48.5%.
+- Combo value at outside odds 0.644¢ vs 0.635¢ at Kalshi's.
+- Minnesota–Purdue first failed to match: Kalshi expected 20:00Z vs Polymarket start 00:00Z. The window was widened to +6 h, with a doubleheader test kept.
+- During the in-play Iowa game Kalshi read 47% against a 5-minute-old Polymarket 42%. Polymarket now refreshes every minute while a held game is on.
+- Sportsbooks: no ODDS_API_KEY is set. The source strip says so, and no call is made. The parser, budget, 401 handling and de-vig are covered by fixtures.
+- POST /match returns 403 with no origin or a foreign origin, 400 on a bad body, and ok:false for an unknown match. The ✓/✗ flow is unit-tested; it was not exercised live because no non-sports position is open.
+- The Record "Who was more accurate" card shows its empty state (0 of 10 settled matched markets yet).
+- 375 px: no horizontal scroll, Outside column present, no console errors.
+- 226 tests pass, tsc is clean, next build is green.

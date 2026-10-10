@@ -83,3 +83,13 @@
   - The accuracy tables take ~2.6 s per 44k markets with the bootstrap, so the backfill child computes them once per run and stores them in meta. The markets process only reads them.
   - The daily refresh is skipped while a backfill heartbeat is under 10 minutes old, so a manual run and the scheduled one never overlap.
   - Kpi and Empty moved from Analytics into panels.tsx (shared). The Markets tabs (Positions · Record) and category chips are one MarketsNav component; the chosen category is shared across tabs.
+
+48. Markets, stage 3 (outside references):
+  - **Polymarket first:** it is free, has team-sports games (moneyline plus totals at many lines) as well as politics and events, and covered all 7 open legs of the user's combo on 2026-10-09. The Odds API is optional (the key was not set) and kept to a monthly budget. Its per-league last fetch persists, so restarts cost nothing.
+  - **Only moneyline and full-game totals are matched,** totals at an exactly equal line. Spreads and props wait.
+  - **Matching is loose on names but strict on pairing.** Kalshi and Polymarket name teams differently ("Chicago WS" vs "Chicago White Sox", "PHI Eagles" vs "Eagles", codes JAC vs jax). Any shared code, word or initials counts, but both teams must pair with exactly one game in the window. The window is [end − 8 h, end + 6 h]: Kalshi's expected time is usually about the end of the game but can be a placeholder (Minnesota–Purdue: 20:00Z vs a 00:00Z start).
+  - **Only auto (sports) or user-confirmed references change values,** and only when fresh and tradable. A suggestion never does. A rejection is stored by Polymarket market id and never re-suggested.
+  - **Polymarket refreshes every minute during held games.** A live leg showed Kalshi 47% vs a 5-minute-old 42%.
+  - **Settled matched markets keep being fetched** (every 15 min) until their result is stored. Otherwise they leave the positions list and could never be scored.
+  - **POST /match on the markets process** is same-origin only, with the body capped at 4 KB.
+  - **Fetchers are host-locked:** each only calls its own host, redirects fail, and the Odds API key goes to the Odds API only.

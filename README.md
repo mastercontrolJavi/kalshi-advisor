@@ -76,6 +76,21 @@ Files: `src/engine/feeds/` owns reconnecting sockets, quote median, signing, RES
   - **How accurate Kalshi's prices were.** Settled public markets grouped by their YES price 24 h or 1 h before the result was due (Kalshi's `occurrence_datetime`, else settlement), or averaged over those 24 h weighted by volume. For team sports the occurrence time is about the end of the game, so 24 h is the pre-game line and 1 h is usually in play. Each price band shows how often it won (Wilson 95% range) and what buying YES at the ask returned per $1 after the taker fee (bootstrap 95% range over whole events, so both sides of a game count once). A reliability chart sits above the table.
   - **Coverage.** The top 20 series by lifetime volume in each of sports, politics & economics, and commodities & crypto, plus every series you have traded. Each series is sampled evenly by ticker hash (at most 4,000 per series per run) without regard to volume or result. A market counts at a horizon only if it had a two-sided book then. Combos never trade publicly, so they appear only in your record.
   - **Data.** `npm run markets-backfill` (public data, ≤ 5 requests/s, resumable, into `data/markets.db`) covers everything since Kalshi's archive cutoff. The markets process re-runs it daily at low priority, 10 minutes after start at the earliest, never beside a run already going (heartbeat). The accuracy tables are computed by that run, not by the markets process.
+- **Markets: outside prices** (stage 3). Every held non-Bitcoin market and every combo leg gets an outside reference when one can be matched:
+  - **Polymarket** (public, no key) for team-sports moneylines, full-game totals at exactly the same line, and politics and other events.
+  - **Sportsbook consensus** from The Odds API when `ODDS_API_KEY` is in `.env.local`. It covers moneyline and totals, the median across books with each book's margin removed. To stay inside the free ~500 requests a month it only fetches leagues you hold (every 30 min when a held game is near, else every 6 h) and stops below 50 requests left.
+
+  **Sports matching is automatic:** league, a game time within [Kalshi's expected time − 8 h, + 6 h], and both teams pairing uniquely by code, name word or initials. Anything ambiguous, including doubleheaders, is left unmatched.
+
+  **Other markets get a Polymarket title suggestion.** It is shown in grey with ✓ Same market / ✗ Not it. A rejection is permanent.
+
+  **Trusted references** are auto-matched sports or ones you confirmed, fresh (Polymarket ≤ 15 min, sportsbooks ≤ 2 h), with a book ≤ 10¢ wide. They become the win chance for hold value and the hold-or-sell verdict, and the card still shows Kalshi's next to them. Combos are valued leg by leg at outside odds where available ("Outside" column).
+
+  **Refresh:** Polymarket every 5 min, every minute while a held game is in play.
+
+  **Scoring:** reference prices are snapshotted every 5 min. Once matched markets settle, Record compares Kalshi's and the outside Brier scores (shown from 10 markets).
+
+  A source strip on Positions shows each source's state.
 - **Analytics page** (`/analytics`): real Kalshi P&L per market — totals, today / 7 / 30 days, win rate, money won vs lost, profit factor, average per market, drawdown, fees, streaks, cumulative curve, daily bars, rolling 10-market trends, breakdowns by side / entry price / time of day / advisor idea vs own call / held vs sold, full trade history and plain-English takeaways. Balance snapshots accumulate for an equity curve.
 - **Paper-only signals**: with *Show signals below 1 contract* on (default), BUY fires whenever the market checks pass even if your risk budget rounds to 0 contracts. It is labelled *paper only*, the Size check turns blue (informational) instead of amber, and the signal is still logged as a 1-contract paper trade so the taker evidence on the Calibration page accumulates regardless of account size.
 - **Timing** shows a clock (*waiting*, with a countdown) before the entry window and during the final minute: that is the schedule, not a fault, and it is not counted as a failing check.
