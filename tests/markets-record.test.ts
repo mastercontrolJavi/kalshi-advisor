@@ -40,3 +40,7 @@ it('pairs each settled matched market with the last Kalshi and outside prices at
   j.snapshot([{ticker:'K-A',time:end-3*H,yesBid:.5,yesAsk:.52,last:null,volume24h:null,held:true},{ticker:'K-A',time:end-.5*H,yesBid:.9,yesAsk:.92,last:null,volume24h:null,held:true}]);
   j.putRef('K-A','polymarket',end-2*H,.55);j.putRef('K-A','polymarket',end-.2*H,.95);
   expect(j.sourcePairs()).toEqual([{ticker:'K-A',source:'polymarket',y:1,kalshi:.51,ref:.55}]);j.db.close();});
+it('accuracy also scores the NO side: buying NO at 1 − YES bid, after the fee',()=>{
+  const rows=Array.from({length:4},(_,i)=>({...row('N'+i,'G'+i,.03,'no'),a1:.04}));
+  const b=accuracy(rows,'p1').find(x=>x.lo===0)!;expect(b.noRet!).toBeGreaterThan(0);expect(b.noRet!).toBeLessThan(.03);expect(b.ret!).toBeLessThan(-.9);
+  const upset=accuracy([...rows,{...row('N9','G9',.03,'yes'),a1:.04}],'p1').find(x=>x.lo===0)!;expect(upset.noRet!).toBeLessThan(0);});

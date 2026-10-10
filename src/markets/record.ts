@@ -7,8 +7,11 @@ import type {BackfillRow} from './journal';
 export const ACCURACY_EDGES=[0,.05,.1,.2,.35,.5,.65,.8,.9,.95,1],ENTRY_EDGES=[0,.05,.2,.5,.8,1];
 const ENTRY_LABELS=['0–5¢','5–20¢','20–50¢','50–80¢','80–100¢'];
 export type Horizon='p1'|'p24'|'vwap';
-export interface AccuracyBucket {lo:number;hi:number;n:number;events:number;price:number|null;win:number|null;low:number|null;high:number|null;ret:number|null;retLow:number|null;retHigh:number|null}
+export interface AccuracyBucket {lo:number;hi:number;n:number;events:number;price:number|null;win:number|null;low:number|null;high:number|null;ret:number|null;retLow:number|null;retHigh:number|null;noRet:number|null;noRetLow:number|null;noRetHigh:number|null}
 const askOf=(r:BackfillRow,h:Horizon)=>h==='p1'?r.a1:h==='p24'?r.a24:null;
+/** NO costs 1 − YES bid; the bid is 2 × mid − ask (the volume-weighted horizon has no book: 1 − the average price). */
+const noAskOf=(r:BackfillRow,h:Horizon)=>{const mid=r[h],ask=askOf(r,h);if(mid===null)return null;const bid=ask===null?mid:2*mid-ask;return 1-bid;};
+const ret=(won:boolean,ask:number)=>{const cost=ask+takerFee(ask);return ((won?1:0)-cost)/cost;};
 /**
  * How often contracts priced in each band actually won (Wilson 95%), and what buying YES at the ask returned per $1 after the
  * taker fee (bootstrap 95% over events, because both sides of a game or the strikes of one ladder move together). The
@@ -19,12 +22,13 @@ export function accuracy(rows:BackfillRow[],h:Horizon):AccuracyBucket[]{
     const hi=ACCURACY_EDGES[i+1],last=i===ACCURACY_EDGES.length-2;
     const xs=rows.filter(r=>{const p=r[h];return p!==null&&p>=lo&&(p<hi||last&&p<=hi);});
     const wins=xs.filter(r=>r.result==='yes').length,w=wilson(wins,xs.length);
-    const clusters=new Map<string,{sum:number;n:number}>();let total=0,count=0;
-    for(const r of xs){const a=askOf(r,h)??r[h]!;if(!(a>0&&a<1))continue;const cost=a+takerFee(a),ret=((r.result==='yes'?1:0)-cost)/cost;
-      const c=clusters.get(r.event)??{sum:0,n:0};c.sum+=ret;c.n++;clusters.set(r.event,c);total+=ret;count++;}
-    const [l,u]=clusterCI([...clusters.values()]);
+    // Each side scored on its own: YES at the ask, NO at 1 − bid, both after the taker fee, ranges resampling events.
+    const side=(ask:(r:BackfillRow)=>number|null,won:(r:BackfillRow)=>boolean)=>{const clusters=new Map<string,{sum:number;n:number}>();let total=0,count=0;
+      for(const r of xs){const a=ask(r);if(a===null||!(a>0&&a<1))continue;const x=ret(won(r),a),c=clusters.get(r.event)??{sum:0,n:0};c.sum+=x;c.n++;clusters.set(r.event,c);total+=x;count++;}
+      const [lo,hi]=clusterCI([...clusters.values()]);return {mean:count?total/count:null,low:Number.isFinite(lo)?lo:null,high:Number.isFinite(hi)?hi:null};};
+    const yes=side(r=>askOf(r,h)??r[h],r=>r.result==='yes'),no=side(r=>noAskOf(r,h),r=>r.result==='no');
     return {lo,hi,n:xs.length,events:new Set(xs.map(r=>r.event)).size,price:xs.length?xs.reduce((s,r)=>s+r[h]!,0)/xs.length:null,win:xs.length?wins/xs.length:null,low:w.low,high:w.high,
-      ret:count?total/count:null,retLow:Number.isFinite(l)?l:null,retHigh:Number.isFinite(u)?u:null};
+      ret:yes.mean,retLow:yes.low,retHigh:yes.high,noRet:no.mean,noRetLow:no.low,noRetHigh:no.high};
   });
 }
 export interface RecordLine {bucket:string;markets:number;wins:number;winRate:number|null;pnl:number;spent:number;ret:number|null}

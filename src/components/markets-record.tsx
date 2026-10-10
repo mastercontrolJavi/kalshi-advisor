@@ -9,8 +9,9 @@ import {SiteHeader} from './site-header';
 import {Card} from './ui/card';
 import {Pill,Kpi,Empty} from './panels';
 import {MarketsNav,useMarketsFilter} from './markets-nav';
+import {FLAG_LABEL} from './flag-labels';
 import {cn} from '@/lib/utils';
-import {dollars,signedDollars,pct} from './format';
+import {dollars,signedDollars,signedCents,pct} from './format';
 const Reliability=dynamic(()=>import('./calibration-charts').then(m=>m.ReliabilityChart),{ssr:false});
 const REFRESH_MS=60000;
 const groupLabel:Record<string,string>={sports:'Sports',combos:'Combos',politics:'Politics & econ',commodities:'Commodities & crypto'};
@@ -63,13 +64,21 @@ export default function MarketsRecord(){
         {filter==='combos'?<div className="mt-4"><Empty>Combos almost never trade publicly on Kalshi, so there is no price history to score. Your own combo results are above.</Empty></div>
         :!shown.length?<div className="mt-4"><Empty>{bf?.finished?'No settled market in this category had a tradable price at this time.':bf?.markets?`History is downloading: ${bf.priced.toLocaleString()} of ${bf.markets.toLocaleString()} settled markets priced so far; the tables appear when the first download finishes.`:'History is still loading: the first download starts about 10 minutes after the app starts and takes a few minutes.'}</Empty></div>:<>
         <div className="mt-4"><Reliability data={shown.map(b=>({bucket:band(b.lo,b.hi),predicted:b.price,actual:b.win}))}/></div>
-        <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[720px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['Priced at','Markets','Events','Priced avg','Won (95% range)','Gap','Return per $1 (95% range)'].map(t=><th key={t} scope="col" className="pb-2 pr-3 font-medium">{t}</th>)}</tr></thead>
+        <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[860px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['Priced at','Markets','Events','Priced avg','Won (95% range)','Gap','Buy YES per $1 (95% range)','Buy NO per $1 (95% range)'].map(t=><th key={t} scope="col" className="pb-2 pr-3 font-medium">{t}</th>)}</tr></thead>
           <tbody>{shown.map(b=>{const gap=b.win-b.price,sure=b.low!=null&&b.high!=null&&(b.low>b.price||b.high<b.price),retSure=b.retLow!=null&&b.retHigh!=null&&(b.retLow>0||b.retHigh<0);
             return <tr key={b.lo} className="border-t border-line"><th scope="row" className="py-2 pr-3 text-left font-medium">{band(b.lo,b.hi)}</th><td className="num pr-3">{b.n}</td><td className="num pr-3 text-muted">{b.events}</td><td className="num pr-3">{pct(b.price,1)}</td>
               <td className="num pr-3">{pct(b.win,1)} <span className="text-xs text-muted">({range(b.low,b.high,v=>pct(v,0))})</span></td><td className={cn('num pr-3',sure?tone(gap):'text-muted')}>{signedPct(gap,1)}</td>
-              <td className={cn('num',retSure?tone(b.ret):'')}>{signedPct(b.ret,1)} <span className="text-xs text-muted">({range(b.retLow,b.retHigh,v=>signedPct(v))})</span></td></tr>;})}</tbody></table></div>
-        <p className="mt-3 text-xs text-faint">Gap = won minus priced; coloured only when the 95% range excludes the price. Return buys one YES contract at the ask (the average traded price for “Average traded”) and pays Kalshi&apos;s taker fee; coloured only when its range excludes zero. Ranges resample whole events, so both sides of one game count once.</p></>}
+              <td className={cn('num',retSure?tone(b.ret):'')}>{signedPct(b.ret,1)} <span className="text-xs text-muted">({range(b.retLow,b.retHigh,v=>signedPct(v))})</span></td>
+              <td className={cn('num',b.noRetLow!=null&&b.noRetLow>0?'text-yes':b.noRetHigh!=null&&b.noRetHigh<0?'text-no':'')}>{signedPct(b.noRet,1)} <span className="text-xs text-muted">({range(b.noRetLow,b.noRetHigh,v=>signedPct(v))})</span></td></tr>;})}</tbody></table></div>
+        <p className="mt-3 text-xs text-faint">Gap = won minus priced; coloured only when the 95% range excludes the price. Buy YES pays the ask and buy NO pays 1 − the YES bid (for “Average traded”, the average price), each plus Kalshi&apos;s taker fee; coloured only when the range excludes zero. A side the scanner flags must have a range above zero here. Ranges resample whole events, so both sides of one game count once.</p></>}
         {bf?<p className="mt-3 text-xs text-muted">{bf.priced.toLocaleString()} of {bf.markets.toLocaleString()} markets priced · settled {day(bf.from)} – {day(bf.to)} · {bf.finished?`updated ${new Date(bf.finished).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`:r.refreshing?'first download in progress':'not downloaded yet'}{r.refreshing&&bf.finished?' · updating now':''}</p>:null}
+      </Card>
+      <Card><h2 className="font-semibold">Scanner flag results</h2><p className="mt-1 max-w-4xl text-sm text-muted">Each scanner flag is a one-contract paper trade at the ask plus Kalshi&apos;s fee, scored when its market settles{filter!=='all'&&filter!=='combos'?` (${groupLabel[filter]})`:''}. Proven = at least 100 settled, 95% range above zero, and both halves positive.</p>
+        {(()=>{const fs:any[]=(r.flags??[]).filter((x:any)=>x.group===(filter==='all'||filter==='combos'?'all':filter));return !fs.length?<div className="mt-4"><Empty>No scanner flag has settled yet. Flags start counting as their markets settle; most take days.</Empty></div>
+          :<div className="mt-4 overflow-x-auto"><table className="w-full min-w-[640px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['Flag','Settled','Markets','Paper result per contract (95% range)','First / second half','Status'].map(t=><th key={t} scope="col" className="pb-2 pr-3 font-medium">{t}</th>)}</tr></thead>
+            <tbody>{fs.sort((a,b)=>b.n-a.n).map(x=><tr key={x.type} className="border-t border-line"><th scope="row" className="py-2 pr-3 text-left font-medium">{FLAG_LABEL[x.type]??x.type}</th><td className="num pr-3">{x.n}</td><td className="num pr-3">{x.markets}</td>
+              <td className={cn('num pr-3',x.low!=null&&x.low>0?'text-yes':x.high!=null&&x.high<0?'text-no':'')}>{signedCents(x.mean)} <span className="text-xs text-muted">({x.low==null?'—':`${signedCents(x.low)} to ${signedCents(x.high)}`})</span></td>
+              <td className="num pr-3">{signedCents(x.first)} / {signedCents(x.second)}</td><td>{x.proven?<Pill tone="yes">proven</Pill>:<Pill tone="neutral">unproven</Pill>}</td></tr>)}</tbody></table></div>;})()}
       </Card>
       <Card><h2 className="font-semibold">Who was more accurate: Kalshi or the outside price</h2><p className="mt-1 max-w-4xl text-sm text-muted">Markets you held that had an outside match, scored once they settled: the last price at least 1 hour before the result, as a Brier score (lower is better).</p>
         {(()=>{const cs:any[]=r.sources??[],n=cs.reduce((s,c)=>s+c.n,0);return n<10?<div className="mt-4"><Empty>Not enough matched markets have settled yet ({n} so far, 10 needed). Markets you hold are matched to Polymarket and sportsbooks automatically; they are scored here as they settle.</Empty></div>

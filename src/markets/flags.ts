@@ -43,16 +43,17 @@ export function moveFlags(m:ScanMarket,mids:{t:number;mid:number;volume:number|n
   return out;
 }
 /**
- * The market's price band in its category has a settled history (Record tab, 24 h before) of ≥ 200 markets whose YES return
- * per $1 has a 95% range entirely below zero (flag the NO side) or above zero (flag YES). Once a day per market, and only when
+ * The market's price band in its category has a settled history (Record tab, 24 h before) of ≥ 200 markets in which buying one
+ * side (YES at the ask, or NO at 1 − bid) returned money after fees, with a 95% range above zero. A losing YES is not enough:
+ * NO pays the spread and fee too, and at 98¢ one upset in 60 wipes out its 2¢ wins. Once a day per market, and only when
  * the result is due within 48 h: that history is prices 24 h before the result, not a 2028 nomination market.
  */
 export function biasFlags(m:ScanMarket&{mid:number;due:number|null},tables:AccuracyTables|null,now:number,last:LastLookup):Flag[]{
   if(!tables||m.group==='combos'||m.due===null||m.due<=now||m.due-now>BIAS_DUE)return [];
   const bands=tables[m.group]?.p24??[],b=bands.find((x,i)=>m.mid>=x.lo&&(m.mid<x.hi||i===bands.length-1&&m.mid<=x.hi));
-  if(!b||b.n<BIAS_N||b.ret===null||b.retLow===null||b.retHigh===null)return [];
+  if(!b||b.n<BIAS_N)return [];
   if([last(m.ticker,'bias-no'),last(m.ticker,'bias-yes')].some(p=>p&&now-p.time<BIAS_COOLDOWN))return [];
-  const side=b.retHigh<0?'no':b.retLow>0?'yes':null;if(!side)return [];
+  const side=b.retLow!==null&&b.retLow>0?'yes':b.noRetLow!==null&&b.noRetLow>0?'no':null;if(!side)return [];
   const ask=askOf(m,side);if(ask===null||!(ask>0&&ask<1))return [];
-  return [flag(m,now,side==='yes'?'bias-yes':'bias-no',side,ask,Math.abs(b.ret),{band:[b.lo,b.hi],n:b.n,ret:b.ret,range:[b.retLow,b.retHigh]})];
+  return [flag(m,now,side==='yes'?'bias-yes':'bias-no',side,ask,side==='yes'?b.ret!:b.noRet!,{band:[b.lo,b.hi],n:b.n,ret:side==='yes'?b.ret:b.noRet,range:side==='yes'?[b.retLow,b.retHigh]:[b.noRetLow,b.noRetHigh]})];
 }
