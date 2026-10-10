@@ -50,3 +50,13 @@ it('totals take the line and side from the YES label and the teams from the game
   const t=kalshiGameFrom(q('KXNCAAFTOTAL-26OCT10UGAALA-52','Over 51.5 points'),game)!;expect(t).toMatchObject({league:'cfb',kind:'totals',line:51.5,yesIsOver:true,yesTeam:null});expect(t.teams[1]).toContain('Alabama');
   expect(kalshiGameFrom(q('KXNFLSPREAD-26OCT11PHIJAC-PHI7','Philadelphia wins by over 6.5 points'),game)).toBeNull();
   expect(kalshiGameFrom(q('KXATPMATCH-26OCT10AB-A','A'),{title:'A vs B',markets:[]})).toBeNull();});
+it('generic place words never pair teams: South Carolina St. vs Charleston Southern is not Southern Illinois vs South Dakota (live false match, 2026-10-10)',()=>{
+  const k=kg({league:'cfb',expectedEnd:T('2026-10-10T23:00:00Z'),teams:[['South Carolina St.','South Carolina St.','SCST'],['Charleston Southern','Charleston Southern','CHSO']]});
+  expect(matchGame(k,[game('cfb-sill-sdak-2026-10-10','cfb','2026-10-10T19:00:00Z',['Southern Illinois','sill'],['South Dakota','sdak'])])).toBeNull();
+  expect(matchGame(k,[game('cfb-scst-chso','cfb','2026-10-10T19:00:00Z',['South Carolina State','scst'],['Charleston Southern','chso'])])).not.toBeNull();});
+it('modifiers must agree (Iowa ≠ Iowa State, Michigan ≠ Michigan St., Florida ≠ Florida St.); nicknames still match',()=>{
+  expect(teamMatches(['Iowa'],['Iowa State'])).toBe(false);expect(teamMatches(['Iowa'],['Iowa Hawkeyes'])).toBe(true);
+  expect(teamMatches(['Michigan St.'],['Michigan'])).toBe(false);expect(teamMatches(['Michigan St.'],['Michigan State Spartans'])).toBe(true);
+  expect(teamMatches(['Florida St.'],['Florida'])).toBe(false);expect(teamMatches(['Florida St.'],['Florida State'])).toBe(true);
+  expect(teamMatches(['Philadelphia','PHI Eagles'],['Philadelphia Eagles'])).toBe(true);expect(teamMatches(['Chicago WS'],['Chicago Cubs'])).toBe(false);
+  expect(teamMatches(['Los Angeles D','LAD'],['Los Angeles Dodgers'])).toBe(true);expect(teamMatches(['USC'],['USC'])).toBe(true);});
