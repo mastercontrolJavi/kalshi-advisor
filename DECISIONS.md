@@ -94,3 +94,12 @@
   - **POST /match on the markets process** is same-origin only, with the body capped at 4 KB.
   - **Fetchers are host-locked:** each only calls its own host, redirects fail, and the Odds API key goes to the Odds API only.
   - **Live keys verified 2026-10-10.** Odds API: 498 of 500 left after the first fetch. Sportsbook consensus covered all 7 open combo legs; EIA answered (WTI $96.24, Oct 6). Among trusted references the freshest wins, and sportsbooks are preferred only within 5 min of the newest. During the live Iowa game a book price fetched every 30 min would otherwise have outranked a 1-min-old Polymarket price.
+
+49. Markets, stage 4 (scanner):
+  - **Universe:** the stage 2 series choice gives 6,540 open markets, of which about 320 trade ≥ $1,000 a day. Listing them costs 62 requests (about 18 s at 5/s), so the sweep runs every 5 min.
+  - **No combo flag:** combos are priced by request-for-quote and never trade publicly.
+  - **Price-band flags need the flagged side's own history to pay.** The first live sweep flagged 82 markets as "NO, because YES at this price lost after fees". NO loses too: it pays the spread and fee, and at 98¢ one upset in 60 wipes out its 2¢ wins. Accuracy now scores NO at 1 − YES bid as well. On 130,472 settled markets no band had a side with a 95% range above zero (politics 95–100¢ YES +2.7%, n = 25). Band flags also need the result to be due within 48 h, matching the 24 h-before history; otherwise 2028 nomination markets were flagged.
+  - **Ranking is in tiers:** proven, then outside-price gap, 1-hour move, price band. The units differ, so a band's size must never outrank a 4¢ outside gap.
+  - **Matching was tightened after a live false match.** "South Carolina St. vs Charleston Southern" was paired with "Southern Illinois vs South Dakota" through "South"/"Southern". Generic place words no longer count, modifiers (State, Tech, Central, Southern…) must agree, and one side's core name must contain the other's. Codes and initials still match. All 139 auto matches were re-made and audited by hand.
+  - **Smoke-run flags were deleted:** all flags made under the earlier rules, plus one labelled UI check. They were test data; no user decisions were touched.
+  - **The Odds API serves held positions only.** Scanned markets use Polymarket, protecting the 500-a-month quota.

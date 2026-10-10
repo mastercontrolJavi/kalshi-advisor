@@ -92,3 +92,14 @@ No actual taker signal or maker paper fill was observed without credentials. Mak
 - The Record "Who was more accurate" card shows its empty state (0 of 10 settled matched markets yet).
 - 375 px: no horizontal scroll, Outside column present, no console errors.
 - 226 tests pass, tsc is clean, next build is green.
+
+## Markets stage 4 — 2026-10-10 (scanner; side instance on ports 3010/3012, live, read-only)
+
+- **Sweep:** 317–320 liquid markets per sweep, in about 20 s.
+- **First runs flagged far too much:**
+  - 107, then 82 price-band flags, all NO, under the rule "YES lost here".
+  - Scoring the NO side showed no band pays on either side, so price-band flags are now rare by design.
+  - One outside-gap flag (SC State, 7.9¢) turned out to be a false Polymarket match. Matching was fixed and all 139 auto matches were audited correct (CFB, MLB incl. totals, NBA, NFL, NHL).
+- **After the fixes:** 0 of 317 markets flagged. No outside gap ≥ 4¢ existed, and moves need an hour of snapshots.
+- **Scanner page** at desktop and 375 px: tabs, chips, empty state, explainer. No horizontal scroll, no console errors. A flagged row was checked with one labelled test flag (deleted afterwards).
+- 246 tests pass, tsc is clean, next build is green.
