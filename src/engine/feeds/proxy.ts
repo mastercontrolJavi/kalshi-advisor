@@ -8,18 +8,23 @@ export function median(values:number[]){const s=[...values].sort((a,b)=>a-b);ret
  * Pings run every second, so a dead link is still detected within ~2 s.
  */
 export function healthy(v:Venue,now:number,staleMs=2000,maxQuoteMs=15000){return v.status==='connected'&&v.mid!==null&&now-v.alive<=staleMs&&now-v.updated<=maxQuoteMs&&now-v.updated>=0;}
+/** Venue symbols per coin. Every Kalshi 15-minute crypto series settles on the CF Benchmarks RTI for its coin (checked 2026-10-10). */
+export const COINS={BTC:{coinbase:'BTC-USD',kraken:'BTC/USD',bitstamp:'btcusd',gemini:'btcusd'},ETH:{coinbase:'ETH-USD',kraken:'ETH/USD',bitstamp:'ethusd',gemini:'ethusd'},
+  SOL:{coinbase:'SOL-USD',kraken:'SOL/USD',bitstamp:'solusd',gemini:'solusd'},XRP:{coinbase:'XRP-USD',kraken:'XRP/USD',bitstamp:'xrpusd',gemini:'xrpusd'},DOGE:{coinbase:'DOGE-USD',kraken:'DOGE/USD',bitstamp:'dogeusd',gemini:'dogeusd'}} as const;
+export type Coin=keyof typeof COINS;
 export class ProxyFeed {
   venues:Record<string,Venue>={};history:Sample[]=[];private sockets:ReconnectingSocket[]=[];
-  constructor(private log:(event:string,data:unknown)=>void=()=>{}){}
+  constructor(private log:(event:string,data:unknown)=>void=()=>{},private coin:Coin='BTC'){}
   private add(name:string,url:string,subscribe:()=>unknown[],parse:(m:any)=>[number,number,number|null]|null){
     const venue:Venue=this.venues[name]={name,mid:null,spread:null,updated:0,alive:0,lag:null,status:'disconnected'};
     this.sockets.push(new ReconnectingSocket(url,subscribe,m=>{const p=parse(m);if(!p)return;const [bid,ask,ts]=p;if(!Number.isFinite(bid)||!Number.isFinite(ask)||bid<=0||ask<bid)return;venue.mid=(bid+ask)/2;venue.spread=ask-bid;venue.updated=Date.now();venue.lag=ts===null?null:Math.max(0,Date.now()-ts);},status=>{venue.status=status;this.log('feed-status',{name,status});},undefined,{pingMs:1000,onAlive:()=>{venue.alive=Date.now();}}));
   }
   start(){
-    this.add('Coinbase','wss://ws-feed.exchange.coinbase.com',()=>[{type:'subscribe',product_ids:['BTC-USD'],channels:['ticker','heartbeat']}],m=>m.type==='ticker'?[+m.best_bid,+m.best_ask,Date.parse(m.time)]:null);
-    this.add('Kraken','wss://ws.kraken.com/v2',()=>[{method:'subscribe',params:{channel:'ticker',symbol:['BTC/USD'],event_trigger:'bbo',snapshot:true}}],m=>m.channel==='ticker'&&m.data?.[0]?[+m.data[0].bid,+m.data[0].ask,Date.parse(m.data[0].timestamp)]:null);
-    this.add('Bitstamp','wss://ws.bitstamp.net',()=>[{event:'bts:subscribe',data:{channel:'order_book_btcusd'}}],m=>m.event==='data'&&m.data?.bids?.length&&m.data?.asks?.length?[+m.data.bids[0][0],+m.data.asks[0][0],m.data.microtimestamp?+m.data.microtimestamp/1000:+m.data.timestamp*1000]:null);
-    this.add('Gemini','wss://ws.gemini.com',()=>[{method:'subscribe',params:['btcusd@bookTicker'],id:1}],m=>{const d=m.data??m;return d.s==='btcusd'&&d.b&&d.a?[+d.b,+d.a,d.E?+d.E/1e6:null]:null;});
+    const c=COINS[this.coin];
+    this.add('Coinbase','wss://ws-feed.exchange.coinbase.com',()=>[{type:'subscribe',product_ids:[c.coinbase],channels:['ticker','heartbeat']}],m=>m.type==='ticker'?[+m.best_bid,+m.best_ask,Date.parse(m.time)]:null);
+    this.add('Kraken','wss://ws.kraken.com/v2',()=>[{method:'subscribe',params:{channel:'ticker',symbol:[c.kraken],event_trigger:'bbo',snapshot:true}}],m=>m.channel==='ticker'&&m.data?.[0]?[+m.data[0].bid,+m.data[0].ask,Date.parse(m.data[0].timestamp)]:null);
+    this.add('Bitstamp','wss://ws.bitstamp.net',()=>[{event:'bts:subscribe',data:{channel:'order_book_'+c.bitstamp}}],m=>m.event==='data'&&m.data?.bids?.length&&m.data?.asks?.length?[+m.data.bids[0][0],+m.data.asks[0][0],m.data.microtimestamp?+m.data.microtimestamp/1000:+m.data.timestamp*1000]:null);
+    this.add('Gemini','wss://ws.gemini.com',()=>[{method:'subscribe',params:[c.gemini+'@bookTicker'],id:1}],m=>{const d=m.data??m;return d.s===c.gemini&&d.b&&d.a?[+d.b,+d.a,d.E?+d.E/1e6:null]:null;});
     for(const s of this.sockets)s.start();
   }
   sample(time:number,staleMs=2000){

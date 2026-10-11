@@ -41,15 +41,19 @@ export function PositionCardView({c,now}:{c:any;now:number}){
   // headline compares its value at leg odds with what it cost. P&L if sold stays in the numbers on the right.
   const cost=c.avgCost!=null?c.contracts*c.avgCost:null,atLegs=c.probSource==='legs'&&c.holdValue!=null&&cost?c.holdValue-cost:null;
   const head=atLegs??c.unrealized,headPct=atLegs!=null&&cost?atLegs/cost:c.unrealizedPct,headTone:Tone=head>.005?'yes':head<-.005?'no':'neutral';
-  const verdictTone:Tone=c.verdict==='DEAD'?'no':c.verdict==='SELL BEATS HOLD'?'warn':c.verdict==='HOLD'?headTone:'neutral';
+  const verdictTone:Tone=c.verdict==='DEAD'?'no':['SELL','SELL NOW'].includes(c.verdict)?'warn':['LET IT RIDE','LET IT SETTLE'].includes(c.verdict)?'yes':c.verdict==='HOLD'?headTone:'neutral';
   const due=until(c.expectedExpiration??c.closeTime,now);
   return <div className="grid gap-4 border-t border-line pt-4 first:border-0 first:pt-0 lg:grid-cols-[1fr_auto]">
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2 text-sm"><Pill tone="neutral">{groupLabel[c.group]??c.group}</Pill><span className="font-medium">{c.title}</span><span className="min-w-0 truncate text-muted">{c.marketTitle}</span></div>
-      <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1"><div className={cn('font-display text-5xl leading-none font-bold uppercase',toneText[verdictTone],c.stale&&'opacity-60')}>{c.verdict}</div>
+      <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1"><div className={cn('font-display text-5xl leading-none font-bold uppercase',toneText[verdictTone],c.stale&&'opacity-60',c.urgent&&'animate-pulse motion-reduce:animate-none')} aria-live={c.urgent?'assertive':undefined}>{c.verdict}</div>
         {head!=null&&!['SETTLING','DEAD'].includes(c.verdict)?<div className={cn('num text-2xl font-semibold',toneText[headTone])}>{head>=0?'UP':'DOWN'} {signedDollars(head)} <span className="text-base">({sp(headPct)})</span>{atLegs!=null?<span className="ml-1.5 font-sans text-sm font-normal text-muted">at leg odds</span>:null}</div>:null}</div>
       <div className="mt-2 text-sm"><span className="num">{qty(c.contracts)}</span> {c.side.toUpperCase()} · cost <span className="num">{price(c.avgCost)}</span> incl. fees{c.costSource==='estimate'?<span className="text-faint"> (estimated)</span>:null} · win chance <span className="num">{pct(c.winProb,c.winProb!=null&&c.winProb<.01?2:0)}</span>{due?<> · {due}</>:null}{c.stale?<span className="text-warn"> · prices stale</span>:null}</div>
       {c.combo?null:<ReferenceLine c={c} now={now}/>}
+      {c.model?<div className="mt-1 text-sm">{'p' in c.model?<><span>Model</span> <span className="num">{pct(c.side==='yes'?c.model.p:1-c.model.p,0)}</span><span className="text-muted"> · {c.model.coin} <span className="num">{c.model.spot<10?c.model.spot.toFixed(4):dollars(c.model.spot)}</span> vs opening <span className="num">{c.model.strike<10?c.model.strike.toFixed(4):dollars(c.model.strike)}</span> · Kalshi <span className="num">{pct(c.model.kalshi==null?null:c.side==='yes'?c.model.kalshi:1-c.model.kalshi,0)}</span> · {Math.floor(c.model.tau/60)}:{String(Math.floor(c.model.tau%60)).padStart(2,'0')} left</span></>:<span className="text-muted">Model: {c.model.error}.</span>}</div>:null}
+      {c.eia?<div className="mt-1 text-sm text-muted">EIA {c.eia.name} <span className="num text-fg">${c.eia.value.toFixed(c.eia.unit==='$/gal'?3:2)}</span> ({c.eia.period}){c.eia.strike!=null?<> · strike <span className="num text-fg">${c.eia.strike}</span></>:null} <span className="text-xs text-faint">· context only; Kalshi settles on a different price</span></div>:null}
+      {c.sellAtBid!=null&&['SELL','SELL NOW'].includes(c.verdict)?<div className="mt-2"><Pill tone="warn">Sell at {price(c.sellAtBid)} or better</Pill></div>:null}
+      {c.sharps&&(c.sharps.wallets||c.sharps.against)?<div className="mt-1 text-sm"><a href="/markets/sharps" className="text-info hover:underline">Sharp traders</a> <span className="num">{c.sharps.wallets}</span> on your side{c.sharps.wallets?<span className="text-muted"> ({dollars(c.sharps.value)})</span>:null} · <span className={c.sharps.against>c.sharps.wallets?'text-warn':''}><span className="num">{c.sharps.against}</span> against</span>{c.sharps.against?<span className="text-muted"> ({dollars(c.sharps.againstValue)})</span>:null} <span className="text-xs text-faint">· Polymarket, unproven</span></div>:null}
       {c.peakPct!=null&&(c.probSource==='market'||c.probSource==='reference')?<div className="mt-1 text-xs text-muted">Best {sp(c.peakPct)} · worst {sp(c.troughPct)} so far</div>:null}
       {c.notice?<Notice notice={c.notice}/>:null}
       <p className="mt-2 text-sm text-fg/90">{c.reason}</p>
@@ -62,7 +66,7 @@ export function PositionCardView({c,now}:{c:any;now:number}){
     <div className="flex flex-col items-end gap-3 self-start"><div className="grid grid-cols-3 gap-5 text-right">
       <Stat label="P&L if sold" tone={pnlTone} sub={c.unrealizedPct!=null?`${sp(c.unrealizedPct)} of cost`:undefined}>{signedDollars(c.unrealized)}</Stat>
       <Stat label="Sell now" sub={c.bid!=null?`bid ${price(c.bid)} − ${dollars(c.sellFee)} fee`:'no bid'}>{dollars(c.sellValue)}</Stat>
-      <Stat label="Hold value" sub={c.probSource==='legs'?(c.combo?.refLegs?'outside legs × $1':'legs × $1'):c.probSource==='settled'?'payout':c.probSource==='reference'?<>outside odds × $1 · Kalshi {dollars(c.contracts*(c.marketProb??0))}</>:'market odds × $1'}>{dollars(c.holdValue)}</Stat></div>
+      <Stat label="Hold value" sub={c.probSource==='model'?'model blend × $1':c.probSource==='legs'?(c.combo?.refLegs?'outside legs × $1':'legs × $1'):c.probSource==='settled'?'payout':c.probSource==='reference'?<>outside odds × $1 · Kalshi {dollars(c.contracts*(c.marketProb??0))}</>:'market odds × $1'}>{dollars(c.holdValue)}</Stat></div>
       <Spark points={c.spark??[]} label={c.combo?'Value at leg odds':'YES price'}/></div>
   </div>;
 }

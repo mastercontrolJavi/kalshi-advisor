@@ -1,5 +1,5 @@
 'use client';
-import {useState} from 'react';
+import {useEffect,useState} from 'react';
 import dynamic from 'next/dynamic';
 import {LineChart as ChartIcon,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,BellRing,Crosshair,History} from 'lucide-react';
 import {useSoundAlerts} from './use-sound-alerts';
@@ -19,6 +19,9 @@ const ProbabilityChart=dynamic(()=>import('./probability-chart'),{ssr:false,load
 export default function Dashboard(){
   const {state:s,connected,fresh}=useLive(),markets=useLive('/markets-ws'),[override,setOverride]=useState(''),[error,setError]=useState(''),sound=useSoundAlerts(s,fresh,'15m',{state:markets.state,fresh:markets.fresh});
   async function unlock(){try{const r=await fetch('/api/engine/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:override})});const data=await r.json();if(!r.ok)throw new Error(data.error);setOverride('');}catch(e){setError((e as Error).message);}}
+  // Sharp crypto traders on Polymarket's matching round, from the markets process (null until it answers).
+  const [btc,setBtc]=useState<any>(null);
+  useEffect(()=>{const load=async()=>{try{const r=await fetch('/api/markets/sharps/btc',{cache:'no-store'});if(r.ok)setBtc(await r.json());}catch{}};void load();const t=setInterval(()=>void load(),15000);return()=>clearInterval(t);},[]);
   const action=fresh?s?.evaluation?.action??'NO TRADE':'NO TRADE',tone=actionTone(action),healthy=s?.venues?.filter((v:any)=>v.healthy).length??0;
   const ambient=!fresh?'warn':tone==='yes'||tone==='no'?tone:'none';
   return <>
@@ -34,7 +37,7 @@ export default function Dashboard(){
       <Instruments s={s}/>
       <div className="grid gap-4 lg:grid-cols-12">
         <div className="lg:col-span-8"><SignalPanel s={s} fresh={fresh}/></div>
-        <div className="lg:col-span-4"><ForecastPanel s={s} fresh={fresh}/></div>
+        <div className="lg:col-span-4"><ForecastPanel s={s} fresh={fresh} btc={btc}/></div>
       </div>
       <Positions s={s} fresh={fresh}/>
       <Collapsible open title="Scalp & dip" icon={<Crosshair aria-hidden className="size-4 text-info"/>} aside={fresh&&s?.tactics?.ideas?.length?<span className="text-yes">{s.tactics.ideas.length} setup{s.tactics.ideas.length>1?'s':''} now</span>:'intra-window setups'}><Tactics s={s} fresh={fresh}/></Collapsible>

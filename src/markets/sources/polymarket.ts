@@ -27,7 +27,7 @@ export async function polymarketGames(fetchJson:FetchJson,league:string,from:num
       const ml=(e.markets??[]).find((m:any)=>m.sportsMarketType==='moneyline');if(!ml)continue;
       const names=list(ml.outcomes).map(String),codes=String(e.slug??'').split('-').slice(1,3),start=pmTime(ml.gameStartTime??e.startDate);
       if(names.length!==2||!Number.isFinite(start))continue;
-      const market=(m:any,kind:RefMarket['kind']):RefMarket=>{const {probs,spread}=pmProbs(m);return {id:String(m.id),kind,line:num(m.line),outcomes:list(m.outcomes).map(String),probs,spread};};
+      const market=(m:any,kind:RefMarket['kind']):RefMarket=>{const {probs,spread}=pmProbs(m);return {id:String(m.id),kind,line:num(m.line),outcomes:list(m.outcomes).map(String),probs,spread,cond:m.conditionId?String(m.conditionId):undefined};};
       out.push({id:String(e.slug),league,start,teams:[[names[0],codes[0]??''],[names[1],codes[1]??'']],url:`https://polymarket.com/event/${e.slug}`,
         markets:[market(ml,'moneyline'),...(e.markets??[]).filter((m:any)=>m.sportsMarketType==='totals'&&num(m.line)!==null).map((m:any)=>market(m,'totals'))]});
     }
@@ -47,3 +47,13 @@ export async function polymarketSearch(fetchJson:FetchJson,q:string):Promise<PmC
 }
 /** Current YES chance of one Polymarket market (for a match you confirmed). */
 export async function polymarketMarket(fetchJson:FetchJson,id:string):Promise<number>{return pmProbs(await fetchJson(`${GAMMA}/markets/${encodeURIComponent(id)}`)).probs[0];}
+/**
+ * Polymarket's 15-minute Bitcoin round that starts at `startSec` (slug btc-updown-15m-{start}). It runs on the same quarter
+ * hours as Kalshi's KXBTC15M but settles differently: Chainlink's BTC/USD TWAP over the window vs its start price, where
+ * Kalshi averages the last 60 s against the 60 s before the open. Related bets, not the same one.
+ */
+export async function btcRound(fetchJson:FetchJson,startSec:number):Promise<{slug:string;cond:string;title:string;upPrice:number|null;closed:boolean}|null>{
+  const evs=await fetchJson(`${GAMMA}/events?slug=btc-updown-15m-${startSec}`),m=Array.isArray(evs)?evs[0]?.markets?.[0]:null;if(!m?.conditionId)return null;
+  const outcomes=list(m.outcomes).map(String),up=outcomes.findIndex(o=>o.toLowerCase()==='up'),{probs}=pmProbs(m),p=up>=0?probs[up]:NaN;
+  return {slug:String(evs[0].slug),cond:String(m.conditionId),title:String(evs[0].title??m.question??''),upPrice:Number.isFinite(p)?p:null,closed:!!m.closed};
+}

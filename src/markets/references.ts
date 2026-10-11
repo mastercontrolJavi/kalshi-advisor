@@ -53,7 +53,7 @@ export class References {
       for(const [source,games] of [['polymarket',await this.pmGames(league,now,live)],['sportsbooks',sports.some(h=>h.held!==false)?await this.oddsGames(league,held,now):this.games.get('odds:'+league)?.games??[]]] as [Source,RefGame[]][]){
         const at=source==='polymarket'?this.games.get('pm:'+league)?.at:this.games.get('odds:'+league)?.at;
         for(const h of sports){const m=matchGame(h.kalshiGame!,games),p=m?refProb(h.kalshiGame!,m):null;if(!m||!p)continue;
-          this.journal.setMatch({ticker:h.ticker,source,refId:p.market.id,method:'auto',status:'auto',score:null,title:m.game.id,url:m.game.url});
+          this.journal.setMatch({ticker:h.ticker,source,refId:p.market.id,method:'auto',status:'auto',score:null,title:m.game.id,url:m.game.url,cond:p.market.cond??null,yesOutcome:p.yesOutcome});
           this.put(h.ticker,{source,prob:p.prob,time:at??now,stale:false,status:'auto',title:m.game.id,url:m.game.url,refId:p.market.id});}
       }
     }

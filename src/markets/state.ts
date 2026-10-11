@@ -8,17 +8,31 @@ import {positionView,type MarketMemory,type PositionView} from './holdsell';
 import {groupOf,isBitcoin,seriesOf} from './categories';
 import {sideLabel} from './quotes';
 import type {Reference} from './references';
-export interface PositionCard extends PositionView {title:string;marketTitle:string;group:Group;closeTime:number|null;expectedExpiration:number|null;combo:ComboView|null;spark:{t:number;mid:number}[];seriesTicker:string}
+import {exitAdvice,type ExitMemory} from '../engine/exits';
+import type {CryptoResult} from './crypto';
+import type {EiaPrice} from './sources/eia';
+export interface PositionCard extends PositionView {urgent?:boolean;sellAtBid?:number|null;model?:CryptoResult|null;eia?:(EiaPrice&{strike:number|null})|null;sharps?:{wallets:number;value:number;against:number;againstValue:number}|null;title:string;marketTitle:string;group:Group;closeTime:number|null;expectedExpiration:number|null;combo:ComboView|null;spark:{t:number;mid:number}[];seriesTicker:string}
 export interface MarketsState {time:number;status:'live'|'no-credentials'|'starting';error:string|null;positions:PositionCard[];bitcoin:number;summary:{count:number;atRisk:number;sellAll:number|null;holdAll:number|null;realizedToday:number|null};synced:{positions:number|null;quotes:number|null};sources:{name:string;ok:boolean;updated:number|null;error:string|null;detail:string}[]}
 /** One card per open non-Bitcoin position, most urgent first; returns the per-position memory for the next pass. */
-export function buildPositions(a:{positions:any[];quotes:Map<string,Quote>;series:Map<string,{category:string|null;schedule:FeeSchedule}>;open:Map<string,OpenCost>;cfg:ExitConfig;memory:Map<string,MarketMemory>;now:number;spark:(ticker:string)=>{t:number;mid:number}[];reference?:(ticker:string)=>Reference|null}){
+export function buildPositions(a:{positions:any[];quotes:Map<string,Quote>;series:Map<string,{category:string|null;schedule:FeeSchedule}>;open:Map<string,OpenCost>;cfg:ExitConfig;memory:Map<string,MarketMemory>;now:number;spark:(ticker:string)=>{t:number;mid:number}[];reference?:(ticker:string)=>Reference|null;sharps?:(ticker:string)=>{wallets:number;value:number;against:number;againstValue:number}|null;crypto?:(q:Quote)=>CryptoResult|null;eia?:(series:string)=>EiaPrice|null}){
   const refFor=a.reference??(()=>null);
   const cards:PositionCard[]=[],memory=new Map<string,MarketMemory>();
   for(const p of a.positions){const ticker=String(p.ticker);if(isBitcoin(ticker))continue;
     const q=a.quotes.get(ticker)??null,info=a.series.get(seriesOf(ticker)),combo=q?.legs?comboView(q.legs,a.quotes,refFor):null;
     const r=positionView({position:p,quote:q,combo,open:a.open.get(ticker),schedule:info?.schedule??baseFees,cfg:a.cfg,memory:a.memory.get(ticker),now:a.now,reference:combo?null:refFor(ticker)});if(!r)continue;
+    // Crypto 15-minute rounds the model can price get the Bitcoin advise words and rules (sells only in the final 90 s).
+    const model=q&&!q.legs&&!q.result?a.crypto?.(q)??null:null;
+    if(model&&'p' in model&&r.view.verdict!=='SETTLING'){
+      const prev=a.memory.get(ticker)?.exit??{action:null,peak:null},e=exitAdvice({ticker,position_fp:String(p.position_fp),market_exposure_dollars:p.market_exposure_dollars},model.p,{yesBid:q!.yesBid,noBid:q!.noBid},info?.schedule??baseFees,{...a.cfg,exitMode:'advise'},prev,null,r.view.avgCost!==null?{avgCost:r.view.avgCost,source:r.view.costSource==='fills'?'fills':'estimate'}:null,model.tau);
+      if(e){r.view={...r.view,verdict:e.action as PositionView['verdict'],reason:e.reason,winProb:e.winProb,holdValue:e.holdValue,probSource:'model',notice:e.notice?{...e.notice}:r.view.notice};
+        r.memory.exit={action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??prev.entryProb??null,notice:e.notice?.kind??null} satisfies ExitMemory;
+        (r.view as any).urgent=e.urgent??false;(r.view as any).sellAtBid=e.sellAtBid??null;}
+    }
     memory.set(ticker,r.memory);
-    cards.push({...r.view,title:combo?`${combo.legs.length}-leg combo`:q?sideLabel(q,r.view.side):ticker,marketTitle:combo?combo.legs.map(l=>l.label).join(' · '):q?.title??'',
+    const eiaName=a.eia?.(seriesOf(ticker))??null;
+    cards.push({...r.view,model,eia:eiaName&&q?{...eiaName,strike:q.strike??null}:null,title:combo?`${combo.legs.length}-leg combo`:q?sideLabel(q,r.view.side):ticker,marketTitle:combo?combo.legs.map(l=>l.label).join(' · '):q?.title??'',
+      // Sharp wallets on your side and against it (per Kalshi YES/NO, flipped to your side).
+      sharps:(()=>{const x=a.sharps?.(ticker);if(!x)return null;return r.view.side==='yes'?{wallets:x.wallets,value:x.value,against:x.against,againstValue:x.againstValue}:{wallets:x.against,value:x.againstValue,against:x.wallets,againstValue:x.value};})(),
       group:groupOf(info?.category,!!q?.legs),closeTime:q?.closeTime??null,expectedExpiration:q?.expectedExpiration??null,combo,spark:a.spark(ticker),seriesTicker:seriesOf(ticker)});}
   // Most urgent first: a standing notice, then the largest amount at risk.
   cards.sort((x,y)=>Number(!!y.notice)-Number(!!x.notice)||(y.contracts*(y.avgCost??0))-(x.contracts*(x.avgCost??0)));

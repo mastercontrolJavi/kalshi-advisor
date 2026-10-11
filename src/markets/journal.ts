@@ -5,6 +5,7 @@ import type {Group,Quote} from './types';
 const DAY=86400000;
 /** A settled market from the public backfill, with its YES mid and ask 24 h and 1 h before the event and the 24-h traded average. */
 /** A stored scanner flag; result and pnl stay null until its market settles yes or no. */
+export interface LeanRow {round:number;horizon:number;time:number;ticker:string;upPrice:number|null;sharpNet:number;allNet:number;sharpWallets:number;yesBid:number|null;yesAsk:number|null;result:string|null}
 export interface FlagRow {id:number;time:number;ticker:string;event:string;group:string;type:string;side:'yes'|'no';price:number;fee:number;edge:number;result:string|null;pnl:number|null}
 export interface BackfillRow {ticker:string;event:string;series:string;grp:'sports'|'politics'|'commodities';title:string;eventTs:number;settleTs:number;result:'yes'|'no';volume:number;p24:number|null;a24:number|null;p1:number|null;a1:number|null;vwap:number|null;priced:0|1}
 /** data/markets.db: the markets process's own journal, so it never contends with the Bitcoin engine's writes. */
@@ -27,6 +28,14 @@ export class MarketsJournal {
       CREATE INDEX IF NOT EXISTS flags_open ON flags(result,ticker);CREATE INDEX IF NOT EXISTS flags_last ON flags(ticker,type,time);`);
     // Cumulative traded contracts per snapshot (the scanner's 1-hour volume); added after stage 1, so older databases gain it here.
     if(!(this.db.prepare('PRAGMA table_info(snapshots)').all() as {name:string}[]).some(c=>c.name==='volume'))this.db.exec('ALTER TABLE snapshots ADD COLUMN volume REAL');
+    // Sharp money (2026-10-10): which Polymarket market (condition id) a match is, and which of its outcomes is Kalshi's YES.
+    const mcols=(this.db.prepare('PRAGMA table_info(matches)').all() as {name:string}[]).map(c=>c.name);
+    if(!mcols.includes('cond'))this.db.exec('ALTER TABLE matches ADD COLUMN cond TEXT');if(!mcols.includes('yes_outcome'))this.db.exec('ALTER TABLE matches ADD COLUMN yes_outcome TEXT');
+    this.db.exec(`CREATE INDEX IF NOT EXISTS matches_cond ON matches(cond);
+      CREATE TABLE IF NOT EXISTS wallets(address TEXT PRIMARY KEY,source TEXT NOT NULL,rank INTEGER,tier TEXT,context TEXT NOT NULL,updated INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS sharp_snaps(time INTEGER NOT NULL,cond TEXT NOT NULL,outcome TEXT NOT NULL,title TEXT,wallets INTEGER NOT NULL,value REAL NOT NULL,avg_entry REAL,cur_price REAL,against INTEGER NOT NULL,ticker TEXT,side TEXT,PRIMARY KEY(time,cond,outcome));
+      CREATE TABLE IF NOT EXISTS sharp_links(cond TEXT NOT NULL,ticker TEXT NOT NULL,yes_outcome TEXT NOT NULL,status TEXT NOT NULL,score REAL,title TEXT,decided_at INTEGER,PRIMARY KEY(cond,ticker));
+      CREATE TABLE IF NOT EXISTS btc_lean(round INTEGER NOT NULL,horizon INTEGER NOT NULL,time INTEGER NOT NULL,ticker TEXT NOT NULL,up_price REAL,sharp_net REAL NOT NULL,all_net REAL NOT NULL,sharp_wallets INTEGER NOT NULL,yes_bid REAL,yes_ask REAL,result TEXT,PRIMARY KEY(round,horizon));`);
   }
   log(event:string,context:unknown){this.db.prepare('INSERT INTO events(time,event,context) VALUES(?,?,?)').run(Date.now(),event,JSON.stringify(context));}
   get<T>(key:string,fallback:T):T{const row=this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as {value:string}|undefined;return row?JSON.parse(row.value):fallback;}
@@ -74,10 +83,39 @@ export class MarketsJournal {
     this.db.transaction(()=>{for(const r of rows)put.run(r.ticker,r.event,r.series,r.grp,r.title,r.eventTs,r.settleTs,r.result,r.volume);})();
   }
   /** Outside-market matches: auto (sports pairing) or suggested (title); the user confirms or rejects. A decision is never overwritten. */
-  setMatch(m:{ticker:string;source:string;refId:string;method:'auto'|'suggested';status:'auto'|'suggested';score:number|null;title:string;url:string}){
-    this.db.prepare(`INSERT INTO matches(ticker,source,ref_id,method,status,score,title,url) VALUES(?,?,?,?,?,?,?,?)
-      ON CONFLICT(ticker,source,ref_id) DO UPDATE SET title=excluded.title,url=excluded.url,score=excluded.score WHERE status NOT IN ('confirmed','rejected')`).run(m.ticker,m.source,m.refId,m.method,m.status,m.score,m.title,m.url);
+  setMatch(m:{ticker:string;source:string;refId:string;method:'auto'|'suggested';status:'auto'|'suggested';score:number|null;title:string;url:string;cond?:string|null;yesOutcome?:string|null}){
+    this.db.prepare(`INSERT INTO matches(ticker,source,ref_id,method,status,score,title,url,cond,yes_outcome) VALUES(?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(ticker,source,ref_id) DO UPDATE SET title=excluded.title,url=excluded.url,score=excluded.score,cond=COALESCE(excluded.cond,cond),yes_outcome=COALESCE(excluded.yes_outcome,yes_outcome) WHERE status NOT IN ('confirmed','rejected')`).run(m.ticker,m.source,m.refId,m.method,m.status,m.score,m.title,m.url,m.cond??null,m.yesOutcome??null);
   }
+  /** Kalshi markets tied to a Polymarket market: automatic sports matches, and title links (suggested or confirmed) from the Sharps tab. */
+  linksForCond(cond:string):{ticker:string;yesOutcome:string;status:string}[]{
+    return this.db.prepare(`SELECT ticker,yes_outcome AS yesOutcome,status FROM matches WHERE cond=? AND yes_outcome IS NOT NULL AND status IN ('auto','confirmed')
+      UNION SELECT ticker,yes_outcome AS yesOutcome,status FROM sharp_links WHERE cond=? AND status IN ('confirmed','suggested')`).all(cond,cond) as {ticker:string;yesOutcome:string;status:string}[];
+  }
+  suggestLink(l:{cond:string;ticker:string;yesOutcome:string;score:number;title:string}){
+    this.db.prepare(`INSERT INTO sharp_links(cond,ticker,yes_outcome,status,score,title) VALUES(?,?,?,'suggested',?,?) ON CONFLICT(cond,ticker) DO NOTHING`).run(l.cond,l.ticker,l.yesOutcome,l.score,l.title);
+  }
+  hasLink(cond:string){return !!this.db.prepare('SELECT 1 FROM sharp_links WHERE cond=?').get(cond);}
+  decideLink(cond:string,ticker:string,status:'confirmed'|'rejected',now:number){return this.db.prepare('UPDATE sharp_links SET status=?,decided_at=? WHERE cond=? AND ticker=?').run(status,now,cond,ticker).changes>0;}
+  putWallets(rows:{address:string;source:string;rank:number;tier:string;context:unknown}[],now:number){
+    const put=this.db.prepare('INSERT OR REPLACE INTO wallets(address,source,rank,tier,context,updated) VALUES(?,?,?,?,?,?)');
+    this.db.transaction(()=>{this.db.prepare('DELETE FROM wallets').run();for(const r of rows)put.run(r.address,r.source,r.rank,r.tier,JSON.stringify(r.context),now);})();
+  }
+  walletRows(){return (this.db.prepare('SELECT context FROM wallets ORDER BY source,rank').all() as {context:string}[]).map(r=>JSON.parse(r.context));}
+  walletsUpdated(){return (this.db.prepare('SELECT MAX(updated) AS t FROM wallets').get() as {t:number|null}).t;}
+  putSharpSnaps(time:number,rows:{cond:string;outcome:string;title:string;wallets:number;value:number;avgEntry:number|null;curPrice:number|null;against:number;ticker:string|null;side:string|null}[]){
+    const put=this.db.prepare('INSERT OR IGNORE INTO sharp_snaps VALUES(?,?,?,?,?,?,?,?,?,?,?)');
+    this.db.transaction(()=>{for(const r of rows)put.run(time,r.cond,r.outcome,r.title,r.wallets,r.value,r.avgEntry,r.curPrice,r.against,r.ticker,r.side);})();
+  }
+  putLean(r:{round:number;horizon:number;time:number;ticker:string;upPrice:number|null;sharpNet:number;allNet:number;sharpWallets:number;yesBid:number|null;yesAsk:number|null}){
+    this.db.prepare('INSERT OR IGNORE INTO btc_lean(round,horizon,time,ticker,up_price,sharp_net,all_net,sharp_wallets,yes_bid,yes_ask) VALUES(?,?,?,?,?,?,?,?,?,?)').run(r.round,r.horizon,r.time,r.ticker,r.upPrice,r.sharpNet,r.allNet,r.sharpWallets,r.yesBid,r.yesAsk);
+  }
+  leanHorizons(round:number){return new Set((this.db.prepare('SELECT horizon FROM btc_lean WHERE round=?').all(round) as {horizon:number}[]).map(r=>r.horizon));}
+  /** Rounds whose Kalshi result is not stored yet, 5+ minutes after they closed. */
+  unscoredLean(now:number){return (this.db.prepare('SELECT DISTINCT ticker FROM btc_lean WHERE result IS NULL AND (round+900)*1000<? ORDER BY ticker LIMIT 20').all(now-300000) as {ticker:string}[]).map(r=>r.ticker);}
+  scoreLean(ticker:string,result:'yes'|'no'){this.db.prepare('UPDATE btc_lean SET result=? WHERE ticker=?').run(result,ticker);}
+  categoryOf(series:string){return (this.db.prepare('SELECT category FROM markets WHERE series_ticker=? AND category IS NOT NULL LIMIT 1').get(series) as {category:string}|undefined)?.category??null;}
+  leanRows(){return this.db.prepare('SELECT round,horizon,time,ticker,up_price AS upPrice,sharp_net AS sharpNet,all_net AS allNet,sharp_wallets AS sharpWallets,yes_bid AS yesBid,yes_ask AS yesAsk,result FROM btc_lean ORDER BY round').all() as LeanRow[];}
   matchesFor(ticker:string){return this.db.prepare('SELECT ticker,source,ref_id AS refId,method,status,score,title,url,decided_at AS decidedAt FROM matches WHERE ticker=?').all(ticker) as {ticker:string;source:string;refId:string;method:string;status:string;score:number|null;title:string;url:string;decidedAt:number|null}[];}
   decideMatch(ticker:string,source:string,refId:string,status:'confirmed'|'rejected',now:number){return this.db.prepare('UPDATE matches SET status=?,decided_at=? WHERE ticker=? AND source=? AND ref_id=?').run(status,now,ticker,source,refId).changes>0;}
   isRejected(ticker:string,source:string,refId:string){return !!this.db.prepare(`SELECT 1 FROM matches WHERE ticker=? AND source=? AND ref_id=? AND status='rejected'`).get(ticker,source,refId);}

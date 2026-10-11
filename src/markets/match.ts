@@ -1,6 +1,6 @@
 import {teamMatches} from './teams';
 /** A game on an outside venue, with its moneyline and full-game totals. probs[i] is outcome i's chance (NaN = unusable). */
-export interface RefMarket {id:string;kind:'moneyline'|'totals';line:number|null;outcomes:string[];probs:number[];spread:number|null}
+export interface RefMarket {id:string;kind:'moneyline'|'totals';line:number|null;outcomes:string[];probs:number[];spread:number|null;cond?:string}
 export interface RefGame {id:string;league:string;start:number;teams:[string[],string[]];url:string;markets:RefMarket[]}
 /** What a Kalshi game market says about itself. teams: every name Kalshi gives each side (title part, sub-title, code). */
 export interface KalshiGame {league:string;expectedEnd:number;teams:[string[],string[]];yesTeam:0|1|null;kind:'moneyline'|'totals';line:number|null;yesIsOver:boolean|null}
@@ -23,12 +23,12 @@ export function matchGame(k:KalshiGame,games:RefGame[]):{game:RefGame;swap:boole
   return found.length===1?found[0]:null;
 }
 /** The outside chance of this Kalshi market's YES: its team's moneyline outcome, or Over/Under at exactly the same line. */
-export function refProb(k:KalshiGame,m:{game:RefGame;swap:boolean}):{prob:number;market:RefMarket}|null{
+export function refProb(k:KalshiGame,m:{game:RefGame;swap:boolean}):{prob:number;market:RefMarket;yesOutcome:string}|null{
   let market:RefMarket|undefined,idx=-1;
   if(k.kind==='moneyline'&&k.yesTeam!==null){market=m.game.markets.find(x=>x.kind==='moneyline');idx=m.swap?1-k.yesTeam:k.yesTeam;}
   if(k.kind==='totals'&&k.line!==null&&k.yesIsOver!==null){market=m.game.markets.find(x=>x.kind==='totals'&&x.line===k.line);idx=market?market.outcomes.findIndex(o=>o.toLowerCase()===(k.yesIsOver?'over':'under')):-1;}
   const prob=market&&idx>=0?market.probs[idx]:NaN;
-  return market&&Number.isFinite(prob)?{prob,market}:null;
+  return market&&Number.isFinite(prob)?{prob,market,yesOutcome:market.outcomes[idx]}:null;
 }
 /** A Kalshi event as kalshiGameFrom needs it: its title ("PHI Eagles vs JAC Jaguars") and its team markets. */
 export interface KalshiEvent {title:string;markets:{ticker:string;yes_sub_title?:string}[]}

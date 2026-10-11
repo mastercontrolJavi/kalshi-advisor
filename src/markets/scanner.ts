@@ -72,7 +72,7 @@ export class Scanner {
       const latest=new Map<string,FlagRow>();for(const f of fs)if(!latest.has(f.type))latest.set(f.type,f);
       const flags=[...latest.values()].map(f=>({type:f.type as FlagType,side:f.side,edge:f.edge,price:f.price,time:f.time,evidence:evidence(stats,f.type,e.group)}));
       // Tiers, so different units never compete: proven, then an outside-price gap, then a 1-hour move, then a price band.
-      const tier=(t:string)=>t.startsWith('ref-gap')?300:t.startsWith('move')?200:100,proven=flags.some(f=>f.evidence?.proven),size=Math.max(...flags.map(f=>tier(f.type)+Math.min(99,f.edge*100)));
+      const tier=(t:string)=>t.startsWith('ref-gap')?300:t.startsWith('sharp')?250:t.startsWith('move')?200:100,proven=flags.some(f=>f.evidence?.proven),size=Math.max(...flags.map(f=>tier(f.type)+Math.min(99,f.type.startsWith('sharp')?f.edge*10:f.edge*100)));
       const ref=this.refs.reference(e.q.ticker,now),mid=sideProb(e.q,'yes');
       out.push({ticker:e.q.ticker,event:e.q.eventTicker,series:e.q.seriesTicker,title:e.q.title,yesLabel:e.q.yesLabel,group:e.group,yesBid:e.q.yesBid,yesAsk:e.q.yesAsk,
         spread:e.q.yesBid!==null&&e.q.yesAsk!==null?e.q.yesAsk-e.q.yesBid:null,volume24h:e.q.volume24h,dollarVolume:e.dollars,closeTime:e.q.expectedExpiration??e.q.closeTime,

@@ -8,9 +8,9 @@ const cfg:ExitConfig={exitMode:'hold',exitMargin:.02,makerMargin:.03,takeProfitP
 const quote=(bid:string,ask:string,extra:any={},now=1000)=>parseMarket({ticker:'KXNFLGAME-X-KC',event_ticker:'KXNFLGAME-X',yes_sub_title:'Kansas City',status:'active',result:'',yes_bid_dollars:bid,yes_ask_dollars:ask,no_bid_dollars:(1-Number(ask)).toFixed(4),no_ask_dollars:(1-Number(bid)).toFixed(4),...extra},now);
 const input=(over:Partial<PositionInput>={}):PositionInput=>({position:{ticker:'KXNFLGAME-X-KC',position_fp:'10',market_exposure_dollars:'6.00',fees_paid_dollars:'0.15'},quote:quote('.66','.68'),combo:null,
   open:{ticker:'KXNFLGAME-X-KC',side:'yes',contracts:10,avgCost:.615},schedule:baseFees,cfg,memory:undefined,now:1000,...over});
-it('single market: cost from fills, sell value at the bid after the fee, hold value at the mid, HOLD',()=>{
+it('single market: cost from fills, sell value at the bid after the fee, hold value at the mid, LET IT RIDE as the 67% favourite',()=>{
   const {view}=positionView(input())!;expect(view.side).toBe('yes');expect(view.costSource).toBe('fills');expect(view.winProb).toBeCloseTo(.67);expect(view.probSource).toBe('market');
-  expect(view.sellValue!).toBeCloseTo(10*.66-view.sellFee!,6);expect(view.holdValue!).toBeCloseTo(6.7);expect(view.unrealized!).toBeCloseTo(view.sellValue!-6.15,6);expect(view.verdict).toBe('HOLD');expect(view.stale).toBe(false);});
+  expect(view.sellValue!).toBeCloseTo(10*.66-view.sellFee!,6);expect(view.holdValue!).toBeCloseTo(6.7);expect(view.unrealized!).toBeCloseTo(view.sellValue!-6.15,6);expect(view.verdict).toBe('LET IT RIDE');expect(view.stale).toBe(false);});
 it('before fills sync, cost is exposure plus fees paid, labelled estimate',()=>{
   const {view}=positionView(input({open:undefined}))!;expect(view.costSource).toBe('estimate');expect(view.avgCost!).toBeCloseTo(.615);});
 it('a NO position uses the NO bid and 1 − mid',()=>{
@@ -22,10 +22,10 @@ it('a quote older than 30 s is stale and says so',()=>{
   const {view}=positionView(input({now:1000+31000}))!;expect(view.stale).toBe(true);expect(view.reason).toContain('old');});
 it('no price at all: NO PRICE',()=>{
   const {view}=positionView(input({quote:quote('0','0')}))!;expect(view.verdict).toBe('NO PRICE');});
-it('SELL BEATS HOLD only when the bid nets more than the hold value by the margin',()=>{
+it('SELL only when the bid nets more than the hold value by the margin',()=>{
   const combo:ComboView={legs:[],value:.002,won:7,lost:0,pending:1,unknown:0,dead:false,oneLeft:true,correlated:false,refValue:null,refLegs:0};
   const cq=quote('.03','.05');const {view}=positionView(input({quote:cq,combo,open:{ticker:'KXNFLGAME-X-KC',side:'yes',contracts:10,avgCost:.004}}))!;
-  expect(view.probSource).toBe('legs');expect(view.winProb).toBeCloseTo(.002);expect(view.verdict).toBe('SELL BEATS HOLD');
+  expect(view.probSource).toBe('legs');expect(view.winProb).toBeCloseTo(.002);expect(view.verdict).toBe('SELL');
   expect(positionView(input({quote:quote('.0021','.05'),combo,open:{ticker:'KXNFLGAME-X-KC',side:'yes',contracts:10,avgCost:.004}}))!.view.verdict).toBe('HOLD');});
 it('combo notices: dead stops everything; a newly won leg is announced; first sight is a silent baseline',()=>{
   const base:ComboView={legs:[{ticker:'L1',side:'yes',label:'Iowa',status:'won',p:1,bid:null,ask:null,game:'g1',ref:null,refSource:null},{ticker:'L2',side:'yes',label:'USC',status:'pending',p:.5,bid:.49,ask:.51,game:'g2',ref:null,refSource:null},{ticker:'L3',side:'yes',label:'Ohio',status:'pending',p:.5,bid:.49,ask:.51,game:'g3',ref:null,refSource:null},{ticker:'L4',side:'yes',label:'Utah',status:'pending',p:.5,bid:.49,ask:.51,game:'g4',ref:null,refSource:null}],value:.125,won:1,lost:0,pending:3,unknown:0,dead:false,oneLeft:false,correlated:false,refValue:null,refLegs:0};
@@ -45,7 +45,7 @@ import type {Reference} from '../src/markets/references';
 const refOf=(prob:number,o:Partial<Reference>={}):Reference=>({source:'polymarket',prob,time:1000,stale:false,status:'auto',title:'nfl-x',url:'u',refId:'r',...o});
 it('a trusted outside reference becomes the win chance; the verdict compares the bid with it',()=>{
   const {view}=positionView(input({reference:refOf(.55)}))!;expect(view.winProb).toBeCloseTo(.55);expect(view.marketProb).toBeCloseTo(.67);expect(view.probSource).toBe('reference');
-  expect(view.holdValue).toBeCloseTo(5.5);expect(view.verdict).toBe('SELL BEATS HOLD');expect(view.reason).toContain('Polymarket 55.0%');expect(view.reason).toContain('Kalshi 67.0%');});
+  expect(view.holdValue).toBeCloseTo(5.5);expect(view.verdict).toBe('SELL');expect(view.reason).toContain('Polymarket 55.0%');expect(view.reason).toContain('Kalshi 67.0%');});
 it('a suggested or stale reference changes nothing, and the reason says why',()=>{
   const s=positionView(input({reference:refOf(.3,{status:'suggested'})}))!.view;expect(s.winProb).toBeCloseTo(.67);expect(s.probSource).toBe('market');expect(s.reason).toContain('not confirmed');
   const st=positionView(input({reference:refOf(.3,{stale:true})}))!.view;expect(st.winProb).toBeCloseTo(.67);expect(st.reason).toContain('stale');});

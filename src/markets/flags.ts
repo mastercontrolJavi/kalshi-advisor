@@ -5,7 +5,7 @@ import type {AccuracyTables} from './record';
  * Scanner flags: reasons a market stands out. Each is paper-traded (one contract at the flagged side's ask plus the taker fee)
  * and scored at settlement, so no flag type is called an edge until its own results prove it.
  */
-export type FlagType='ref-gap-yes'|'ref-gap-no'|'move-follow'|'move-fade'|'bias-yes'|'bias-no';
+export type FlagType='ref-gap-yes'|'ref-gap-no'|'move-follow'|'move-fade'|'bias-yes'|'bias-no'|'sharp-yes'|'sharp-no';
 export interface Flag {time:number;ticker:string;event:string;group:Group;type:FlagType;side:'yes'|'no';price:number;fee:number;edge:number;context:Record<string,unknown>}
 export interface LastFlag {time:number;edge:number}
 export type LastLookup=(ticker:string,type:FlagType)=>LastFlag|null;

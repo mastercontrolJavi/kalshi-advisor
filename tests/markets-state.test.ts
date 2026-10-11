@@ -9,7 +9,7 @@ const series=new Map([['KXNFLGAME',{category:'Sports',schedule:baseFees}]]);
 const positions=[{ticker:'KXNFLGAME-X-KC',position_fp:'4',market_exposure_dollars:'2.4',fees_paid_dollars:'.06'},{ticker:'KXBTC15M-Y',position_fp:'3',market_exposure_dollars:'1.5'},{ticker:'KXNFLGAME-Z-LV',position_fp:'0.00',market_exposure_dollars:'0'}];
 it('builds one card per open non-Bitcoin position with title, group and spark',()=>{
   const {cards,memory}=buildPositions({positions,quotes,series,open:new Map(),cfg:defaults,memory:new Map(),now,spark:()=>[{t:1,mid:.5}]});
-  expect(cards).toHaveLength(1);expect(cards[0]).toMatchObject({title:'Kansas City',marketTitle:'KC vs LV Winner?',group:'sports',verdict:'HOLD',seriesTicker:'KXNFLGAME'});expect(cards[0].spark).toHaveLength(1);expect(memory.has('KXNFLGAME-X-KC')).toBe(true);});
+  expect(cards).toHaveLength(1);expect(cards[0]).toMatchObject({title:'Kansas City',marketTitle:'KC vs LV Winner?',group:'sports',verdict:'LET IT RIDE',seriesTicker:'KXNFLGAME'});expect(cards[0].spark).toHaveLength(1);expect(memory.has('KXNFLGAME-X-KC')).toBe(true);});
 it('a combo position gets its legs and is titled by leg count',()=>{
   const combo=parseMarket({ticker:'KXMVECROSSCATEGORY-S-A',event_ticker:'KXMVECROSSCATEGORY-S',title:'yes Kansas City',yes_sub_title:'yes Kansas City',status:'active',result:'',yes_bid_dollars:'.001',yes_ask_dollars:'.9',mve_selected_legs:[{event_ticker:'KXNFLGAME-X',market_ticker:'KXNFLGAME-X-KC',side:'yes'}]},now);
   const q=new Map(quotes);q.set(combo.ticker,combo);
@@ -40,3 +40,13 @@ it('references reach single markets and combo legs',()=>{
   const q=new Map(quotes);q.set(combo.ticker,combo);
   const c=buildPositions({positions:[{ticker:combo.ticker,position_fp:'100',market_exposure_dollars:'.5'}],quotes:q,series,open:new Map(),cfg:defaults,memory:new Map(),now,spark:()=>[],reference:t=>t==='KXNFLGAME-X-KC'?ref:null}).cards[0];
   expect(c.combo!.refLegs).toBe(1);expect(c.winProb).toBeCloseTo(.5);});
+it('a crypto 15-minute round priced by the model gets the Bitcoin advise words: SELL NOW in the final 90 s when the bid is rich',()=>{
+  const q=parseMarket({ticker:'KXSOL15M-26OCT110300-00',event_ticker:'KXSOL15M-26OCT110300',title:'SOL price up?',yes_sub_title:'Up',status:'active',result:'',yes_bid_dollars:'.45',yes_ask_dollars:'.47',no_bid_dollars:'.53',no_ask_dollars:'.55',close_time:new Date(now+40000).toISOString(),floor_strike:109.5},now);
+  const pos=[{ticker:q.ticker,position_fp:'10',market_exposure_dollars:'5.00'}];
+  const run=(p:number,tau:number)=>buildPositions({positions:pos,quotes:new Map([[q.ticker,q]]),series:new Map([['KXSOL15M',{category:'Crypto',schedule:baseFees}]]),open:new Map(),cfg:defaults,memory:new Map(),now,spark:()=>[],
+    crypto:()=>({coin:'SOL',spot:109,strike:109.5,tau,sigma:.0005,model:p,kalshi:.46,p})}).cards[0];
+  const urgent=run(.3,40);expect(urgent.verdict).toBe('SELL NOW');expect(urgent.urgent).toBe(true);expect(urgent.probSource).toBe('model');expect(urgent.sellAtBid).not.toBeNull();
+  expect(run(.3,400).verdict).toBe('HOLD');expect(run(.7,400).verdict).toBe('LET IT RIDE');
+  // A model that cannot price it (rule mismatch, warming) leaves the ordinary market-odds verdict and says why.
+  const off=buildPositions({positions:pos,quotes:new Map([[q.ticker,q]]),series:new Map(),open:new Map(),cfg:defaults,memory:new Map(),now,spark:()=>[],crypto:()=>({coin:'SOL',error:'model warming up'})}).cards[0];
+  expect(off.probSource).toBe('market');expect((off.model as any).error).toContain('warming');});

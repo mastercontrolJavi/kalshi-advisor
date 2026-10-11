@@ -38,11 +38,14 @@ export function detectEvents(prev:AlertSnapshot|null,next:AlertSnapshot):SoundNa
 }
 const MARKET_SOUNDS:Record<string,SoundName>={dead:'comboDead','one-left':'oneLeft','leg-won':'legWon'};
 /** Notice kind per held market from the markets process; empty when its state is not fresh (silence, not a change). */
-export function marketsSnapshot(m:any,fresh:boolean):Record<string,string|null>{return fresh&&m?Object.fromEntries((m.positions??[]).map((p:any)=>[p.ticker,p.notice?.kind??null])):{};}
+export function marketsSnapshot(m:any,fresh:boolean):Record<string,string|null>{return fresh&&m?Object.fromEntries((m.positions??[]).flatMap((p:any)=>[[p.ticker,p.notice?.kind??null],[p.ticker+'#verdict',p.verdict??null]])):{};}
 /** A new or different notice on a position already seen. A position seen for the first time is the silent baseline. */
 export function detectMarketEvents(prev:Record<string,string|null>|null,next:Record<string,string|null>){
   if(!prev)return [];const out:{ticker:string;kind:string;sound:SoundName}[]=[];
-  for(const [ticker,kind] of Object.entries(next))if(kind&&ticker in prev&&kind!==prev[ticker])out.push({ticker,kind,sound:MARKET_SOUNDS[kind]??'marketMove'});
+  for(const [key,kind] of Object.entries(next)){if(!kind||!(key in prev)||kind===prev[key])continue;
+    // A verdict sounds only when it turns into SELL or SELL NOW (SELL NOW calming to SELL is silent).
+    if(key.endsWith('#verdict')){if(kind==='SELL NOW'||kind==='SELL'&&prev[key]!=='SELL NOW')out.push({ticker:key.slice(0,-8),kind,sound:'sell'});continue;}
+    out.push({ticker:key,kind,sound:MARKET_SOUNDS[kind]??'marketMove'});}
   return out;
 }
 /** Every open dashboard tab sees the same markets notice; the first tab to claim it plays it. */

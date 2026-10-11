@@ -55,3 +55,8 @@ it('claimOnce lets only one tab play a markets sound within the window',()=>{
   expect(claimOnce('C:dead',1000,store)).toBe(true);expect(claimOnce('C:dead',1500,store)).toBe(false);expect(claimOnce('C:dead',62000,store)).toBe(true);expect(claimOnce('D:dead',1500,store)).toBe(true);});
 it('the markets sound category is on by default, and old saved prefs gain it switched on',()=>{
   expect(defaultPrefs.categories.markets).toBe(true);expect(migratePrefs({version:2,enabled:true,volume:.5,categories:{signals:false},repeatSell:true}).categories.markets).toBe(true);});
+it('a Markets card turning to SELL or SELL NOW sounds once; calming from SELL NOW to SELL is silent',()=>{
+  const v=(verdict:string)=>marketsSnapshot({positions:[{ticker:'S',notice:null,verdict}]},true);
+  expect(detectMarketEvents(v('HOLD'),v('SELL'))).toEqual([{ticker:'S',kind:'SELL',sound:'sell'}]);
+  expect(detectMarketEvents(v('SELL'),v('SELL NOW')).map(e=>e.sound)).toEqual(['sell']);
+  expect(detectMarketEvents(v('SELL NOW'),v('SELL'))).toEqual([]);expect(detectMarketEvents(v('HOLD'),v('LET IT RIDE'))).toEqual([]);});

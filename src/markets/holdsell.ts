@@ -7,9 +7,10 @@ import {sideBid,sideProb} from './quotes';
 import {trusted,type Reference} from './references';
 export const STALE_MS=30000,LEG_WON_MS=10*60000;
 export interface MarketNotice {kind:'gain'|'giveback'|'loss'|'odds'|'dead'|'one-left'|'leg-won';tone:'yes'|'warn'|'no';title:string;text:string}
-export interface MarketMemory {peak:number|null;trough:number|null;notice:MarketNotice['kind']|null;legsWon:number|null;legWonAt:number|null}
-export type Verdict='HOLD'|'SELL BEATS HOLD'|'SETTLING'|'DEAD'|'NO PRICE';
-export interface PositionView {ticker:string;side:'yes'|'no';contracts:number;avgCost:number|null;costSource:'fills'|'estimate'|null;bid:number|null;winProb:number|null;probSource:'market'|'legs'|'reference'|'settled'|null;marketProb:number|null;reference:Reference|null;sellFee:number|null;sellValue:number|null;holdValue:number|null;unrealized:number|null;unrealizedPct:number|null;peakPct:number|null;troughPct:number|null;verdict:Verdict;reason:string;notice:MarketNotice|null;stale:boolean}
+export interface MarketMemory {peak:number|null;trough:number|null;notice:MarketNotice['kind']|null;legsWon:number|null;legWonAt:number|null;exit?:import('../engine/exits').ExitMemory|null}
+/** Same words as the Bitcoin advise mode (DECISIONS 50); SELL NOW / TOO LATE come only from crypto rounds priced by the model. */
+export type Verdict='HOLD'|'LET IT RIDE'|'LET IT SETTLE'|'SELL'|'SELL NOW'|'TOO LATE'|'SETTLING'|'DEAD'|'NO PRICE';
+export interface PositionView {ticker:string;side:'yes'|'no';contracts:number;avgCost:number|null;costSource:'fills'|'estimate'|null;bid:number|null;winProb:number|null;probSource:'model'|'market'|'legs'|'reference'|'settled'|null;marketProb:number|null;reference:Reference|null;sellFee:number|null;sellValue:number|null;holdValue:number|null;unrealized:number|null;unrealizedPct:number|null;peakPct:number|null;troughPct:number|null;verdict:Verdict;reason:string;notice:MarketNotice|null;stale:boolean}
 export interface PositionInput {position:{ticker:string;position_fp:string;market_exposure_dollars?:string;fees_paid_dollars?:string};quote:Quote|null;combo:ComboView|null;open:OpenCost|undefined;schedule:FeeSchedule;cfg:ExitConfig;memory:MarketMemory|undefined;now:number;reference?:Reference|null}
 const pct=(v:number)=>`${(v*100).toFixed(1)}%`,NAME={polymarket:'Polymarket',sportsbooks:'Sportsbooks'};
 const c=(v:number)=>v<.01?`${(v*100).toFixed(2)}¢`:`${(v*100).toFixed(1)}¢`,usd=(v:number)=>`$${Math.abs(v).toFixed(2)}`;
@@ -19,7 +20,7 @@ const HOLD_KINDS:ExitNotice['kind'][]=['gain','giveback','loss','odds'];
  * or for a combo the product of its legs) × $1 per contract; selling pays the side's bid minus the taker fee. With market
  * odds alone, selling almost never beats holding (it costs half the spread plus the fee). SELL BEATS HOLD appears when
  * the bid exceeds what the position is worth by the margin: max(0.05¢, min(exitMargin, 20% of the win chance)), so a
- * sub-cent combo is not held to the 2¢ margin meant for ordinary contracts.
+ * sub-cent combo is not held to the 2¢ margin meant for ordinary contracts. (Shown as SELL since 2026-10-10.)
  */
 export function positionView(i:PositionInput):{view:PositionView;memory:MarketMemory}|null{
   const signed=Number(i.position.position_fp);if(!Number.isFinite(signed)||Math.abs(signed)<1e-9)return null;
@@ -53,10 +54,11 @@ export function positionView(i:PositionInput):{view:PositionView;memory:MarketMe
   const why=!combo&&ref&&!useRef?(ref.status==='suggested'?` A ${NAME[ref.source]} match is not confirmed, so Kalshi's odds are used.`:` The ${NAME[ref.source]} price is stale, so Kalshi's odds are used.`):'';
   if(p===null)return done({winProb:null,probSource:null,holdValue:null,verdict:'NO PRICE',notice:null,reason:(combo?'A leg has no price or was not returned by Kalshi, so the combo cannot be valued.':'Kalshi shows no bid, ask or last trade for this market.')+old});
   const holdValue=contracts*p,net=sellValue!==null?sellValue/contracts:null,margin=Math.max(.0005,Math.min(i.cfg.exitMargin,.2*p));
-  const verdict:Verdict=net!==null&&net-p>=margin?'SELL BEATS HOLD':'HOLD';
+  // SELL when the bid beats the value by the margin; else LET IT SETTLE near $1, LET IT RIDE as the favourite, HOLD otherwise.
+  const verdict:Verdict=net!==null&&net-p>=margin?'SELL':bid!==null&&bid>=.97?'LET IT SETTLE':p>=.6?'LET IT RIDE':'HOLD';
   const worth=combo?`Priced leg by leg${combo.refLegs?` (${combo.refLegs} of ${combo.legs.length} legs at outside odds)`:''}, it is worth ${c(p)} a contract${combo.correlated?' (rough: some legs are on the same game)':''}`
     :useRef?`${NAME[ref!.source]} ${pct(refSide!)} vs Kalshi ${marketProb!==null?pct(marketProb):'—'}: it is worth ${c(p)} a contract`:`At market odds it is worth ${c(p)} a contract`;
-  const reason=net===null?`${worth}. No ${side.toUpperCase()} bid to sell into.`:verdict==='SELL BEATS HOLD'?`The bid nets ${c(net)} a contract after the fee, ${c(net-p)} more than it is worth. ${worth}.`
+  const reason=net===null?`${worth}. No ${side.toUpperCase()} bid to sell into.`:verdict==='SELL'?`The bid nets ${c(net)} a contract after the fee, ${c(net-p)} more than it is worth. ${worth}.`
     :`${worth}; selling at the bid nets ${c(net)} after the fee${combo||useRef?'':', so holding is worth more unless another source disagrees with Kalshi'}.`;
   let notice:MarketNotice|null=null;
   const lastLeg=combo?.oneLeft?combo.legs.find(l=>l.status==='pending'):undefined;

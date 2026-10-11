@@ -20,6 +20,7 @@ function due(t:number|null,now:number){if(!t)return '—';const s=Math.round((t-
 /** What the flag says, in a few words: the gap after fees, the move, or the band. */
 function flagDetail(f:any){
   if(f.type.startsWith('ref-gap'))return `${cents(f.edge)} after fees · buy ${f.side.toUpperCase()} at ${price(f.price)}`;
+  if(f.type.startsWith('sharp'))return `${f.edge} sharp Polymarket wallets hold this · copy ${f.side.toUpperCase()} at ${price(f.price)}`;
   if(f.type.startsWith('move'))return `moved ${cents(f.edge,0)} in 1 h · ${f.side.toUpperCase()} at ${price(f.price)}`;
   return `buying ${f.side.toUpperCase()} at this price returned +${(f.edge*100).toFixed(1)}% per $1 after fees · ${f.side.toUpperCase()} at ${price(f.price)}`;
 }

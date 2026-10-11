@@ -9,7 +9,8 @@ export function parseMarket(m:any,now:number):Quote{
   const legs:Leg[]|null=Array.isArray(m.mve_selected_legs)&&m.mve_selected_legs.length?m.mve_selected_legs.map((l:any)=>({eventTicker:String(l.event_ticker),marketTicker:String(l.market_ticker),side:l.side==='no'?'no':'yes'})):null;
   return {ticker:String(m.ticker),eventTicker:String(m.event_ticker??''),seriesTicker:seriesOf(String(m.ticker)),title:String(m.title??''),yesLabel:String(m.yes_sub_title??m.title??''),status:String(m.status??''),
     result:m.result==='yes'||m.result==='no'?m.result:null,yesBid:bidOf(m.yes_bid_dollars),yesAsk:askOf(m.yes_ask_dollars),noBid:bidOf(m.no_bid_dollars),noAsk:askOf(m.no_ask_dollars),
-    last:bidOf(m.last_price_dollars),volume24h:price(m.volume_24h_fp),closeTime:time(m.close_time),expectedExpiration:time(m.expected_expiration_time),legs,updated:now};
+    last:bidOf(m.last_price_dollars),volume24h:price(m.volume_24h_fp),closeTime:time(m.close_time),expectedExpiration:time(m.expected_expiration_time),legs,updated:now,
+    strike:price(m.floor_strike)??price(m.cap_strike),rules:typeof m.rules_primary==='string'?m.rules_primary:undefined};
 }
 export const sideBid=(q:Quote,side:'yes'|'no')=>side==='yes'?q.yesBid:q.noBid;
 /** Market-implied chance that `side` wins: the two-sided YES mid, else the last trade; null when Kalshi has neither. */
