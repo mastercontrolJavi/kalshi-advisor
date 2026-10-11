@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config({path:'.env.local',quiet:true});
 import {createServer} from 'node:http';
+import {Worker} from 'node:worker_threads';
 import {readFileSync,statSync} from 'node:fs';
 import {WebSocketServer,WebSocket} from 'ws';
 import {Journal} from './journal';
@@ -50,7 +51,7 @@ const journal=new Journal();let config=journal.config();
     config=validateConfig({...config,...changes});journal.set('config',config);journal.set('migration:2026-10-10a',true);
     journal.log('settings-migrated',{changes});
   }}
-// Quant state: the stacked forecaster and the proxy→BRTI basis are refit from settled windows (see refitQuant).
+// Quant state: the stacked forecaster and the proxy→BRTI basis are refit from settled windows (calibration-worker.ts).
 const basisErrors=()=>(journal.db.prepare('SELECT basis_error FROM outcomes WHERE basis_error IS NOT NULL ORDER BY time').all() as {basis_error:number}[]).map(r=>r.basis_error);
 let stack:StackFit=fitStack(stackSamples(journal.db)),basisState=autoBasis(basisErrors());
 let calibration=buildCalibration(journal,stack,basisState);
@@ -63,6 +64,7 @@ const seriesHistory:{time:number;model:number|null;market:number|null;quant:numb
 let live:{ticker:string;direction:Direction|null;since:number;flips:number}={ticker:'',direction:null,since:0,flips:0};
 const tacticsHistory:{time:number;yesAsk:number|null;noAsk:number|null;q:number}[]=[];
 const exitMemory=new Map<string,ExitMemory>();
+let candleRounds:{at:number;rows:{ticker:string;k:number}[]}|null=null;
 // Firm BUY signals (signals.ts latchSignal): per round, reset when the round changes.
 let latch:Latch=emptyLatch(),latchTicker='',journaledLatch=0;
 // Backtest verdict (written by npm run backtest), reloaded whenever the file changes; shown beside every BUY.
@@ -71,7 +73,7 @@ function loadVerdict(){try{const m=statSync(VERDICT_PATH).mtimeMs;if(m!==verdict
 loadVerdict();
 // Daily automatic backtest refresh in a separate low-priority process (see refresh.ts).
 const refresher=new BacktestRefresher(log);const refresherTimer=setInterval(()=>refresher.tick(),5*60000);
-let settledOnce=false,calibrationKey='',sentCalibration:number|null=null;
+let settledOnce=false,sentCalibration:number|null=null;
 let previousTicker='',lastLoop=Date.now(),lastSecond=0,lastPublish=0,lastFastRefresh=0,settling=false,refreshing=false;
 const safe=(name:string,fn:()=>Promise<void>)=>void fn().catch(e=>log(name,{message:e.message}));
 async function refresh(){if(refreshing)return;refreshing=true;try{await kalshi.refresh();for(const m of kalshi.markets){known.set(m.ticker,m);journal.set('market:'+m.ticker,m);}await kalshi.fallback();}finally{refreshing=false;}}
@@ -105,8 +107,11 @@ const server=createServer(async(req,res)=>{
       res.setHeader('Content-Type','application/json');res.end(JSON.stringify({...buildAnalytics(rollupMarkets(journal.realEvents(),fees,signals),balances),account:{balance:account.balance,portfolio:account.portfolioValue,ready:account.ready}}));return;
     }
     // Price chart: the last 2 h of the 1-s proxy (the model's own spot) and each round's opening price K, for candles.
+    // INDEXED BY ticks_time: left to itself SQLite walked ticks_market (every tick ever, 1–12 s) and froze the loop every
+    // time a dashboard loaded the chart. On the time index it is ~60 ms; the round list is also cached for 30 s.
     if(req.method==='GET'&&path==='/candles'){
-      const since=Date.now()-7200000,rows=journal.db.prepare('SELECT ticker,MAX(k) AS k FROM ticks WHERE time>=? AND k IS NOT NULL GROUP BY ticker').all(since) as {ticker:string;k:number}[];
+      const since=Date.now()-7200000;if(!candleRounds||Date.now()-candleRounds.at>30000)candleRounds={at:Date.now(),rows:journal.db.prepare('SELECT ticker,MAX(k) AS k FROM ticks INDEXED BY ticks_time WHERE time>=? AND k IS NOT NULL GROUP BY ticker').all(since) as {ticker:string;k:number}[]};
+      const rows=candleRounds.rows;
       const rounds=rows.map(r=>{const m=known.get(r.ticker)??journal.get<Market|null>('market:'+r.ticker,null),k=Number(m?.floor_strike);return m?{ticker:r.ticker,open:Date.parse(m.open_time),close:Date.parse(m.close_time),k:Number.isFinite(k)&&k>0?k:r.k}:null;}).filter(Boolean);
       res.setHeader('Content-Type','application/json');res.end(JSON.stringify({samples:proxy.history.filter(x=>x.time>=since).map(x=>[x.time,Math.round(x.price*100)/100]),rounds}));return;}
     if(req.method==='GET'&&path==='/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;}
@@ -179,23 +184,17 @@ async function settleHours(){
   hourlyHistory=buildHourlyHistory(journal.db);
 }
 
-// Refit only when new settled windows arrive (leave-one-market-out CV is the costly part).
 // Late-round forecast (final minute): fitted on the kept final-minute seconds and used only once its learned weights beat
-// the default blend on rounds held out of the fit; until then the main forecast applies there too.
-const lateCache=new Map<string,StackSample[]>();let lateStack:StackFit=fitStack(lateSamples(journal.db,lateCache)),lateOutcomes=-1;
-function refitQuant(){
-  // Only after a new settlement: the final-minute rows of a round are complete once its outcome is recorded.
-  const settledCount=(journal.db.prepare('SELECT count(*) n FROM outcomes').get() as {n:number}).n;
-  if(settledCount!==lateOutcomes){lateOutcomes=settledCount;const late=lateSamples(journal.db,lateCache);
-    if(late.length!==lateStack.n){lateStack=fitStack(late);log('late-fit',{n:lateStack.n,markets:lateStack.markets,active:lateStack.active,cv:lateStack.cv,weights:describe(lateStack)});}}
-  const samples=stackSamples(journal.db);basisState=autoBasis(basisErrors());if(samples.length===stack.n)return;
-  stack=fitStack(samples);const entry={time:Date.now(),n:stack.n,markets:stack.markets,active:stack.active,cv:stack.cv,weights:describe(stack),basis:basisState.correction};
-  log('quant-fit',entry);journal.set('quantHistory',[...journal.get<any[]>('quantHistory',[]),entry].slice(-200));
-}
-// Rebuild calibration only when its inputs change (a settlement, a new call or paper result, a real trade). Rebuilding
-// every 30 s regardless took 0.5–1 s of the engine loop each time and grew with the journal.
-const calibrationInputs=()=>JSON.stringify(journal.db.prepare("SELECT (SELECT count(*) FROM outcomes) o,(SELECT count(*) FROM paper_trades INDEXED BY paper_status WHERE status='settled') p,(SELECT count(*) FROM opening_calls) oc,(SELECT count(*) FROM live_calls) lc,(SELECT count(*) FROM next_calls) nc,(SELECT count(*) FROM hourly_outcomes) ho,(SELECT count(*) FROM real_trades) rt").get())+':'+stack.fitted;
-const calibrationTimer=setInterval(()=>{loadVerdict();try{refitQuant();const key=calibrationInputs();if(key!==calibrationKey){calibrationKey=key;calibration=buildCalibration(journal,stack,basisState);}}catch(e){log('calibration-error',{message:(e as Error).message});}},30000);
+// the default blend on rounds held out of the fit; until then the main forecast applies there too. Fitted once at startup
+// (before the loop runs); after that refits and the calibration report run on a worker thread (calibration-worker.ts):
+// on this thread they froze the 4 Hz loop for 2–7 s several times a round and the dashboard went stale (2026-10-11).
+let lateStack:StackFit=fitStack(lateSamples(journal.db,new Map<string,StackSample[]>()));
+const calWorker=new Worker(new URL('./calibration-worker.ts',import.meta.url),{workerData:{path:process.env.ADVISOR_DB??'./data/advisor.db'}});
+let calBusy=false;
+calWorker.on('message',(m:any)=>{calBusy=false;for(const [e,d] of m.logs??[])log(e,d);if(m.error){log('calibration-error',{message:m.error});return;}
+  if(m.stack)stack=m.stack;if(m.lateStack)lateStack=m.lateStack;if(m.basis)basisState=m.basis;if(m.calibration)calibration=m.calibration;});
+calWorker.on('error',e=>{calBusy=false;log('calibration-worker-error',{message:e.message});});
+const calibrationTimer=setInterval(()=>{loadVerdict();if(!calBusy){calBusy=true;calWorker.postMessage('tick');}},30000);
 const loop=setInterval(()=>{
   const started=performance.now(),now=Date.now(),time=Math.floor((now+client.clockOffset)/1000)*1000;
   // Only a long gap means sleep/wake; a busy-machine stall of a few seconds leaves sockets intact, and restarting
@@ -318,5 +317,5 @@ const loop=setInterval(()=>{
     const message=JSON.stringify(sendCalibration&&newSecond?state:{...state,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
-const shutdown=()=>{refresher.stop();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,calibrationTimer,hourlyTimer,hourlySettleTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
+const shutdown=()=>{refresher.stop();void calWorker.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,calibrationTimer,hourlyTimer,hourlySettleTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

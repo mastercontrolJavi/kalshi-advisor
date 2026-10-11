@@ -70,10 +70,13 @@ export class Account {
       // Open-position costs (with actual fees) for every Bitcoin market, hourly included; P&L and guardrails stay 15-minute only.
       const openCosts=new Map<string,OpenCost>();normalizeAccount(rawFills,rawSettlements,['KXBTC15M','KXBTCD'],openCosts);this.openCosts=openCosts;
       const config=this.journal.config();
+      // Warnings are stored with each real trade; reuse them after a restart instead of recomputing every past fill
+      // (763 fills cost 2–12 s of blocked engine loop on the first sync, 2026-10-11).
+      if(!this.warnings.size)for(const e of this.journal.realEvents())if(e.type==='fill'&&e.warnings)this.warnings.set(e.id,e.warnings);
       for(const e of events.filter(e=>e.type==='fill')){
         const cached=this.warnings.get(e.id);if(cached){e.warnings=cached;continue;}
         const signal=this.journal.db.prepare("SELECT json_extract(context,'$.idea.contracts') AS contracts FROM signals WHERE ticker=? AND side=? AND time<=? ORDER BY time DESC LIMIT 1").get(e.ticker,e.side,e.time) as {contracts:number}|undefined;
-        const prior=this.journal.db.prepare(`SELECT time,json_extract(context,'$.book.${e.side==='yes'?'yesAsk':'noAsk'}') AS price FROM ticks WHERE ticker=? AND time BETWEEN ? AND ? ORDER BY time`).all(e.ticker,e.time-60000,e.time) as {time:number;price:number|null}[];
+        const prior=this.journal.db.prepare(`SELECT time,json_extract(context,'$.book.${e.side==='yes'?'yesAsk':'noAsk'}') AS price FROM ticks INDEXED BY sqlite_autoindex_ticks_1 WHERE time BETWEEN ? AND ? AND ticker=? ORDER BY time`).all(e.time-60000,e.time,e.ticker) as {time:number;price:number|null}[];
         const orderCount=events.filter(f=>f.type==='fill'&&f.orderId===e.orderId&&f.time<=e.time).reduce((sum,f)=>sum+f.contracts,0);
         e.warnings=fillWarnings({...e,contracts:orderCount},signal?.contracts??null,prior.filter((p):p is {time:number;price:number}=>Number.isFinite(p.price)),config,events.filter(f=>f.ticker===e.ticker));
         this.warnings.set(e.id,e.warnings);

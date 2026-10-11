@@ -139,3 +139,10 @@
   - TradingView lightweight-charts 5.2.1 (canvas, built for live candles; its attribution logo is kept as its licence asks). Colours from the shared chartColors.
   - History: engine GET /candles, the last 2 h of 1-s proxy prices (~170 KB) and each round's K, reloaded every minute; between reloads every 4 Hz state update moves the last candle. View and candle length are remembered per browser.
   - It is a reading aid, not a signal: nothing in the advice uses it.
+
+55. Engine stalls fixed (2026-10-11, user: "the advisor goes stale pretty frequently now").
+  - **Cause 1, from decision 54:** GET /candles grouped ticks by ticker and SQLite chose the ticks_market index, walking every tick ever kept (1.25 s alone, 8–12 s inside the busy engine). With two dashboards open the loop froze ~every 30 s from 01:22. Now INDEXED BY ticks_time (~60 ms) and the round list is cached 30 s.
+  - **Cause 2, older:** the calibration report (1.4 s), the model refits (0.25 s) and the cold final-minute sample load (2.5 s) ran on the 4 Hz loop: 2–7 s stalls several times a round since at least Oct 9. They now run on a worker thread with its own SQLite connection (calibration-worker.ts); the engine only swaps in results.
+  - **Cause 3, at startup:** the first account sync recomputed fill warnings for all ~760 fills (2–12 s). Stored warnings are now reused, and the prior-price lookup uses the time index (2.1 s → 0.6 s even when recomputed).
+  - Side run on a journal copy: 0 loop stalls in 4 min with the chart polled every 15 s (requests 40–70 ms); before, 8–12 s stalls every ~30 s.
+  - Markets process: a sharp bet with no Kalshi match is searched against the ~45k-title catalogue once per catalogue load, not every 10 min.

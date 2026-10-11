@@ -30,7 +30,7 @@ export class SharpFeed {
   private at={wallets:0,positions:0,snap:0};private falcon={updated:null as number|null,error:null as string|null};private pm={updated:null as number|null,error:null as string|null};
   // Every open Kalshi market outside sports, crypto, financials, weather and mention markets (~40k), reloaded every 6 h,
   // for suggesting which Kalshi market a Polymarket one is. The local markets table only holds the scanner's busiest.
-  private catalog:{at:number;rows:{ticker:string;title:string;words:Set<string>}[]}={at:0,rows:[]};
+  private catalog:{at:number;rows:{ticker:string;title:string;words:Set<string>}[]}={at:0,rows:[]};private searched=new Set<string>();
   private round:{start:number;info:Awaited<ReturnType<typeof btcRound>>;trades:PmTrade[];updated:number|null;error:string|null}|null=null;private busy=false;
   constructor(private journal:MarketsJournal,private o:{falcon?:FalconPost;pmData:FetchJson;gamma:FetchJson;client:Client;log:(e:string,d:unknown)=>void}){
     for(const w of journal.walletRows() as SharpWallet[])(w.source==='crypto'?this.crypto:this.wallets).push(w);this.at.wallets=journal.walletsUpdated()??0;
@@ -71,8 +71,10 @@ export class SharpFeed {
   }
   /** Yes/No Polymarket markets with no Kalshi tie yet: suggest the most similar open Kalshi market (politics, economics, other), once. */
   private async suggestLinks(bets:SharpBet[],now:number){
-    const todo=bets.filter(b=>['yes','no'].includes(b.outcome.toLowerCase())&&!this.journal.linksForCond(b.cond).length&&!this.journal.hasLink(b.cond));if(!todo.length)return;
     await this.loadCatalog(now);
+    // Each bet is searched once per catalogue load: a bet with no match was re-searched against ~45k titles every 10 min.
+    const todo=bets.filter(b=>['yes','no'].includes(b.outcome.toLowerCase())&&!this.searched.has(b.cond)&&!this.journal.linksForCond(b.cond).length&&!this.journal.hasLink(b.cond));
+    for(const b of todo)this.searched.add(b.cond);if(!todo.length)return;
     for(const b of todo){const w=words(b.title);let best:{ticker:string;title:string;score:number}|null=null;
       for(const m of this.catalog.rows){const score=similarSets(w,m.words);if(!best||score>best.score)best={ticker:m.ticker,title:m.title,score};}
       // Higher bar than outside-price suggestions: a near miss here can invert the side ("controls the House" vs "loses majority").
@@ -84,7 +86,7 @@ export class SharpFeed {
     try{do{const r=await this.o.client.get(`/events?status=open&with_nested_markets=true&limit=200${cursor?'&cursor='+encodeURIComponent(cursor):''}`);pages++;
         for(const e of r.events??[]){if(skip.has(e.category))continue;for(const m of e.markets??[]){const title=`${m.title??e.title}${m.yes_sub_title&&!String(m.title??'').includes(m.yes_sub_title)?` · ${m.yes_sub_title}`:''}`;rows.push({ticker:String(m.ticker),title,words:words(title)});}}
         cursor=r.cursor??'';}while(cursor&&pages<120);
-      this.catalog={at:now,rows};this.o.log('kalshi-catalog',{markets:rows.length,pages});}
+      this.catalog={at:now,rows};this.searched.clear();this.o.log('kalshi-catalog',{markets:rows.length,pages});}
     catch(e){this.o.log('kalshi-catalog-error',{message:(e as Error).message});}
   }
   private async quotes(tickers:string[],now:number){
