@@ -29,3 +29,24 @@ it('averaging down into a losing side is called out on the fill',()=>{
   const w=fillWarnings(buy('b',2000,.32),null,[],defaults,[buy('a',1000,.73),buy('c',3000,.2)]);expect(w).toContain('Averaging down: bought more YES at 32¢ after 73¢');
   expect(fillWarnings(buy('b',2000,.7),null,[],defaults,[buy('a',1000,.73)])).toHaveLength(0);
   expect(fillWarnings(buy('b',2000,.3,'no'),null,[],defaults,[buy('a',1000,.73)])).toHaveLength(0);});
+import {latchSignal,emptyLatch,limitPrice,type Latch} from '../src/engine/signals';
+it('firm signals: a BUY shows only after 3 s, then stays through blips until the edge is gone for 3 s',()=>{
+  const ev=(action:string)=>({action,reason:'r',idea:null,makers:[],edges:{yes:null,no:null}});
+  let l:Latch=emptyLatch();const step=(t:number,action:string,yesAsk=.5,p=.6,hard:string|null=null)=>{const r=latchSignal(l,ev(action),p,{yesAsk,noAsk:1-yesAsk+.01},defaults,baseFees,100,t,hard);l=r.latch;return r.evaluation;};
+  expect(step(0,'BUY YES').action).toBe('NO TRADE');expect(step(1000,'BUY YES').forming!.side).toBe('yes');
+  // A 2-second flash never shows.
+  expect(step(2000,'NO TRADE').action).toBe('NO TRADE');expect(step(4500,'BUY YES').action).toBe('NO TRADE');
+  expect(step(7500,'BUY YES').action).toBe('BUY YES');const limit=l.limit!;expect(limit).toBe(limitPrice(.6,defaults.minEdge,baseFees));
+  // The raw rule drops out (spread blip) but the edge at the ask is still ≥ 1¢: still BUY, same limit.
+  expect(step(8500,'NO TRADE',.55,.6).action).toBe('BUY YES');expect(l.limit).toBe(limit);
+  // Forecast nudges the limit by under 2¢: unchanged.
+  step(9000,'NO TRADE',.5,.61);expect(l.limit).toBe(limit);
+  // Edge under 1¢ for 3 s releases it.
+  expect(step(10000,'NO TRADE',.6,.6).action).toBe('BUY YES');expect(step(12900,'NO TRADE',.6,.6).action).toBe('BUY YES');expect(step(13100,'NO TRADE',.6,.6).action).toBe('NO TRADE');
+  // A hard gate ends a standing signal at once.
+  for(const t of [20000,21000,23100])step(t,'BUY YES');expect(l.side).toBe('yes');expect(step(23500,'BUY YES',.5,.6,'Price feeds: stale').action).toBe('NO TRADE');});
+it('firm signals: a flip to the other side needs its own 3 s',()=>{
+  const ev=(action:string)=>({action,reason:'r',idea:null,makers:[],edges:{yes:null,no:null}});
+  let l:Latch=emptyLatch();const step=(t:number,action:string,p:number)=>{const r=latchSignal(l,ev(action),p,{yesAsk:.5,noAsk:.51},defaults,baseFees,100,t,null);l=r.latch;return r.evaluation.action;};
+  for(const t of [0,1000,3000])step(t,'BUY YES',.6);expect(l.side).toBe('yes');
+  expect(step(4000,'BUY NO',.4)).toBe('BUY YES');expect(step(6000,'BUY NO',.4)).toBe('BUY YES');expect(step(7000,'BUY NO',.4)).toBe('BUY NO');});

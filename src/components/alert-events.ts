@@ -9,7 +9,8 @@ export function snapshot(s:any,fresh:boolean,page:'15m'|'hourly'='15m'):AlertSna
       exits:Object.fromEntries((h?.exits??[]).map((e:any)=>[e.ticker,e.action])),notices:Object.fromEntries((h?.exits??[]).map((e:any)=>[e.ticker,e.notice?.kind??null])),liveDir:h?.up?.direction??null};}
   const idea=fresh?s?.evaluation?.idea:null;
   const setup=fresh?s?.tactics?.ideas?.[0]:null;
-  return {ticker:s?.market?.ticker??null,tau:s?.market?s.tau:null,entryAt:s?.config?.sweetMaxSeconds??300,ideaKey:idea?[s.ticker,idea.side,idea.price].join(':'):null,ideaSide:idea?.side??null,setupKey:setup?[s.ticker,setup.kind,setup.side].join(':'):null,
+  // A firm signal sounds once when it confirms (its latch id), not on every ask tick while it stands.
+  return {ticker:s?.market?.ticker??null,tau:s?.market?s.tau:null,entryAt:s?.config?.sweetMaxSeconds??300,ideaKey:idea?[s.ticker,idea.side,s?.evaluation?.firm?.id??idea.price].join(':'):null,ideaSide:idea?.side??null,setupKey:setup?[s.ticker,setup.kind,setup.side].join(':'):null,
     exits:Object.fromEntries((fresh?s?.exits??[]:[]).map((e:any)=>[e.ticker,e.action])),notices:Object.fromEntries((fresh?s?.exits??[]:[]).map((e:any)=>[e.ticker,e.notice?.kind??null])),pnl:s?.guards?.pnl??null,day:s?.guards?.today??null,
     liveDir:fresh?s?.liveCall?.direction??null:null,unreliable:!fresh||s?.quality?.level==='unreliable',locked:!!s?.guards?.locked};
 }

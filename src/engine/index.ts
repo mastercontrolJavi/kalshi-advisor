@@ -9,7 +9,7 @@ import {KalshiClient,KalshiFeed,type Market} from './feeds/kalshi';
 import {Account} from './account';
 import {dayKey,guardrails} from './guardrails';
 import {filledSeconds,mean,probability,volatility,warmVolatility} from './model/math';
-import {evaluate,size} from './signals';
+import {evaluate,size,latchSignal,emptyLatch,type Latch} from './signals';
 import {validateConfig} from './config';
 import {authorized,requireDashboardCredentials} from './auth';
 import {createExecutor} from './executor';
@@ -63,6 +63,8 @@ const seriesHistory:{time:number;model:number|null;market:number|null;quant:numb
 let live:{ticker:string;direction:Direction|null;since:number;flips:number}={ticker:'',direction:null,since:0,flips:0};
 const tacticsHistory:{time:number;yesAsk:number|null;noAsk:number|null;q:number}[]=[];
 const exitMemory=new Map<string,ExitMemory>();
+// Firm BUY signals (signals.ts latchSignal): per round, reset when the round changes.
+let latch:Latch=emptyLatch(),latchTicker='',journaledLatch=0;
 // Backtest verdict (written by npm run backtest), reloaded whenever the file changes; shown beside every BUY.
 let verdict:Verdict|null=null,verdictMtime=-1;
 function loadVerdict(){try{const m=statSync(VERDICT_PATH).mtimeMs;if(m!==verdictMtime){verdict=JSON.parse(readFileSync(VERDICT_PATH,'utf8'));verdictMtime=m;journal.log('backtest-verdict-loaded',{generated:verdict?.generated});}}catch{verdict=null;verdictMtime=-1;}}
@@ -243,7 +245,12 @@ const loop=setInterval(()=>{
       const stackInputs=model?{modelP:model.p,mid:kalshiP,sigma:vol.sigma,momentum30s:features.momentum30s,momentum120s:features.momentum120s,imbalance:features.imbalance,tradeFlow30s:features.tradeFlow30s,tradeVolume30s:features.tradeVolume30s}:null;
       const forecast=tau<60&&lateStack.active==='fitted'?lateStack:stack;
       const q=stackInputs?predict(forecast,stackInputs).p:null,pSignal=config.useQuantForSignals&&q!==null?q:model?.p??.5;
-      const evaluation=evaluate(pSignal,tau,book,market,account.balance,config,schedule,{feedsHealthy:venueStates.every(v=>v.healthy),healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kConfirmed:confirmed,lock:guards.reason,modelReady:!!model,accountReady:account.ready&&now-account.updated<config.accountStaleMs,now});
+      const rawEvaluation=evaluate(pSignal,tau,book,market,account.balance,config,schedule,{feedsHealthy:venueStates.every(v=>v.healthy),healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kConfirmed:confirmed,lock:guards.reason,modelReady:!!model,accountReady:account.ready&&now-account.updated<config.accountStaleMs,now});
+      // Hard gates end a shown BUY at once; spread and depth blips do not (they are what made signals flash).
+      if(latchTicker!==market.ticker){latch=emptyLatch(latch.id);latchTicker=market.ticker;}
+      const hardGate=rawEvaluation.gates?.find(g=>!g.ok&&['market','feeds','book','k','model','account','guards'].includes(g.key)),closedForEntries=tau<(config.finalMinuteSignals?5:60);
+      const firm=latchSignal(latch,rawEvaluation,pSignal,bv,config,schedule,account.balance,now,hardGate?`${hardGate.label}: ${hardGate.detail}`:closedForEntries?'Closed for entries (final minute)':null);
+      latch=firm.latch;const evaluation=firm.evaluation;
       const quality=dataQuality({healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kalshiLive:kalshi.status==='connected',bookLive:bv.valid&&now-bv.updated<=config.bookStaleMs,kConfirmed:confirmed,modelReady:!!model,clockSynced:client.clockSynced});
       const callOf=(p:number,direction:'UP'|'DOWN')=>({direction,p,baseP:model.p,lean:p-model.p,confidence:confidence(p),reasons:explain(stack,stackInputs!),inputs:{...stackInputs,K,kSource:confirmed?'kalshi':'proxy estimate'}});
       // Opening call: frozen at the first evaluation after Kalshi publishes K (floor_strike), usually 5–40 s into the
@@ -275,8 +282,10 @@ const loop=setInterval(()=>{
       const tacticsLive=q!==null&&quality.level!=='unreliable'&&!guards.locked&&market.status==='active'&&bv.valid&&now-bv.updated<=config.bookStaleMs;
       const scalpIdea=tacticsLive?scalp(q!,tau,bv,schedule,tcfg):null,dipState=q!==null?dips(tacticsHistory,time,q,bv,schedule,tcfg,tau):{watch:[],idea:null};
       const tacticIdeas=[scalpIdea,tacticsLive?dipState.idea:null].filter((t):t is NonNullable<typeof scalpIdea>=>!!t).map(t=>({...t,...size(t.side==='yes'?q!:1-q!,t.price,account.balance??0,config,schedule)}));
-      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation};
-      if(newSecond){journal.tick(tick);for(const idea of [...(evaluation.idea?[evaluation.idea]:[]),...evaluation.makers,...tacticIdeas.map(t=>({...t,queue:0}))])journal.signal(market.ticker,time,idea as any,tick,schedule);
+      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation,rawAction:rawEvaluation.action};
+      // The taker signal is journaled (and paper-traded) once, at the price shown when it confirmed, not every second it stands.
+      const newFirm=evaluation.idea&&evaluation.firm&&evaluation.firm.id!==journaledLatch?[evaluation.idea]:[];
+      if(newSecond){journal.tick(tick);if(newFirm.length)journaledLatch=evaluation.firm!.id;for(const idea of [...newFirm,...evaluation.makers,...tacticIdeas.map(t=>({...t,queue:0}))])journal.signal(market.ticker,time,idea as any,tick,schedule);
       seriesHistory.push({time,model:model?.p??null,market:mid,quant:q});if(seriesHistory.length>901)seriesHistory.shift();}
       const exits=(account.positions as any[]).filter(pos=>String(pos.ticker).startsWith('KXBTC15M')).map(pos=>{
         // Memory is keyed by the position itself, so adding to or flipping a position restarts its trailing stop.
