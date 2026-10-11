@@ -4,7 +4,7 @@ import {dirname} from 'node:path';
 import {HistoryStore,SERIES15,SERIES_HOURLY} from './history';
 import {finalMinuteStudy} from './live';
 import {VERDICT_PATH,type Verdict,type RuleResult} from './verdict';
-import {spotSeries,basisTrack,buildRows,scoreBy,priceBuckets,calibration,simulate,summarize,appRule,priceBand,atMinute,modelP,median,bankroll,clusterCI,type Row,type Picker,type ExitRule,type Score,type Bucket,type Summary,type Trade} from './sim';
+import {spotSeries,basisTrack,buildRows,scoreBy,priceBuckets,calibration,simulate,summarize,appRule,sellVsHold,priceBand,atMinute,modelP,median,bankroll,clusterCI,type Row,type Picker,type ExitRule,type Score,type Bucket,type Summary,type Trade} from './sim';
 const c=(x:number)=>Number.isFinite(x)?`${x>=0?'+':''}${(x*100).toFixed(1)}¢`:'—';
 const p=(x:number)=>Number.isFinite(x)?`${(x*100).toFixed(1)}%`:'—';
 const b4=(x:number)=>Number.isFinite(x)?x.toFixed(4):'—';
@@ -97,6 +97,7 @@ export function analyze(store:HistoryStore,log:(m:string)=>void=()=>{},journal:D
   // Exits vs holding the very same entries: paired per-round difference.
   const paired=(exit:Line)=>{const hold=new Map(strategies15[0].trades.map(t=>[t.cluster,t.pnl]));const d=exit.trades.map(t=>({sum:t.pnl-(hold.get(t.cluster)??t.pnl),n:1}));return {mean:d.reduce((a,x)=>a+x.sum,0)/d.length,ci:clusterCI(d,2000,5)};};
   const fixedVsHold=paired(strategies15[1]),trailVsHold=paired(strategies15[2]);
+  const sellWindow=sellVsHold(rows,q,.03,60,900,split);
   const final=journal?finalMinuteStudy(journal):null;if(final)log(`Final minute (live journal): ${final.rounds} rounds`);
   const finalWins=final?.accuracy.filter(a=>a.diffCI[1]<0).map(a=>a.label)??[],finalLoses=final?.accuracy.filter(a=>a.diffCI[0]>0).map(a=>a.label)??[];
   const takeaways=[
@@ -105,6 +106,7 @@ export function analyze(store:HistoryStore,log:(m:string)=>void=()=>{},journal:D
     winners.length?`**Positive with 95% confidence:** ${winners.map(w=>`${w.name} (${c(w.s.mean)})`).join('; ')}. ${robust.length===winners.length?'Each was positive in both halves of the period.':`Positive in both halves: ${robust.length?robust.map(r=>r.name).join('; '):'none'}.`} About ${all.length} strategies were tested, so roughly one could clear this bar by luck alone.`:`**No strategy tested (${all.length}) was profitable with 95% confidence after fees.**`,
     losers.length?`**Lose money with 95% confidence:** ${losers.map(w=>`${w.name} (${c(w.s.mean)})`).join('; ')}.`:'',
     `**Exit plans vs holding the same entries:** fixed take-profit/stop-loss ${c(fixedVsHold.mean)} per trade (95% range ${ci(fixedVsHold.ci)}), current trailing plan ${c(trailVsHold.mean)} (${ci(trailVsHold.ci)}). Selling early pays a second fee and sells at the bid.`,
+    `**Selling vs holding (advise mode).** A holder who sold whenever the quant forecast sat ≥ 3¢ below the bid after the fee, with 1–15 min left, made ${c(sellWindow.mean)} per contract versus holding (${sellWindow.n.toLocaleString()} round-sides, 95% range ${ci(sellWindow.ci)})${final?`; in the final 90 s (live journal) ${c(final.sell.mean)} over ${final.sell.n} (${ci(final.sell.ci)})`:''}. Advise mode only says SELL in the final 90 s.`,
     `**Volatility scale.** The model's Brier was best with variance ×${bestScale.k} (${scales.map(x=>`×${x.k}: ${b4(x.brier)}`).join(', ')}).`,
     final?`**Final minute (live journal, ${final.rounds} rounds so far).** The model beat Kalshi's price at ${finalWins.length?finalWins.join(', '):'no 10-s bucket'} left and lost at ${finalLoses.length?finalLoses.join(', '):'none'}; a ≥ 4¢-edge entry in the last minute averaged ${c(final.model.mean)} per contract over ${final.model.n} trades (95% range ${ci(final.model.ci)}). ${final.model.n<300?`With ${final.model.n} trades the range is still wide; a few hundred rounds are needed before it can show an edge of a few cents.`:''}`:'**Final minute:** no live journal found (data/advisor.db), so it was not studied.',
     `**Coinbase→BRTI basis** (K minus Coinbase in the minute before the open): median $${median(raw).toFixed(2)}, middle half $${q25?.toFixed(2)} to $${q75?.toFixed(2)}.`,
@@ -147,7 +149,8 @@ export function analyze(store:HistoryStore,log:(m:string)=>void=()=>{},journal:D
   const verdict:Verdict={generated:new Date().toISOString(),from,to,rounds,hours:hourly?.events??0,buy15:rule(app),buy15Model:rule(strategies15.find(l=>l.name.startsWith('Raw diffusion model, ≥ 4¢'))!.s),buyHourly:hourly?rule(hourly.strategies[0].s):null,
     exits:{fixed:fixedVsHold,trailing:trailVsHold},kalshiBetter:{fifteen:kalshiWins.length,fifteenOf:accuracy.length,hourly:hourly?.accuracy.filter(a=>a.diffCI[0]>0).length??0,hourlyOf:hourly?.accuracy.length??0},
     profitable:winners.map(w=>w.name),strategies:all.length,ruin:[1,.25,.1,.02].map(stake=>({stake,ruined:bankroll(strategies15[0].trades,stake).ruined})),
-    longshot:{fifteen:lowBucket(fair),hourly:hourly?lowBucket(hourly.fair):null},finalMinute:final?{rounds:final.rounds,trade:rule(final.model)}:null};
+    longshot:{fifteen:lowBucket(fair),hourly:hourly?lowBucket(hourly.fair):null},finalMinute:final?{rounds:final.rounds,trade:rule(final.model)}:null,
+    sellTest:{window:rule(sellWindow),final:final?rule(final.sell):null}};
   const strip=(l:Line[])=>l.map(({name,s})=>({name,s}));
   return {markdown:md,summary,verdict,json:{from,to,rounds,accuracy,overall,fair,fairLate,calModel,calKalshi,scales,strategies15:strip(strategies15),hourly:hourly?{...hourly,strategies:strip(hourly.strategies)}:null,final,basis:{median:median(raw),q25,q75},verdict}};
 }

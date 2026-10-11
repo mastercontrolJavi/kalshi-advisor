@@ -75,7 +75,7 @@ export class Account {
         const signal=this.journal.db.prepare("SELECT json_extract(context,'$.idea.contracts') AS contracts FROM signals WHERE ticker=? AND side=? AND time<=? ORDER BY time DESC LIMIT 1").get(e.ticker,e.side,e.time) as {contracts:number}|undefined;
         const prior=this.journal.db.prepare(`SELECT time,json_extract(context,'$.book.${e.side==='yes'?'yesAsk':'noAsk'}') AS price FROM ticks WHERE ticker=? AND time BETWEEN ? AND ? ORDER BY time`).all(e.ticker,e.time-60000,e.time) as {time:number;price:number|null}[];
         const orderCount=events.filter(f=>f.type==='fill'&&f.orderId===e.orderId&&f.time<=e.time).reduce((sum,f)=>sum+f.contracts,0);
-        e.warnings=fillWarnings({...e,contracts:orderCount},signal?.contracts??null,prior.filter((p):p is {time:number;price:number}=>Number.isFinite(p.price)),config);
+        e.warnings=fillWarnings({...e,contracts:orderCount},signal?.contracts??null,prior.filter((p):p is {time:number;price:number}=>Number.isFinite(p.price)),config,events.filter(f=>f.ticker===e.ticker));
         this.warnings.set(e.id,e.warnings);
       }
       this.journal.real(events);this.journal.set('historicalBackfill',true);this.ready=true;this.updated=Date.now();this.error='';

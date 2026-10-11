@@ -16,7 +16,7 @@ it('hourly cap counts orders once across partial fills',()=>{const now=Date.now(
 it('chase and oversize warnings',()=>expect(fillWarnings({...event('1',100000,0,'fill'),price:.7,contracts:30},25,[{time:50000,price:.5}],defaults)).toHaveLength(2));
 it('invalid settings rejected',()=>{expect(()=>validateConfig({minEdge:-1})).toThrow();expect(()=>validateConfig({maxContracts:2.5})).toThrow();expect(()=>validateConfig({feePrecision:0})).toThrow();});
 it('realized closing fills also trigger loss cooldown before settlement',()=>{const now=Date.now(),events=Array.from({length:3},(_,i)=>({...event(String(i),now-i-1,-1,'fill'),closedContracts:1,orderId:String(i)}));expect(guardrails(events,100,defaults,now).reason).toContain('cooldown');});
-it('hold is the default exit style and every style validates',()=>{expect(defaults.exitMode).toBe('hold');for(const m of ['hold','risk','ev'])expect(validateConfig({exitMode:m}).exitMode).toBe(m);expect(()=>validateConfig({exitMode:'yolo'})).toThrow('exitMode');});
+it('advise is the default exit style and every style validates',()=>{expect(defaults.exitMode).toBe('advise');for(const m of ['advise','hold','risk','ev'])expect(validateConfig({exitMode:m}).exitMode).toBe(m);expect(()=>validateConfig({exitMode:'yolo'})).toThrow('exitMode');});
 it('final-minute entries stay closed unless the user allows them, and never inside the last 5 s',()=>{
   const b=new Orderbook();b.snapshot([['.49','40']],[['.49','40']]);const r={...ready,now:Date.now()};
   const off=evaluate(.75,30,b,market,1000,defaults,baseFees,r);expect(off.action).toBe('NO TRADE');expect(off.reason).toContain('Outside entry window');
@@ -24,3 +24,8 @@ it('final-minute entries stay closed unless the user allows them, and never insi
   const on={...defaults,finalMinuteSignals:true};expect(evaluate(.75,30,b,market,1000,on,baseFees,r).action).toBe('BUY YES');
   expect(evaluate(.75,30,b,market,1000,on,baseFees,r).gates!.find(g=>g.key==='timing')!.ok).toBe(true);
   expect(evaluate(.75,4,b,market,1000,on,baseFees,r).action).toBe('NO TRADE');expect(defaults.finalMinuteSignals).toBe(false);});
+it('averaging down into a losing side is called out on the fill',()=>{
+  const buy=(id:string,time:number,price:number,side='yes'):RealEvent=>({id,time,pnl:0,type:'fill',ticker:'T',contracts:5,side,price,action:'buy'});
+  const w=fillWarnings(buy('b',2000,.32),null,[],defaults,[buy('a',1000,.73),buy('c',3000,.2)]);expect(w).toContain('Averaging down: bought more YES at 32¢ after 73¢');
+  expect(fillWarnings(buy('b',2000,.7),null,[],defaults,[buy('a',1000,.73)])).toHaveLength(0);
+  expect(fillWarnings(buy('b',2000,.3,'no'),null,[],defaults,[buy('a',1000,.73)])).toHaveLength(0);});

@@ -21,8 +21,9 @@ export function detectEvents(prev:AlertSnapshot|null,next:AlertSnapshot):SoundNa
   if(next.ideaKey&&next.ideaKey!==prev.ideaKey)out.add(next.ideaSide==='yes'?'buyYes':'buyNo');
   if(next.setupKey&&next.setupKey!==prev.setupKey)out.add('setup');
   for(const [ticker,action] of Object.entries(next.exits)){const before=prev.exits[ticker];
-    if(action!==before){if(action==='TAKE PROFIT')out.add('takeProfit');else if(action==='CUT LOSS')out.add('cutLoss');else if(action==='SELL NOW')out.add('sell');}
-    if((action==='HOLD'&&(before===undefined||['SELL NOW','TAKE PROFIT','CUT LOSS'].includes(before)))||(action==='RIDE'&&before!=='RIDE'&&before!=='TAKE PROFIT'))out.add('hold');}
+    // SELL sounds once when it appears (not when SELL NOW calms to SELL); SELL NOW always sounds and repeats while it stands.
+    if(action!==before){if(action==='TAKE PROFIT')out.add('takeProfit');else if(action==='CUT LOSS')out.add('cutLoss');else if(action==='SELL NOW'||action==='SELL'&&before!=='SELL NOW')out.add('sell');}
+    if((['HOLD','LET IT RIDE'].includes(action)&&(before===undefined||['SELL','SELL NOW','TAKE PROFIT','CUT LOSS'].includes(before)))||(action==='RIDE'&&before!=='RIDE'&&before!=='TAKE PROFIT'))out.add('hold');}
   if(prev.pnl!==null&&next.pnl!==null&&prev.day===next.day){const d=next.pnl-prev.pnl;if(d>.005)out.add('win');else if(d<-.005)out.add('loss');}
   const sameWindow=prev.ticker!==null&&prev.ticker===next.ticker;
   if(prev.ticker!==null&&next.ticker!==null&&next.ticker!==prev.ticker)out.add('newWindow');

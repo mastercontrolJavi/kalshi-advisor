@@ -83,3 +83,26 @@ it('hold mode reacts to big moves with a heads-up while the plan stays HOLD',()=
   expect(at(.45,.5,{action:'HOLD',peak:0,entryProb:.5,notice:'loss'}).notice).toBeNull();
   // Risk mode is unchanged: no notices, real exit calls.
   expect(exitAdvice(yes('10','5.00'),.25,book(.22,.77),baseFees,risk)!.action).toBe('CUT LOSS');});
+const advise:ExitConfig={...risk,exitMode:'advise'};
+const adv=(p:number,bid:number,tau:number|null,prev:any=null,n='10',cost='5.00')=>exitAdvice(yes(n,cost),p,book(bid,Math.max(0,1-bid-.01)),baseFees,advise,mem(prev),null,null,tau)!;
+it('advise mode: the favourite rides, an underdog holds, and neither is ever told to sell with more than 90 s left',()=>{
+  expect(adv(.7,.65,400).action).toBe('LET IT RIDE');
+  expect(adv(.4,.35,400).action).toBe('HOLD');
+  // A bid far above the forecast with 5 minutes left: on 8,794 past rounds selling here lost to holding, so still HOLD.
+  const rich=adv(.2,.4,300);expect(rich.action).toBe('HOLD');expect(rich.reason).toContain('selling did worse than holding');
+  expect(adv(.3,.25,400).reason).toContain('Do not add to a losing position');});
+it('advise mode: in the final 90 s it says SELL at a 3¢ gap and SELL NOW at 6¢, with a firm limit price',()=>{
+  const sell=adv(.4,.45,60);expect(sell.action).toBe('SELL');expect(sell.urgent).toBeFalsy();expect(sell.sellAtBid!).toBeGreaterThanOrEqual(.43);expect(sell.sellAtBid!).toBeLessThanOrEqual(.45);
+  const now=adv(.3,.4,40);expect(now.action).toBe('SELL NOW');expect(now.urgent).toBe(true);expect(now.reason).toContain('can vanish');
+  expect(adv(.42,.44,60).action).toBe('HOLD');});
+it('advise mode: release bands stop 1¢ wobbles from flipping the call',()=>{
+  // SELL NOW stays until the gap falls under 4¢; SELL stays until under 1¢; LET IT RIDE stays down to 55%.
+  expect(adv(.4,.465,40,'SELL NOW').action).toBe('SELL NOW');expect(adv(.4,.465,40).action).toBe('SELL');
+  expect(adv(.4,.435,40,'SELL').action).toBe('SELL');expect(adv(.4,.435,40).action).toBe('HOLD');
+  expect(adv(.4,.41,40,'SELL').action).toBe('HOLD');
+  expect(adv(.57,.55,400,'LET IT RIDE').action).toBe('LET IT RIDE');expect(adv(.57,.55,400,null).action).toBe('HOLD');
+  const seq=[.36,.37,.35,.38,.36].map(b=>adv(.4,b,400).action);expect(new Set(seq).size).toBe(1);});
+it('advise mode: let it settle near $1, too late with nothing to sell',()=>{
+  expect(adv(.9,.98,400).action).toBe('LET IT SETTLE');
+  expect(adv(.96,.9,50).action).toBe('LET IT SETTLE');
+  const late=adv(.1,.02,100);expect(late.action).toBe('TOO LATE');expect(late.reason).toContain('Do not add');});

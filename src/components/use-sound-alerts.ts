@@ -29,7 +29,7 @@ export function useSoundAlerts(s:any,fresh:boolean,page:'15m'|'hourly'|'markets'
     if(playable.some(e=>e==='sell'||e==='takeProfit'||e==='cutLoss'))lastSell.current=now;if(playable.includes('warning'))lastWarning.current=now;
     playable.forEach((n,i)=>setTimeout(()=>engine.current?.play(n,prefs.volume),i*SPACING_MS));
     if(s.config?.notifications&&typeof Notification!=='undefined'&&Notification.permission==='granted'){
-      const exit=((page==='hourly'?s.hourly?.exits:s.exits)??[]).find((e:any)=>['TAKE PROFIT','CUT LOSS','SELL NOW'].includes(e.action));
+      const exit=((page==='hourly'?s.hourly?.exits:s.exits)??[]).find((e:any)=>['TAKE PROFIT','CUT LOSS','SELL NOW','SELL'].includes(e.action));
       if(exit&&events.some(e=>e==='sell'||e==='takeProfit'||e==='cutLoss'))new Notification(exit.action,{body:String(exit.reason).split(' Plan: ')[0],tag:'exit'});
       if((events.includes('buyYes')||events.includes('buyNo'))&&page==='hourly')new Notification(s.hourly?.action??'Hourly signal',{body:String(s.hourly?.reason??''),tag:'signal'});
       else if(events.includes('buyYes')||events.includes('buyNo'))new Notification(s.evaluation.action,{body:s.evaluation.reason+(s.backtest?` · Backtest: this rule averaged ${(s.backtest.buy15.mean*100).toFixed(1)}¢ per contract`:''),tag:'signal'});

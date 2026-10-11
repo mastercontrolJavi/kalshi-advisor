@@ -17,6 +17,8 @@ export interface Verdict {
   /** Average return on money spent for contracts bought at ≤ 5¢ (15-minute, 5–14 min left) and hourly. */
   longshot:{fifteen:number|null;hourly:number|null};
   finalMinute:{rounds:number;trade:RuleResult|null}|null;
+  /** Selling vs holding when the quant forecast is ≥ 3¢ below the net bid: 1–15 min left (history) and last 90 s (live journal). */
+  sellTest?:{window:RuleResult;final:RuleResult|null}|null;
 }
 const c=(x:number)=>`${x>=0?'+':'−'}${Math.abs(x*100).toFixed(1)}¢`;
 const date=(ts:number)=>new Date(ts*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});
@@ -44,6 +46,14 @@ export function finalMinuteEvidence(v:Verdict|null):{status:'collecting'|'proven
   if(t.ci[0]>0&&t.early>0&&t.late>0)return {status:'proven',rounds:f.rounds,text:`Final-minute study: entries in the last minute made ${range}, and in both halves of the period.`};
   if(t.ci[1]<0)return {status:'losing',rounds:f.rounds,text:`Final-minute study: entries in the last minute lost money: ${range}.`};
   return {status:'unclear',rounds:f.rounds,text:`Final-minute study: no proven edge yet: ${range}.`};
+}
+/** The evidence behind an advise-mode label, in one line (null when there is nothing to cite). */
+export function sellEvidence(v:Verdict|null,action:string):string|null{
+  const t=v?.sellTest;if(!t)return null;const w=t.window,f=t.final;
+  const fin=f&&f.n?`In the final 90 s, selling when the forecast sat 3¢+ below the bid made ${c(f.mean)} per contract versus holding over ${f.n} rounds (likely range ${c(f.ci[0])} to ${c(f.ci[1])})${f.ci[0]>0&&f.early>0&&f.late>0?'.':', not proven yet.'}`:'Final-90-second sells: still collecting rounds; not proven yet.';
+  if(action==='SELL'||action==='SELL NOW')return fin;
+  if(action==='HOLD'||action==='LET IT RIDE'||action==='TOO LATE')return `Selling with 1–15 min left when the forecast sat 3¢+ below the bid made ${c(w.mean)} per contract versus holding over ${w.n.toLocaleString()} past rounds (likely range ${c(w.ci[0])} to ${c(w.ci[1])}).`;
+  return null;
 }
 export function exitVerdict(v:Verdict|null){
   if(!v)return null;const f=v.exits.fixed,t=v.exits.trailing;

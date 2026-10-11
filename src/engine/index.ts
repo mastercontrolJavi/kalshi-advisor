@@ -42,6 +42,13 @@ const journal=new Journal();let config=journal.config();
     const changes:Record<string,unknown>={};if((journal.get<any>('config',{}).exitMode??'risk')==='risk')changes.exitMode='hold';
     config=validateConfig({...config,...changes});journal.set('config',config);journal.set('migration:2026-10-07c',true);
     journal.log('settings-migrated',{changes});
+  }
+  // Exits: the user asked (2026-10-10) for clear hold / let it ride / sell / sell now / let it settle calls instead of a
+  // steady HOLD. Advise mode gives them on evidence (DECISIONS 50); hold-mode users move to it, risk and EV stay.
+  if(stored&&!journal.get('migration:2026-10-10a',false)){
+    const changes:Record<string,unknown>={};if((journal.get<any>('config',{}).exitMode??'hold')==='hold')changes.exitMode='advise';
+    config=validateConfig({...config,...changes});journal.set('config',config);journal.set('migration:2026-10-10a',true);
+    journal.log('settings-migrated',{changes});
   }}
 // Quant state: the stacked forecaster and the proxy→BRTI basis are refit from settled windows (see refitQuant).
 const basisErrors=()=>(journal.db.prepare('SELECT basis_error FROM outcomes WHERE basis_error IS NOT NULL ORDER BY time').all() as {basis_error:number}[]).map(r=>r.basis_error);
@@ -151,7 +158,7 @@ function computeHourly(time:number,now:number,spot:number|null,vol:any,venueStat
   const held=(account.positions as any[]).filter(p=>String(p.ticker).startsWith(current.event+'-'));
   const heldRungs=new Map(ladder(current.markets.filter(m=>held.some(p=>p.ticker===m.ticker)),inputs,schedule,Infinity).map(r=>[r.ticker,r]));
   const exits=held.map(pos=>{const r=heldRungs.get(pos.ticker),key=`${pos.ticker}:${pos.position_fp}:${pos.market_exposure_dollars}`,mem=hourlyMemory.get(key)??{action:null,peak:null};
-    const e=exitAdvice(pos,r?.quant??null,r?{yesBid:r.yesBid,noBid:r.noBid}:null,schedule,config,mem,null,entryCost(pos,account.openCosts.get(pos.ticker),schedule));if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,hourly:true,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,hourly:true,unrealized:e.unrealized});hourlyMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
+    const e=exitAdvice(pos,r?.quant??null,r?{yesBid:r.yesBid,noBid:r.noBid}:null,schedule,config,mem,null,entryCost(pos,account.openCosts.get(pos.ticker),schedule),tau);if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,hourly:true,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,hourly:true,unrealized:e.unrealized});hourlyMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
     return e?{...e,strike:r?.strike??null}:null;}).filter(Boolean);
   return {...base,event:current.event,open:current.open,close:current.close,tau,spot,kHour,kSource:kFill?'proxy average of the 60 s before the hour opened':null,lockedCount:locked?.length??0,
     up:upQuant===null?null:{model:upModel,kalshi:kalshiUp,quant:upQuant,direction:upQuant>=.5?'UP':'DOWN',confidence:confidence(upQuant)},
@@ -280,7 +287,7 @@ const loop=setInterval(()=>{
         if(posClose!==null&&posClose<=time){const official=journal.db.prepare('SELECT result FROM outcomes WHERE ticker=?').get(pos.ticker) as {result:'yes'|'no'}|undefined;
           const avg=filledSeconds(proxy.history,posClose-60000,posClose),k=Number(posMarket!.floor_strike);
           closed={result:official?.result??null,estimate:avg&&Number.isFinite(k)&&k>0?(mean(avg.values)+basis>=k?'yes':'no'):null};}
-        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,kalshi.books.get(pos.ticker)?.view()??null,schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule));
+        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,kalshi.books.get(pos.ticker)?.view()??null,schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule),pos.ticker===market.ticker?tau:null);
         if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,peakPct:e.peakPct});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,title:e.notice.title,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,winProb:e.winProb});exitMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
         return e;}).filter(Boolean);
       state={...common,...tick,market,evaluation,exits,liveCall,nextCall,quality,openingCall:journal.openingCall(market.ticker),

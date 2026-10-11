@@ -23,11 +23,18 @@ export function guardrails(events:RealEvent[],startBalance:number,config:Config,
   const reason=dailyLocked?'Daily loss limit reached':cooldownUntil>now?'Consecutive-loss cooldown':hourly>=config.maxTradesPerHour?'Hourly trade limit reached':null;
   return {locked:!!reason,dailyLocked,reason,cooldownUntil,pnl,trades,winRate:results.length?wins/results.length:null,streak,hourly,startBalance,today};
 }
-export function fillWarnings(fill:RealEvent,suggested:number|null,priorPrices:{time:number;price:number}[],config:Config){
+/**
+ * Tilt checks on a real fill. Averaging down: a buy of the same side in the same round at least 10¢ below an earlier buy.
+ * Since 2026-10-08 the two biggest losing rounds were exactly that (YES at 73¢ → 49¢ → 32¢, −$17.99; YES at 39¢ → 10¢ →
+ * 8.5¢, −$8.25): adding to a position the market has turned against.
+ */
+export function fillWarnings(fill:RealEvent,suggested:number|null,priorPrices:{time:number;price:number}[],config:Config,earlier:RealEvent[]=[]){
   const warnings:string[]=[];
   // A zero suggestion means sizing was unavailable (no account state), not a recommendation to compare against.
   if(suggested!==null&&suggested>0&&fill.contracts>suggested)warnings.push(`Oversize: ${+fill.contracts.toFixed(2)} filled vs ${suggested} suggested`);
   const prices=priorPrices.filter(p=>p.time>=fill.time-config.chaseSeconds*1000&&p.time<fill.time);
   if(prices.length&&fill.price!==undefined&&fill.price-prices[0].price>config.chaseMove)warnings.push(`Chase: price rose ${((fill.price-prices[0].price)*100).toFixed(1)}¢ before fill`);
+  const first=earlier.filter(e=>e.type==='fill'&&e.ticker===fill.ticker&&e.side===fill.side&&(e.action??'buy')==='buy'&&e.time<fill.time&&e.price!==undefined).sort((a,b)=>b.price!-a.price!)[0];
+  if((fill.action??'buy')==='buy'&&first&&fill.price!==undefined&&first.price!-fill.price>=.1)warnings.push(`Averaging down: bought more ${String(fill.side).toUpperCase()} at ${(fill.price*100).toFixed(0)}¢ after ${(first.price!*100).toFixed(0)}¢`);
   return warnings;
 }

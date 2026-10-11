@@ -19,15 +19,15 @@ import {fee,type FeeSchedule} from './model/fees';
  * while still capping blow-ups. EV mode is the original comparison: sell only when the bid beats the forecast.
  */
 export interface Position {ticker:string;position_fp:string;market_exposure_dollars?:string}
-export type ExitAction='TAKE PROFIT'|'RIDE'|'CUT LOSS'|'SELL NOW'|'HOLD'|'LET IT SETTLE'|'TOO LATE'|'NO MODEL'|'SETTLING';
+export type ExitAction='TAKE PROFIT'|'RIDE'|'LET IT RIDE'|'CUT LOSS'|'SELL'|'SELL NOW'|'HOLD'|'LET IT SETTLE'|'TOO LATE'|'NO MODEL'|'SETTLING';
 /** A position whose round has already closed: Kalshi's official result if known, else the app's closing-average estimate. */
 export interface ClosedRound {result:'yes'|'no'|null;estimate:'yes'|'no'|null}
-export interface ExitConfig {exitMode:'hold'|'risk'|'ev';exitMargin:number;makerMargin:number;takeProfitPct:number;stopLossPct:number;stopWinProb:number;trailGiveback:number;trailFloor:number}
+export interface ExitConfig {exitMode:'advise'|'hold'|'risk'|'ev';exitMargin:number;makerMargin:number;takeProfitPct:number;stopLossPct:number;stopWinProb:number;trailGiveback:number;trailFloor:number}
 /** Per-position memory between evaluations: last action (hysteresis) and best gain since entry (trailing stop). */
 /** Hold-mode heads-up: the plan stays HOLD, but big moves are called out with what selling would lock in. */
 export interface ExitNotice {kind:'gain'|'giveback'|'loss'|'odds';tone:'yes'|'warn'|'no';title:string;text:string}
 export interface ExitMemory {action:ExitAction|null;peak:number|null;trough?:number|null;entryProb?:number|null;notice?:ExitNotice['kind']|null}
-export interface ExitAdvice {troughPct?:number|null;entryWinProb?:number|null;notice?:ExitNotice|null;ticker:string;side:'yes'|'no';contracts:number;avgCost:number|null;costSource?:'fills'|'estimate'|'exposure';winProb:number|null;bid:number|null;holdValue:number|null;sellValue:number|null;sellFee:number|null;unrealized:number|null;unrealizedPct:number|null;action:ExitAction;limitPrice:number|null;takeProfitBid:number|null;stopBid:number|null;trailBid:number|null;peakPct:number|null;reason:string}
+export interface ExitAdvice {urgent?:boolean;sellAtBid?:number|null;troughPct?:number|null;entryWinProb?:number|null;notice?:ExitNotice|null;ticker:string;side:'yes'|'no';contracts:number;avgCost:number|null;costSource?:'fills'|'estimate'|'exposure';winProb:number|null;bid:number|null;holdValue:number|null;sellValue:number|null;sellFee:number|null;unrealized:number|null;unrealizedPct:number|null;action:ExitAction;limitPrice:number|null;takeProfitBid:number|null;stopBid:number|null;trailBid:number|null;peakPct:number|null;reason:string}
 const c=(v:number)=>`${(v*100).toFixed(1)}¢`;
 const pctTxt=(v:number)=>`${v>=0?'+':'−'}${Math.abs(v*100).toFixed(0)}%`;
 const MIN_SELLABLE_BID=.05,SETTLE_BID=.97,SETTLE_RELEASE=.95;
@@ -68,7 +68,7 @@ export function holdNotice(unrealized:number|null,u:number|null,peak:number|null
   if(arm!==null&&(u>=arm||was('gain')&&u>=arm*.8))return {kind:'gain',tone:'yes',title:`Up ${pctTxt(u)}`,text:`${sell}; holding pays $${contracts.toFixed(2)} if it wins (${wp} chance). ${backtest}`};
   return null;
 }
-export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|null;noBid:number|null}|null,schedule:FeeSchedule,cfg:ExitConfig,memory:ExitMemory={action:null,peak:null},closed:ClosedRound|null=null,cost:{avgCost:number;source:'fills'|'estimate'}|null=null):ExitAdvice|null{
+export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|null;noBid:number|null}|null,schedule:FeeSchedule,cfg:ExitConfig,memory:ExitMemory={action:null,peak:null},closed:ClosedRound|null=null,cost:{avgCost:number;source:'fills'|'estimate'}|null=null,tau:number|null=null):ExitAdvice|null{
   const signed=Number(position.position_fp);if(!Number.isFinite(signed)||Math.abs(signed)<1e-9)return null;
   // Kalshi convention: positive position = YES contracts, negative = NO contracts.
   const side=signed>0?'yes':'no',contracts=Math.abs(signed),exposure=Number(position.market_exposure_dollars);
@@ -97,7 +97,8 @@ export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|n
   if(p===null||!Number.isFinite(p))return {...base,winProb:null,holdValue:null,action:'NO MODEL',limitPrice:null,reason:'Model not ready for this market; no exit estimate.'+plan};
   const winProb=side==='yes'?p:1-p,holdValue=contracts*winProb,entryWinProb=memory.entryProb??winProb;
   const limit=Math.ceil((winProb+cfg.makerMargin)*100-1e-9)/100,limitPrice=limit<1&&(bid===null||limit>bid)?limit:null;
-  const out=(action:ExitAction,reason:string,notice:ExitNotice|null=null):ExitAdvice=>({...base,winProb,holdValue,entryWinProb,notice,action,limitPrice:action==='HOLD'?limitPrice:null,reason:reason+(action==='HOLD'||action==='RIDE'?plan:'')});
+  const out=(action:ExitAction,reason:string,notice:ExitNotice|null=null,extra:Partial<ExitAdvice>={}):ExitAdvice=>({...base,winProb,holdValue,entryWinProb,notice,action,limitPrice:action==='HOLD'?limitPrice:null,reason:reason+((action==='HOLD'||action==='RIDE')&&cfg.exitMode!=='advise'?plan:''),...extra});
+  if(cfg.exitMode==='advise')return advise(out,{winProb,entryWinProb,bid,sellValue,unrealized,unrealizedPct,contracts,side,tau,prev:memory.action,schedule,peakPct:Number.isFinite(peakPct)?peakPct:null,armPct,cfg,notice:memory.notice??null});
   // Hold mode shows one steady word all the way to settlement: the settle / nothing-left-to-sell cases only change the
   // explanation. Showing LET IT SETTLE and TOO LATE here flipped the big label 6+ times a round on 1¢ moves.
   if(cfg.exitMode==='hold'){
@@ -126,4 +127,48 @@ export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|n
   const gain=(sellValue!-holdValue)/contracts;
   if(gain>=cfg.exitMargin)return out('SELL NOW',`The market pays ${c(sellValue!/contracts)}/contract after fees, ${c(gain)} more than the forecast says it is worth (${c(winProb)}).`);
   return out('HOLD',`Win chance ${(winProb*100).toFixed(0)}%; selling now would ${unrealized!==null?`${unrealized>=0?'lock in':'lose'} $${Math.abs(unrealized).toFixed(2)}`:`pay ${c(sellValue!/contracts)}/contract`}.`);
+}
+
+/**
+ * Advise mode (default since 2026-10-10, DECISIONS 50): one clear word per position, chosen on evidence.
+ *
+ * Evidence (2026-10-10). On 8,794 replayed rounds, a holder who sold whenever the forecast fell below the bid after fees
+ * did worse than holding: −0.6¢ per contract (2¢ gap, 1–15 min left) and −1.3 to −3.6¢ with 1–5 min left (95% ranges
+ * below zero). Selling there pays the spread and a second fee for nothing, so with more than 90 s left the advice is
+ * never SELL. In the final 90 s the live forecast is sharper than Kalshi (Brier 0.022 vs 0.038 in the last 30 s, 242
+ * rounds), and selling when it sat ≥ 3¢ below the net bid beat holding by +4.9¢ (30–120 s, 76 rounds) and +8.2¢
+ * (last 30 s, 20 rounds). Those ranges still include zero, so the dashboard labels SELL / SELL NOW as unproven.
+ *
+ *   LET IT SETTLE  bid ≥ 97¢, or ≤ 90 s left at a ≥ 95% win chance: selling only costs the fee.
+ *   SELL NOW       ≤ 90 s left and the bid nets ≥ 6¢ more than the forecast says the contract is worth. Urgent.
+ *   SELL           ≤ 90 s left and the bid nets ≥ 3¢ more than it is worth.
+ *   TOO LATE       no bid, or under 5¢, and it is losing: nothing left to sell.
+ *   LET IT RIDE    you are the favourite (win chance ≥ 60%): hold to settlement.
+ *   HOLD           otherwise: the bid undervalues it, so selling locks in less than holding is worth.
+ * Escalations show at once (the engine evaluates 4×/s); each label has a release band so a 1¢ wobble cannot flip it.
+ */
+export const ADVISE={finalTau:90,sellGap:.03,urgentGap:.06,releaseGap:.01,urgentRelease:.04,rideP:.6,rideRelease:.55,settleP:.95} as const;
+interface AdviseInput {winProb:number;entryWinProb:number;bid:number|null;sellValue:number|null;unrealized:number|null;unrealizedPct:number|null;contracts:number;side:'yes'|'no';tau:number|null;prev:ExitAction|null;schedule:FeeSchedule;peakPct:number|null;armPct:number|null;cfg:ExitConfig;notice:ExitNotice['kind']|null}
+type Out=(action:ExitAction,reason:string,notice?:ExitNotice|null,extra?:Partial<ExitAdvice>)=>ExitAdvice;
+function advise(out:Out,a:AdviseInput):ExitAdvice{
+  const {winProb:p,bid,contracts,prev,tau}=a,wp=`${(p*100).toFixed(0)}%`,usd=(x:number)=>`$${Math.abs(x).toFixed(2)}`;
+  const net=bid!==null&&a.sellValue!==null?a.sellValue/contracts:null,gap=net!==null?net-p:null,final=tau!==null&&tau<=ADVISE.finalTau;
+  const lockIn=a.unrealized!==null?`${a.unrealized>=0?'locks in':'loses'} ${usd(a.unrealized)}`:`pays ${net!==null?c(net):'—'}/contract`;
+  const was=(...xs:ExitAction[])=>prev!==null&&xs.includes(prev),left=`${Math.max(0,Math.round(tau??0))} s left`;
+  // Only the 'win chance dropped' heads-up: gain/loss notices would read as sell hints beside a HOLD the data supports.
+  const n=holdNotice(a.unrealized,a.unrealizedPct,a.peakPct,a.armPct,p,a.entryWinProb,bid,a.sellValue,contracts,a.cfg,a.notice==='odds'?'odds':null,''),notice=n?.kind==='odds'?{...n,text:n.text.trim()}:null;
+  if(bid!==null&&(bid>=SETTLE_BID||was('LET IT SETTLE')&&bid>=SETTLE_RELEASE)||final&&(p>=ADVISE.settleP||was('LET IT SETTLE')&&p>=ADVISE.settleP-.03))
+    return out('LET IT SETTLE',`Win chance ${wp}${bid!==null?` · bid ${c(bid)}`:''}: it pays ${usd(contracts)} at settlement, and selling now would only cost the fee.`);
+  if(final&&gap!==null&&bid!==null&&bid>=MIN_SELLABLE_BID){
+    // The lowest bid that still nets ≥ sellGap above the forecast: a firm price for a limit sell.
+    const floor=bidFor(p+ADVISE.sellGap,contracts,a.schedule,'atLeast');
+    if(gap>=ADVISE.urgentGap||was('SELL NOW')&&gap>=ADVISE.urgentRelease)return out('SELL NOW',`${left} and the forecast gives it only ${wp}, but the bid nets ${c(net!)} a contract, ${c(gap)} more than it is worth. Sell into the bid now (${lockIn}); this bid can vanish before the close.`,null,{urgent:true,sellAtBid:floor});
+    if(gap>=ADVISE.sellGap||was('SELL','SELL NOW')&&gap>=ADVISE.releaseGap)return out('SELL',`${left}: the bid nets ${c(net!)}, ${c(gap)} more than the ${wp} forecast says it is worth. Sell at ${floor!==null?`${c(floor)} or better`:'the bid'} (${lockIn}).`,null,{sellAtBid:floor});
+  }
+  if((bid===null||bid<MIN_SELLABLE_BID||was('TOO LATE')&&bid<.08)&&p<.5)
+    return out('TOO LATE',`${bid===null?`No ${a.side.toUpperCase()} bid`:`Bid only ${c(bid)}`}: nothing worth selling. Leave it; at ${wp} a comeback still pays ${usd(contracts)}. Do not add to it.`,notice);
+  if(p>=ADVISE.rideP||was('LET IT RIDE')&&p>=ADVISE.rideRelease)
+    return out('LET IT RIDE',`You are the favourite at ${wp}${Math.abs(p-a.entryWinProb)>=.05?` (${(a.entryWinProb*100).toFixed(0)}% when you bought)`:''}. Hold to settlement: it pays ${usd(contracts)} if it wins; selling now ${lockIn} after the fee.`,notice);
+  const losing=a.unrealized!==null&&a.unrealized<-.005;
+  return out('HOLD',`Win chance ${wp}. Selling now ${lockIn}, less than holding is worth${final?'':'; with this much time left, selling did worse than holding on past rounds'}.${losing?' Do not add to a losing position.':''}`,notice);
 }

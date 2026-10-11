@@ -149,6 +149,20 @@ export function summarize(trades:Trade[],split:number,seed=1):Summary{
   return {n,winRate:n?trades.filter(t=>t.pnl>0).length/n:NaN,mean:mean(trades),ci:clusterCI(trades.map(t=>({sum:t.pnl,n:1})),2000,seed),total:trades.reduce((s,t)=>s+t.pnl,0),
     avgPrice:n?trades.reduce((s,t)=>s+t.price,0)/n:NaN,early:mean(trades.filter(t=>t.time<split)),late:mean(trades.filter(t=>t.time>=split)),exited:trades.filter(t=>t.exitTau!==null).length};
 }
+/**
+ * A holder's question, independent of how the position was entered: on the first second/minute in [minTau, maxTau] where
+ * the forecast says one side is worth ≥ gap less than its bid nets after the taker fee (bid ≥ 5¢), what did selling earn
+ * versus holding to settlement? One sample per round and side; positive = selling did better.
+ */
+export function sellVsHold(rows:Row[],p:(r:Row)=>number,gap:number,minTau:number,maxTau:number,split:number,seed=3):Summary{
+  const by=new Map<string,Row[]>();for(const r of rows){const l=by.get(r.ticker);if(l)l.push(r);else by.set(r.ticker,[r]);}
+  const trades:Trade[]=[];
+  for(const [,list] of by){list.sort((a,b)=>a.time-b.time);for(const side of ['yes','no'] as const)for(const r of list){
+    if(r.tau<minTau||r.tau>maxTau)continue;const bid=sideBid(r,side);if(bid===null||bid<.05)continue;
+    const worth=side==='yes'?p(r):1-p(r),net=bid-fee(bid);if(net-worth<gap)continue;
+    const won=(side==='yes'?r.y:1-r.y)===1;trades.push({cluster:r.cluster,ticker:r.ticker,time:r.time,tau:r.tau,side,price:bid,cost:1,exitTau:r.tau,exitReason:'sell',pnl:net-(won?1:0),win:net>(won?1:0)});break;}}
+  return summarize(trades,split,seed);
+}
 /** The app's taker BUY rule: best side with net edge ≥ minEdge, spread ≤ maxSpread, ≥ 60 s left, inside the entry window or edge ≥ earlyEdge. */
 export function appRule(p:(r:Row)=>number,o={minEdge:.04,earlyEdge:.08,maxSpread:.06,windowMax:900}):Picker{
   return r=>{if(r.tau<60||r.bid===null||r.ask===null||r.ask-r.bid>o.maxSpread+1e-9)return null;const e=edges(r,p(r));
