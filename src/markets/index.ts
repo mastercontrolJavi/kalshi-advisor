@@ -102,7 +102,7 @@ const server=createServer((req,res)=>{
     let body='';req.on('data',c=>{body+=c;if(body.length>4096)req.destroy();});
     req.on('end',()=>{try{const d=JSON.parse(body);
       if(typeof d.cond!=='string'||typeof d.ticker!=='string'||!['confirmed','rejected'].includes(d.status))throw new Error('Invalid link decision');
-      const ok=journal.decideLink(d.cond,d.ticker,d.status,Date.now());log('sharp-link-decided',{...d,ok});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok}));}
+      const ok=journal.decideLink(d.cond,d.ticker,d.status,Date.now());if(ok)sharps.decided(d.cond,d.ticker,d.status);log('sharp-link-decided',{...d,ok});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok}));}
       catch(e){res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}});
     return;
   }

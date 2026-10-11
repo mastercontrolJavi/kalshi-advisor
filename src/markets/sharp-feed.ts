@@ -112,6 +112,10 @@ export class SharpFeed {
   async scoreBtc(now:number){
     for(const t of this.journal.unscoredLean(now)){try{const {market}=await this.o.client.get('/markets/'+encodeURIComponent(t));if(market?.result==='yes'||market?.result==='no')this.journal.scoreLean(t,market.result);}catch(e){this.o.log('btc-lean-score-error',{ticker:t,message:(e as Error).message});}}
   }
+  /** Your ✓ / ✗ on a suggested link shows at once; a newly confirmed link can flag from the next positions refresh. */
+  decided(cond:string,ticker:string,status:'confirmed'|'rejected'){
+    this.bets=this.bets.map(b=>b.cond!==cond?b:{...b,links:status==='rejected'?b.links.filter(l=>l.ticker!==ticker):b.links.map(l=>l.ticker===ticker?{...l,status}:l)});
+  }
   forTicker(ticker:string):SharpSummary|null{return this.byTicker.get(ticker)??null;}
   health(now=Date.now()):Health[]{
     return [{name:'Falcon',ok:!!this.o.falcon&&!this.falcon.error,updated:this.falcon.updated??(this.wallets.length?this.at.wallets:null),error:this.falcon.error,detail:!this.o.falcon?'no key':this.wallets.length?`${this.wallets.length} ranked traders`:'waiting for first use'},

@@ -103,3 +103,13 @@ No actual taker signal or maker paper fill was observed without credentials. Mak
 - **After the fixes:** 0 of 317 markets flagged. No outside gap ≥ 4¢ existed, and moves need an hour of snapshots.
 - **Scanner page** at desktop and 375 px: tabs, chips, empty state, explainer. No horizontal scroll, no console errors. A flagged row was checked with one labelled test flag (deleted afterwards).
 - 246 tests pass, tsc is clean, next build is green.
+
+## Advise exits, firm signals, sharp money, markets stage 5 — 2026-10-10/11 (side instance on 3010/3011/3012 against VACUUM INTO copies of both journals, live, read-only)
+
+- **Firm signal, live:** over the same 60 s the raw rule switched between BUY YES and NO TRADE 14 times; the dashboard showed BUY YES "at 88¢ or less" without a single change. The forming hint ("shows if it holds 2 s more") appeared before it.
+- **Replay on 242 recorded rounds:** 1,443 raw BUY runs became 258 shown signals (median 2 per round, median 50 s; 6% under 5 s). Entry at confirmation +4.4¢ per contract on the first per round (−3.3 to +12.1), unchanged vs the raw first second, still unproven.
+- **Sell vs hold (history):** 8,794 rounds, quant ≥ 2–5¢ below the net bid: selling −0.6 to −3.6¢ per contract vs holding with 1–15 min left (1–5 min: ranges below zero). Live final 90 s: +4.9¢ (76 rounds) / +8.2¢ (20 rounds), not proven.
+- **Sharp money:** Falcon returned 100 ranked (all Elite) wallets in 1.3 s; Polymarket gave 21,724 open positions for them in ~30 s; 80 bets held by 2+ shown. Kalshi catalogue 44,796 non-sports markets in 70 pages. Title links: identical titles score 1.00 (Bolsonaro, Lula, Philippe, Le Pen); at 0.6–0.72 several were the opposite bet, so links need ≥ 0.8 and your ✓. A ✓ on the Sharps tab saved (copy DB) and shows at once. Bitcoin round lean read live (7 sharp wallets, +$117 on Up; Polymarket Up 86%).
+- **Stage 5:** SOL and ETH 15-min rounds priced live in the final minute (model 99% vs Kalshi 99.6% / 99.85%); all four venues live for ETH, SOL, XRP-style symbols; 150-s volatility ETH 36%, SOL 34%, BTC 31% a year. EIA: WTI $96.24, Brent $125.44 (Oct 6), gasoline $4.354 (Oct 5).
+- Sharps tab and dashboard at 375 px: no horizontal scroll, no console errors. 262 tests pass, tsc clean, next build green.
+- **Not verified live:** a Markets crypto position card (none held; unit-tested), a copy flag firing (none qualified: confirmed link was above the sharps' entry, "chasing"), sports links from the scanner (they fill on its next sweep, when matches gain the Polymarket condition id), sounds.
