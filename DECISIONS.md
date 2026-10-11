@@ -133,3 +133,9 @@
   - Those positions get the Bitcoin advise words and rules (forecast = default blend of model and Kalshi mid).
   - **EIA** (WTI, Brent daily; US regular gasoline weekly; every 6 h) is shown as context on oil and gas cards only. Kalshi settles those on NYMEX / AAA, so it never becomes a probability or a flag.
   - **Markets verdict words now match Bitcoin's:** SELL (was SELL BEATS HOLD, same 2¢ rule), LET IT SETTLE (bid ≥ 97¢), LET IT RIDE (≥ 60%), HOLD. SELL / SELL NOW on a Markets card now sound.
+
+54. Live price chart (2026-10-11, user request; built because the dashboard had no price chart at all, only probability lines).
+  - **Price action** panel on the 15-minute dashboard: candlesticks of the model's own 4-venue spot (5 s / 15 s / 1 m / 5 m) with each round's opening price K as a dashed step line, or this round's Kalshi YES price with the quant forecast and raw model as lines.
+  - TradingView lightweight-charts 5.2.1 (canvas, built for live candles; its attribution logo is kept as its licence asks). Colours from the shared chartColors.
+  - History: engine GET /candles, the last 2 h of 1-s proxy prices (~170 KB) and each round's K, reloaded every minute; between reloads every 4 Hz state update moves the last candle. View and candle length are remembered per browser.
+  - It is a reading aid, not a signal: nothing in the advice uses it.

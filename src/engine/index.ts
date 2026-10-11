@@ -104,6 +104,11 @@ const server=createServer(async(req,res)=>{
       const balances=journal.db.prepare('SELECT time,balance,portfolio_value AS portfolio FROM balances ORDER BY time').all() as {time:number;balance:number;portfolio:number|null}[];
       res.setHeader('Content-Type','application/json');res.end(JSON.stringify({...buildAnalytics(rollupMarkets(journal.realEvents(),fees,signals),balances),account:{balance:account.balance,portfolio:account.portfolioValue,ready:account.ready}}));return;
     }
+    // Price chart: the last 2 h of the 1-s proxy (the model's own spot) and each round's opening price K, for candles.
+    if(req.method==='GET'&&path==='/candles'){
+      const since=Date.now()-7200000,rows=journal.db.prepare('SELECT ticker,MAX(k) AS k FROM ticks WHERE time>=? AND k IS NOT NULL GROUP BY ticker').all(since) as {ticker:string;k:number}[];
+      const rounds=rows.map(r=>{const m=known.get(r.ticker)??journal.get<Market|null>('market:'+r.ticker,null),k=Number(m?.floor_strike);return m?{ticker:r.ticker,open:Date.parse(m.open_time),close:Date.parse(m.close_time),k:Number.isFinite(k)&&k>0?k:r.k}:null;}).filter(Boolean);
+      res.setHeader('Content-Type','application/json');res.end(JSON.stringify({samples:proxy.history.filter(x=>x.time>=since).map(x=>[x.time,Math.round(x.price*100)/100]),rounds}));return;}
     if(req.method==='GET'&&path==='/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;}
     if(req.method==='GET'&&path.startsWith('/export/')){const table=path.slice(8);const csv=journal.export(table);res.writeHead(200,{'Content-Type':'text/csv','Content-Disposition':`attachment; filename="${table}.csv"`});res.end(csv);return;}
     if(req.method==='POST'&&['/settings','/override'].includes(path)){

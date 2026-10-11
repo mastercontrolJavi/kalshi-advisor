@@ -2,7 +2,7 @@
 import {memo} from 'react';
 import {LineChart,Line,XAxis,YAxis,Tooltip,ResponsiveContainer,CartesianGrid,ReferenceLine} from 'recharts';
 // SVG presentation attributes cannot read CSS variables; these mirror the globals.css tokens.
-export const chartColors={yes:'#3ee08f',info:'#74adff',tactics:'#c4a5ff',grid:'#1c242e',axis:'#6b7886',surface:'#121820',line:'#2a3542'};
+export const chartColors={yes:'#3ee08f',no:'#ff6b86',warn:'#f5b942',info:'#74adff',tactics:'#c4a5ff',grid:'#1c242e',axis:'#6b7886',muted:'#94a1b0',surface:'#121820',line:'#2a3542'};
 function ProbabilityChart({data}:{data:{time:number;model:number|null;market:number|null;quant?:number|null}[]}){
   if(!data.length)return <div className="chart flex items-center justify-center rounded-xl border border-dashed border-line text-sm text-muted">The chart fills in as this window runs.</div>;
   const last=data.at(-1);

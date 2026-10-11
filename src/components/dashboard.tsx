@@ -1,7 +1,7 @@
 'use client';
 import {useEffect,useState} from 'react';
 import dynamic from 'next/dynamic';
-import {LineChart as ChartIcon,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,BellRing,Crosshair,History} from 'lucide-react';
+import {ChartCandlestick,LineChart as ChartIcon,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,BellRing,Crosshair,History} from 'lucide-react';
 import {useSoundAlerts} from './use-sound-alerts';
 import {SoundPanel,SoundToggle} from './sound-panel';
 import {useLive} from './use-live';
@@ -14,6 +14,7 @@ import {SiteHeader} from './site-header';
 import {cn} from '@/lib/utils';
 import {ago,signedDollars} from './format';
 import {finalMinuteEvidence} from '@/backtest/verdict';
+const PriceChart=dynamic(()=>import('./price-chart'),{ssr:false,loading:()=><div className="chart-tall animate-pulse rounded-xl bg-surface-2"/>});
 const ProbabilityChart=dynamic(()=>import('./probability-chart'),{ssr:false,loading:()=><div className="chart animate-pulse rounded-xl bg-surface-2"/>});
 
 export default function Dashboard(){
@@ -40,6 +41,7 @@ export default function Dashboard(){
         <div className="lg:col-span-4"><ForecastPanel s={s} fresh={fresh} btc={btc}/></div>
       </div>
       <Positions s={s} fresh={fresh}/>
+      <Collapsible open remember="price-chart" title="Price action" icon={<ChartCandlestick aria-hidden className="size-4 text-info"/>} aside="live candles · Bitcoin or Kalshi YES"><PriceChart s={s}/></Collapsible>
       <Collapsible open title="Scalp & dip" icon={<Crosshair aria-hidden className="size-4 text-info"/>} aside={fresh&&s?.tactics?.ideas?.length?<span className="text-yes">{s.tactics.ideas.length} setup{s.tactics.ideas.length>1?'s':''} now</span>:'intra-window setups'}><Tactics s={s} fresh={fresh}/></Collapsible>
       <Collapsible open title="Recent rounds" icon={<History aria-hidden className="size-4 text-info"/>} aside={s?.calibration?.roundTrends?.totals?.live300?.n?`5:00 call ${Math.round(s.calibration.roundTrends.totals.live300.rate*100)}% right`:'calls & results'}><RecentRounds s={s}/></Collapsible>
       <div className="grid gap-4 lg:grid-cols-12">

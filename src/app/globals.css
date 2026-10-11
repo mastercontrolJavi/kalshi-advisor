@@ -51,6 +51,9 @@ body::before { content: ''; position: fixed; inset: 0; z-index: -1; pointer-even
 .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
 .chart { height: 260px; min-width: 0; }
 @media (max-width: 640px) { .chart { height: 210px; } }
+/* Candles need more height than the line charts to read wicks. */
+.chart-tall { height: 360px; min-width: 0; }
+@media (max-width: 640px) { .chart-tall { height: 260px; } }
 
 summary { cursor: pointer; list-style: none; }
 summary::-webkit-details-marker { display: none; }
