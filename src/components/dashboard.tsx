@@ -44,9 +44,8 @@ export default function Dashboard(){
           <div className="flex min-h-12 items-center gap-2 border-b border-line px-4 py-2"><ChartCandlestick aria-hidden className="size-4 text-info"/><h2 className="font-medium">Price action</h2><SectionHelp title="Price action"/><span className="ml-auto hidden text-xs text-muted sm:inline">Live candles</span></div>
           <div className="p-4"><PanelBoundary name="Price chart"><PriceChart s={s} fresh={fresh}/></PanelBoundary></div>
         </Card>
-        <div className="min-w-0 lg:col-span-4"><SignalPanel s={s} fresh={fresh} compact/></div>
+        <div className="flex min-w-0 flex-col gap-4 lg:col-span-4"><SignalPanel s={s} fresh={fresh} compact/><Positions s={s} fresh={fresh} compact/></div>
       </div>
-      <Positions s={s} fresh={fresh}/>
       <ForecastPanel s={s} fresh={fresh} btc={btc}/>
       <Collapsible open title="Scalp & dip" icon={<Crosshair aria-hidden className="size-4 text-info"/>} aside={fresh&&s?.tactics?.ideas?.length?<span className="text-yes">{s.tactics.ideas.length} setup{s.tactics.ideas.length>1?'s':''} now</span>:'intra-window setups'}><Tactics s={s} fresh={fresh}/></Collapsible>
       <Collapsible open title="Recent rounds" icon={<History aria-hidden className="size-4 text-info"/>} aside={s?.calibration?.roundTrends?.totals?.live300?.n?`5:00 call ${Math.round(s.calibration.roundTrends.totals.live300.rate*100)}% right`:'calls & results'}><RecentRounds s={s}/></Collapsible>
