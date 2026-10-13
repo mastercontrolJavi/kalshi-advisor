@@ -2,6 +2,7 @@
 import {useEffect,useRef,type ReactNode} from 'react';
 import {Check,X,Info,Clock,Zap,TrendingDown,ChevronRight,ArrowUpRight,ArrowDownRight,Minus,Radio,Gauge,Wallet,BookOpen,Layers,ShieldCheck,Activity,TriangleAlert,Crosshair,FlaskConical} from 'lucide-react';
 import {Card} from './ui/card';
+import {SectionHelp,helpFor} from './section-help';
 import {cn} from '@/lib/utils';
 import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,ago,opensAt,maintenanceNote} from './format';
 import {ruleVerdict,exitVerdict,finalMinuteEvidence,sellEvidence} from '@/backtest/verdict';
@@ -18,12 +19,12 @@ export function Collapsible({title,icon,aside,open=false,remember,className,chil
   useEffect(()=>{const el=ref.current;if(!el)return;let saved:string|null=null;if(key){try{saved=localStorage.getItem(key);}catch{}}
     if(saved!==null)el.open=saved==='open';else if(open&&window.matchMedia('(min-width: 1024px)').matches)el.open=true;},[open,key]);
   const toggled=key?(e:React.SyntheticEvent<HTMLDetailsElement>)=>{try{localStorage.setItem(key,e.currentTarget.open?'open':'closed');}catch{}}:undefined;
-  return <Card className={cn('p-0',className)}><details ref={ref} onToggle={toggled}>
-    <summary className="flex min-h-14 items-center gap-3 px-5 py-3"><ChevronRight aria-hidden className="chev size-4 text-faint"/>{icon}<span className="font-medium">{title}</span><span className="ml-auto text-xs text-muted">{aside}</span></summary>
+  return <Card className={cn('relative p-0',className)}>{helpFor(title)?<div className="absolute right-4 top-3.5"><SectionHelp title={title}/></div>:null}<details ref={ref} onToggle={toggled}>
+    <summary className="flex min-h-14 items-center gap-3 px-5 py-3 pr-14"><ChevronRight aria-hidden className="chev size-4 text-faint"/>{icon}<span className="font-medium">{title}</span><span className="ml-auto text-xs text-muted">{aside}</span></summary>
     <div className="border-t border-line px-5 pb-5 pt-4">{children}</div></details></Card>;
 }
 export function Heading({icon,title,aside}:{icon?:ReactNode;title:string;aside?:ReactNode}){
-  return <div className="flex flex-wrap items-center gap-2">{icon}<h2 className="label">{title}</h2>{aside?<div className="ml-auto text-xs text-muted">{aside}</div>:null}</div>;
+  return <div className="flex flex-wrap items-center gap-2">{icon}<h2 className="label">{title}</h2><SectionHelp title={title}/>{aside?<div className="ml-auto text-xs text-muted">{aside}</div>:null}</div>;
 }
 export function Pill({tone,children,title}:{tone:Tone;children:ReactNode;title?:string}){
   const bg={yes:'bg-yes-dim text-yes',no:'bg-no-dim text-no',warn:'bg-warn-dim text-warn',neutral:'bg-surface-2 text-muted'}[tone];
@@ -61,24 +62,27 @@ export function WindowBar({s}:{s:any}){
   return <div className="h-1 w-full bg-line" aria-hidden><div className={cn('bar-fill h-full',tau<=60?'bg-warn':'bg-info')} style={{width:`${done*100}%`}}/></div>;
 }
 
-export function SignalPanel({s,fresh}:{s:any;fresh:boolean}){
+export function SignalPanel({s,fresh,compact=false}:{s:any;fresh:boolean;compact?:boolean}){
   const ev=s?.evaluation,idea=fresh?ev?.idea:null,action=fresh?ev?.action??'NO TRADE':'NO TRADE',tone=actionTone(action),tau=Math.max(0,s?.tau??0);
   const gates:any[]=fresh?ev?.gates??[]:[],failed=gates.filter(g=>!g.ok&&!g.advisory&&!g.wait).length,waiting=gates.find(g=>!g.ok&&g.wait),paperOnly=!!idea?.belowMinSize;
-  return <Card className={cn('rise relative overflow-hidden',toneBorder[tone])}>
+  return <Card className={cn('rise relative',toneBorder[tone],compact&&'p-4')}>
+    <div className="mb-3 flex items-center justify-between"><h2 className="label">Trade decision</h2><SectionHelp title="Trade decision"/></div>
     <div className="flex flex-wrap items-start justify-between gap-4">
-      <div><div className="label">Time to close</div><div className={cn('num mt-1 text-5xl font-bold sm:text-6xl',tau<=60&&s?.market?'text-warn':'')}>{s?.market?mmss(tau):'--:--'}</div>{tau<=60&&s?.market?<div className="mt-1 text-xs text-warn">Final minute · settlement average locking</div>:null}</div>
+      <div><div className="label">Time to close</div><div className={cn('num mt-1 font-bold',compact?'text-4xl':'text-5xl sm:text-6xl',tau<=60&&s?.market?'text-warn':'')}>{s?.market?mmss(tau):'--:--'}</div>{tau<=60&&s?.market?<div className="mt-1 text-xs text-warn">Final minute · settlement average locking</div>:null}</div>
       <div className="flex gap-6 text-right"><div><div className="label">Net edge</div><div className={cn('num mt-1 text-3xl font-semibold',idea?toneText[tone]:'text-muted')}>{idea?signedCents(idea.edge):'—'}</div></div><div><div className="label">Contracts</div><div className="num mt-1 text-3xl font-semibold">{idea?.contracts??0}</div>{paperOnly?<div className="text-xs text-info">paper only</div>:null}</div></div>
     </div>
-    <div className={cn('font-display mt-4 text-6xl leading-none font-bold tracking-tight uppercase sm:text-8xl',toneText[tone])} aria-live="polite">{action}</div>
+    <div className={cn('font-display mt-3 leading-none font-bold tracking-tight uppercase',compact?'text-5xl':'text-6xl sm:text-8xl',toneText[tone])} aria-live="polite">{action}</div>
     {fresh&&ev?.firm?<div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1"><span className={cn('num text-3xl font-semibold',toneText[tone])}>at {ev.firm.limit!=null?cents(ev.firm.limit,0):'—'} or less</span><span className="text-sm text-muted">steady for {mmss(ev.firm.heldMs/1000)}{idea&&ev.firm.limit!=null&&idea.price>ev.firm.limit+1e-9?' · ask is above this price: wait, or skip':''}</span></div>:null}
     {fresh&&ev?.forming?<div className="mt-3"><Pill tone="neutral"><Clock aria-hidden className="size-3.5"/>BUY {String(ev.forming.side).toUpperCase()} forming · shows if it holds {Math.max(1,Math.ceil((ev.forming.needMs-ev.forming.ms)/1000))} s more</Pill></div>:null}
     <p className="mt-3 max-w-3xl text-[15px] text-fg/90">{fresh?(idea?ev.reason:failed?`${failed} of ${gates.length} checks failing${waiting?` · ${waiting.label.toLowerCase()} ${waiting.detail}`:''}`:waiting?`All checks clear — waiting: ${waiting.detail}`:ev?.reason??'Warming up'):'Live state unavailable — advice suppressed'}</p>
     {fresh&&!s?.market&&s?.nextOpen?<p className="mt-1 text-sm text-muted">Next round opens {opensAt(s.nextOpen)}. {maintenanceNote()??''}</p>:null}
     {idea?<BacktestNote s={s} which="15m"/>:null}
     {idea?<p className="mt-1 text-sm text-muted">{paperOnly?<><span className="text-info">Below 1 contract at your risk settings — logged as a paper trade.</span> One contract would cost {dollars(idea.price+idea.fee)}.</>:<>Spend / max loss {dollars(idea.maxLoss)} · ask {cents(idea.price)} + {cents(idea.fee,2)} fee</>}</p>:null}
-    {gates.length?<ul className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" aria-label="Trade checks">{gates.some(g=>g.ok)?<li className="flex items-center gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2 text-sm text-muted sm:hidden"><Check aria-hidden className="size-4 text-yes"/>{gates.filter(g=>g.ok).length} passing</li>:null}{gates.map(g=>{const info=!g.ok&&g.advisory,wait=!g.ok&&g.wait;return <li key={g.key} className={cn('items-start gap-2 rounded-xl border px-3 py-2',g.ok?'hidden border-line bg-surface-2/60 sm:flex':wait?'flex border-line-strong bg-surface-2/60':info?'flex border-info/35 bg-info/10':'flex border-warn/35 bg-warn-dim/40')}>
+    {gates.some(g=>!g.ok)?<div className="mt-3 space-y-1.5">{gates.filter(g=>!g.ok).map(g=><div key={g.key} className={cn('flex items-start gap-2 rounded-lg px-2.5 py-1.5 text-xs',g.wait?'bg-surface-2 text-muted':g.advisory?'bg-info/10 text-info':'bg-warn-dim/40 text-warn')}><span className="font-medium">{g.label}</span><span className="min-w-0 flex-1">{g.detail}</span></div>)}</div>:null}
+    <div className="mt-2 flex items-center gap-1"><span className="label">Trade checks</span><SectionHelp title="Trade checks"/></div>
+    {gates.length?<details className="mt-3 rounded-xl border border-line bg-surface-2/40"><summary className="flex min-h-10 items-center gap-2 px-3 text-sm"><ChevronRight aria-hidden className="chev size-3.5 text-muted"/><span>{gates.filter(g=>g.ok).length}/{gates.length} checks passing</span><span className="ml-auto text-xs text-muted">View all</span></summary><ul className={cn("grid grid-cols-2 gap-2 p-2",!compact&&"sm:grid-cols-3 lg:grid-cols-4")} aria-label="Trade checks">{gates.some(g=>g.ok)?<li className="flex items-center gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2 text-sm text-muted sm:hidden"><Check aria-hidden className="size-4 text-yes"/>{gates.filter(g=>g.ok).length} passing</li>:null}{gates.map(g=>{const info=!g.ok&&g.advisory,wait=!g.ok&&g.wait;return <li key={g.key} className={cn('items-start gap-2 rounded-xl border px-3 py-2',g.ok?'flex border-line bg-surface-2/60':wait?'flex border-line-strong bg-surface-2/60':info?'flex border-info/35 bg-info/10':'flex border-warn/35 bg-warn-dim/40')}>
       {g.ok?<Check aria-label="pass" className="mt-0.5 size-4 shrink-0 text-yes"/>:wait?<Clock aria-label="waiting" className="mt-0.5 size-4 shrink-0 text-muted"/>:info?<Info aria-label="information" className="mt-0.5 size-4 shrink-0 text-info"/>:<X aria-label="fail" className="mt-0.5 size-4 shrink-0 text-warn"/>}
-      <div className="min-w-0"><div className="text-sm font-medium">{g.label}</div><div className={cn('text-xs leading-snug',g.ok||wait?'text-faint':info?'text-info':'text-warn')}>{g.detail}</div></div></li>;})}</ul>:null}
+      <div className="min-w-0"><div className="text-sm font-medium">{g.label}</div><div className={cn('text-xs leading-snug',g.ok||wait?'text-faint':info?'text-info':'text-warn')}>{g.detail}</div></div></li>;})}</ul></details>:null}
     <p className="mt-4 text-xs text-faint">Edges use the {s?.quant?.signalSource==='quant'?'quant forecast (model blended with Kalshi)':'raw model'} after fees — YES {signedCents(s?.model?ev?.edges?.yes:null)} · NO {signedCents(s?.model?ev?.edges?.no:null)}. {ruleVerdict(s?.backtest??null,'15m',Date.now(),s?.quant?.signalSource==='model'?'model':'quant').text}</p>
   </Card>;
 }
@@ -87,7 +91,7 @@ const DirIcon=({d,className}:{d:string;className?:string})=>d==='UP'?<ArrowUpRig
 /** Polymarket's top crypto traders on the same 15-minute window (markets process, /api/markets/sharps/btc every 15 s). */
 function SharpLean({btc}:{btc:any}){
   const h=btc?.stats?.find((x:any)=>x.horizon===300),net=btc?.sharpNet??0,lean=Math.abs(net)>=100?(net>0?'UP':'DOWN'):null;
-  return <section className="border-t border-line pt-4">
+  return <section className="border-t border-line pt-4 md:border-t-0 md:pt-0">
     <Heading icon={<Activity aria-hidden className="size-4 text-faint"/>} title="Polymarket sharps" aside={h?.paper?.n?<span>{h.proven?'proven':`unproven · ${h.paper.n} scored`}</span>:<span>scoring starts</span>}/>
     {btc?<><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1"><span className={cn('font-display text-3xl font-bold',lean==='UP'?'text-yes':lean==='DOWN'?'text-no':'text-muted')}>{lean??'No lean'}</span><span className="num text-lg">{net>=0?'+':'−'}${Math.abs(Math.round(net)).toLocaleString()} on Up</span><span className="text-xs text-muted">{btc.sharpWallets} wallet{btc.sharpWallets===1?'':'s'} · Polymarket Up {pct(btc.upPrice,0)}</span></div>
       <p className="mt-1 text-xs text-muted">{h?.paper?.mean!=null?`Buying the lean side on Kalshi at 5:00 left: ${h.paper.mean>=0?'+':'−'}${Math.abs(h.paper.mean*100).toFixed(1)}¢ per contract over ${h.paper.n} rounds. `:''}Their round settles on a 15-minute average, not Kalshi&apos;s last minute. <a href="/markets/sharps" className="text-info hover:underline">Details</a></p></>
@@ -98,7 +102,7 @@ export function ForecastPanel({s,fresh,btc}:{s:any;fresh:boolean;btc?:any}){
   const live=fresh?s?.liveCall:null,q=s?.quality,open=s?.openingCall,rec=s?.calibration?.opening,liveTone:Tone=live?(live.direction==='UP'?'yes':'no'):'neutral';
   const qTone:Tone=q?.level==='solid'?'yes':q?.level==='degraded'?'warn':'no',held=live?Math.max(0,(s.engineTime-live.since)/1000):0;
   const elapsed=s?.market?(Date.parse(s.market.close_time)-Date.parse(s.market.open_time))/1000-(s?.tau??0):null;
-  return <Card className="rise flex flex-col gap-5 [animation-delay:60ms]">
+  return <Card className="rise grid gap-5 md:grid-cols-2 xl:grid-cols-4 [animation-delay:60ms]">
     <section>
       <Heading icon={<Radio aria-hidden className="size-4 text-info"/>} title="Live call · quant" aside={q?<Pill tone={qTone} title={q.issues.join(' · ')}>{q.level==='solid'?<ShieldCheck aria-hidden className="size-3.5"/>:<TriangleAlert aria-hidden className="size-3.5"/>}Data {q.level}</Pill>:null}/>
       {live?<>
@@ -110,7 +114,7 @@ export function ForecastPanel({s,fresh,btc}:{s:any;fresh:boolean;btc?:any}){
       </>:<p className="mt-3 text-sm text-muted">{!fresh?'Live state unavailable.':q?.level==='unreliable'?`Paused — ${q.issues.join(', ')}.`:'Waiting for the model.'}</p>}
       {q?.level==='degraded'?<p className="mt-2 text-xs text-warn">{q.issues.join(' · ')}</p>:null}
     </section>
-    <section className="border-t border-line pt-4">
+    <section className="border-t border-line pt-4 md:border-t-0 md:pt-0">
       <Heading icon={<Crosshair aria-hidden className="size-4 text-faint"/>} title="Opening call" aside={rec?.count?<span>{rec.hits}/{rec.count} correct · CI {pct(rec.low,0)}–{pct(rec.high,0)}</span>:<span>no settled calls yet</span>}/>
       {open?<div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1"><span className={cn('font-display flex items-center gap-1 text-3xl font-bold',open.direction==='UP'?'text-yes':'text-no')}><DirIcon d={open.direction} className="size-6"/>{open.direction}</span><span className="num text-lg">{pct(open.direction==='UP'?open.p:1-open.p)}</span>
         {s?.proxy!=null&&s?.K!=null?<Pill tone={(s.proxy>=s.K)===(open.direction==='UP')?'yes':'warn'}>{(s.proxy>=s.K)===(open.direction==='UP')?'On track':'Behind'}</Pill>:null}<span className="text-xs text-faint">frozen at {mmss(open.tau)} left · Kalshi {pct(open.mid)}{open.inputs?.kSource==='proxy estimate'?' · K estimated':''}</span></div>
@@ -118,13 +122,13 @@ export function ForecastPanel({s,fresh,btc}:{s:any;fresh:boolean;btc?:any}){
     </section>
     <NextWindow s={s} fresh={fresh}/>
     {btc!==undefined?<SharpLean btc={btc}/>:null}
-    <p className="text-xs text-faint">Calls blend the model with Kalshi; momentum/flow only count once settled windows prove them. All are scored on the Calibration page.</p>
+    <p className="text-xs text-faint md:col-span-2 xl:col-span-4">Calls blend the model with Kalshi; momentum/flow only count once settled windows prove them. All are scored on the Calibration page.</p>
   </Card>;
 }
 
 function NextWindow({s,fresh}:{s:any;fresh:boolean}){
   const n=fresh?s?.nextCall:null,tau=s?.tau??900,rec=s?.calibration?.next?.find((r:any)=>r.horizon===10),urgent=tau<=60;
-  return <section className={cn('border-t border-line pt-4',urgent&&n?'rounded-xl border border-info/30 bg-info/5 p-3':'')}>
+  return <section className={cn('border-t border-line pt-4 md:border-t-0 md:pt-0',urgent&&n?'rounded-xl border border-info/30 bg-info/5 p-3':'')}>
     <Heading icon={<Zap aria-hidden className={cn('size-4',urgent?'text-info':'text-faint')}/>} title="Next window" aside={rec?.count?<span>{rec.hits}/{rec.count} correct</span>:<span>preview</span>}/>
     {n?<><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1"><span className={cn('font-display flex items-center gap-1 text-3xl font-bold',n.direction==='UP'?'text-yes':'text-no')}><DirIcon d={n.direction} className="size-6"/>{n.direction}</span><span className="num text-lg">{pct(n.direction==='UP'?n.p:1-n.p)}</span><span className="text-xs text-muted">{n.confidence}</span></div>
       <p className="mt-1 text-xs text-muted">{tau>60?'Before the final minute the next window is a coin flip plus momentum — its opening price is set by this window\'s last 60 s.':`Head start if it closed now: ${n.headStart>=0?'+':'−'}$${Math.abs(n.headStart).toFixed(2)} (±$${n.headStartSd.toFixed(2)}) · next K ≈ ${dollars(n.expectedK)}`}</p></>
@@ -132,7 +136,7 @@ function NextWindow({s,fresh}:{s:any;fresh:boolean}){
   </section>;
 }
 export function Stat({label,children,sub,tone='neutral'}:{label:string;children:ReactNode;sub?:ReactNode;tone?:Tone}){
-  return <div className="min-w-0"><div className="label">{label}</div><div className={cn('num mt-1.5 text-xl font-medium sm:text-2xl',toneText[tone])}>{children}</div>{sub?<div className="mt-0.5 truncate text-xs text-muted">{sub}</div>:null}</div>;
+  return <div className="min-w-0"><div className="flex items-center gap-1"><span className="label">{label}</span><SectionHelp title={label}/></div><div className={cn('num mt-1.5 text-xl font-medium sm:text-2xl',toneText[tone])}>{children}</div>{sub?<div className="mt-0.5 truncate text-xs text-muted">{sub}</div>:null}</div>;
 }
 const noticeStyle:Record<string,string>={yes:'border-yes/40 bg-yes-dim/30',warn:'border-warn/40 bg-warn-dim/30',no:'border-no/40 bg-no-dim/30'};
 /** A heads-up box: what moved and what selling now would do. Shared by the Bitcoin positions box and Markets. */
@@ -141,13 +145,13 @@ export function Notice({notice}:{notice:{tone:'yes'|'warn'|'no';title:string;tex
 }
 /** A figure in its own card: label, big number, optional subline (Analytics and Markets → Record). */
 export function Kpi({label,children,sub,className}:{label:string;children:ReactNode;sub?:ReactNode;className?:string}){
-  return <Card className="p-4"><div className="label">{label}</div><div className={cn('num mt-1.5 text-2xl font-medium',className)}>{children}</div>{sub?<div className="mt-0.5 text-xs text-muted">{sub}</div>:null}</Card>;
+  return <Card className="p-4"><div className="flex items-center gap-1"><span className="label">{label}</span><SectionHelp title={label}/></div><div className={cn('num mt-1.5 text-2xl font-medium',className)}>{children}</div>{sub?<div className="mt-0.5 text-xs text-muted">{sub}</div>:null}</Card>;
 }
 /** Dashed placeholder for a section with nothing to show yet. */
 export function Empty({children}:{children:ReactNode}){return <p className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-muted">{children}</p>;}
 export function Instruments({s}:{s:any}){
   const mid=s?.book?.yesBid!=null&&s?.book?.yesAsk!=null?(s.book.yesBid+s.book.yesAsk)/2:null,d=s?.distance;
-  return <Card className="rise grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-6 [animation-delay:120ms]">
+  return <Card className="instrument-strip rise grid grid-cols-3 gap-x-3 gap-y-2 p-3 lg:grid-cols-6 lg:p-4 [animation-delay:120ms]">
     <Stat label={`Opening K${s?.kConfirmed?' ✓':' (est.)'}`} sub={s?.kConfirmed?'Kalshi floor strike':'estimated from proxy'}>{dollars(s?.K)}</Stat>
     <Stat label="BTC proxy" sub={`median of ${s?.venues?.filter((v:any)=>v.healthy).length??0} live venues`}>{dollars(s?.proxy)}</Stat>
     <Stat label="Distance to K" tone={d>0?'yes':d<0?'no':'neutral'} sub={s?.model?`${s.model.z>=0?'+':''}${s.model.z.toFixed(2)} σ of average`:'—'}>{signedDollars(d)}</Stat>
@@ -160,7 +164,7 @@ export function Instruments({s}:{s:any}){
 export function Positions({s,fresh}:{s:any;fresh:boolean}){
   const exits:any[]=fresh?s?.exits??[]:[];
   const synced=s?.account?.positionsUpdated?`synced ${ago(Math.max(0,Date.now()-s.account.positionsUpdated))} ago`:'not synced yet';
-  if(!exits.length)return <Card className="flex min-h-14 flex-wrap items-center gap-3 py-3"><Wallet aria-hidden className="size-4 text-faint"/><span className="label">Your positions</span><span className="ml-auto text-sm text-muted">{s?.account?.ready?<>No open BTC 15-min position <span className="text-xs text-faint">· {synced}</span></>:'Waiting for account'}</span></Card>;
+  if(!exits.length)return <Card className="flex min-h-14 flex-wrap items-center gap-3 py-3"><Wallet aria-hidden className="size-4 text-faint"/><span className="label">Your positions</span><SectionHelp title="Your positions"/><span className="ml-auto text-sm text-muted">{!fresh?'Live positions unavailable':s?.account?.ready?<>No open BTC 15-min position <span className="text-xs text-faint">· {synced}</span></>:'Waiting for account'}</span></Card>;
   const tones:Record<string,Tone>={'SETTLING':'neutral','RIDE':'yes','LET IT RIDE':'yes','TAKE PROFIT':'yes','LET IT SETTLE':'yes','CUT LOSS':'no','SELL':'warn','SELL NOW':'warn','HOLD':'neutral','TOO LATE':'neutral','NO MODEL':'neutral'};
   const mode=s?.config?.exitMode,hold=mode==='hold'||mode==='advise',urgent=exits.some(e=>['TAKE PROFIT','CUT LOSS','SELL','SELL NOW'].includes(e.action)||e.notice);
   const sp=(x:number|null|undefined)=>x==null?'—':`${x>=0?'+':'−'}${Math.abs(x*100).toFixed(0)}%`;

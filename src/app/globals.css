@@ -54,6 +54,12 @@ body::before { content: ''; position: fixed; inset: 0; z-index: -1; pointer-even
 /* Candles need more height than the line charts to read wicks. */
 .chart-tall { height: 360px; min-width: 0; }
 @media (max-width: 640px) { .chart-tall { height: 260px; } }
+.instrument-strip .label { font-size: 10px; letter-spacing: .08em; }
+@media (max-width: 640px) {
+  .instrument-strip .num { font-size: 15px; margin-top: 2px; }
+  .instrument-strip button { width: 22px; height: 24px; }
+  .instrument-strip .label { font-size: 10px; letter-spacing: .02em; }
+}
 
 summary { cursor: pointer; list-style: none; }
 summary::-webkit-details-marker { display: none; }

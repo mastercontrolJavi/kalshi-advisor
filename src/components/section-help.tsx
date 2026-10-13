@@ -1,0 +1,54 @@
+'use client';
+import {useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
+import {createPortal} from 'react-dom';
+import {Info} from 'lucide-react';
+
+/** Shared explanations: the same terms mean the same thing across dashboard panels. */
+export const sectionHelp:Record<string,string>={
+  'Short-term forecast':'Predicts whether Bitcoin’s exchange proxy will be higher 30 seconds, 1 minute or 3 minutes from now. It uses closed-candle bodies and wicks, momentum, range position and volatility. The shaded cone is an estimated 80% future price range, not future candles. Directional calls activate only after chronological later-data tests beat a coin flip with enough observations and acceptable calibration; otherwise the display stays UNCLEAR at 50–50. Live predictions are saved and scored at their original deadlines. This is separate from the Kalshi settlement forecast and does not establish a trading profit.',
+  'Price action':'Candles show the open, high, low and close within each selected interval. Green closes higher; pink closes lower. Bitcoin uses the live exchange proxy; the dashed K line is the opening strike. Kalshi YES shows contract prices in cents, with forecast overlays. Drag to explore, scroll to zoom, and use Latest to return to current prices.',
+  'Trade decision':'BUY YES or BUY NO appears after the entry checks pass and the signal holds for 3 seconds. NO TRADE means a check is blocking entry or the signal is still forming. Net edge subtracts the ask and taker fee from the forecast. A direction call alone is not an entry signal.',
+  'Trade checks':'Checks cover the market, feeds, order book, opening strike, model, account, guardrails, edge, timing, spread, depth and size. Amber blocks entry; a clock means waiting. A blue size notice means the signal is paper only, with zero suggested contracts. Expand to inspect every check.',
+  'Time to close':'Time remaining until this market closes, using the engine’s Kalshi clock correction. The last 60 seconds determine the settlement average. Entry timing is controlled in Settings.',
+  'Net edge':'Expected value per contract: forecast probability minus the price to buy minus the taker fee. Positive edge is a model estimate; the backtest shows whether the rule has worked after fees.',
+  'Contracts':'Suggested size uses your Kelly fraction, cash balance, per-trade risk cap and maximum contracts. Spend includes fees. Zero contracts means the budget is below one contract or no entry is ready.',
+  'Opening K':'The strike to beat at settlement. A check mark means Kalshi published the official floor strike. An estimate comes from the proxy’s opening-minute average and is subject to your estimated-K setting.',
+  'BTC proxy':'Median price of currently healthy exchange feeds. This approximates the settlement index; it is not the official CF Benchmarks BRTI. See Feeds & latency for quote age and connection health.',
+  'Distance to K':'Current proxy price minus the opening strike in dollars. The sigma figure measures the model’s expected closing-average distance in standard deviations. Being above K now does not guarantee an UP result.',
+  'Model up':'The raw diffusion model’s chance that the closing average clears K. Kalshi mid is the market’s YES bid/ask midpoint. The quant forecast blends usable market prices with the model and is used for signals when enabled.',
+  'Volatility':'Recent price movement determines model uncertainty. Locked seconds count proxy observations already included in the final-minute average; bridged seconds are small filled gaps. Basis is the estimated proxy-to-settlement-index adjustment.',
+  'Balance':'Cash balance from your authenticated Kalshi account, used for suggested sizing. This is cash available, not the total value of open positions. An unavailable or stale account blocks sized entry advice.',
+  'Live call · quant':'Current UP or DOWN forecast, updated with live data. The percentage is the chance of the displayed direction. A small band around 50% reduces repeated flips. The data badge reports input quality; this call is separate from the trade decision.',
+  'Opening call':'A forecast frozen when the official opening strike first becomes available within the first 3 minutes. Its accuracy is scored on settled rounds. The confidence interval describes uncertainty in that historical hit rate. On track compares today’s proxy with K, not the final result.',
+  'Next window':'Preview of the following round. Before the final minute there is little information about its opening strike. During the final minute, the observed average reveals a potential head start. A preview is not an entry recommendation.',
+  'Polymarket sharps':'Net activity of tracked Polymarket wallets on the matching crypto window. These markets have different settlement averaging rules. Results here are a separate paper study; an unproven lean is not evidence of an advantage on Kalshi.',
+  'Your positions':'Open BTC 15-minute positions from your account, with an exit plan. Selling value uses the bid after fees; holding value uses the forecast probability of your side winning. Entry cost includes paid fees when fills are available. Sync time shows how recent your account positions are.',
+  'Scalp & dip':'Short-lived paper setups using current forecast, price movement, spread and depth. Buy at is the entry ask; sell limit is the target; bail below is the stop reference. These setups need their own measured results and are not guaranteed profits.',
+  'Recent rounds':'One scored observation per round and checkpoint. Hit rates show direction accuracy, not trading profit. Missing calls are not counted as wrong. Compare opening, 5-minute, 1-minute and next-window calls against settled results.',
+  'Probability over this window':'Forecast history for the current round: quant blend, raw model and Kalshi midpoint. Values are probabilities of YES. Gaps indicate unavailable inputs; history resets at each new market.',
+  'Order book':'Top YES and NO bids and their available contract quantities. Buying YES uses the complementary NO bid to derive the YES ask, and vice versa. Spread and available depth affect whether an entry passes the checks.',
+  'Session & guardrails':'Real account results and trading discipline for the local day. Loss limits, loss streak cooldowns and hourly trade caps can suppress entry signals. Settings controls these limits; they do not place or cancel orders.',
+  'Resting-bid ideas':'Potential limit buys below fair value. Queue estimates include better-priced bids. A displayed edge does not ensure a fill, and paper fills are estimates. Maker fees and your sizing settings still apply.',
+  'Feeds & latency':'Health, quote age and transport delay for exchange and Kalshi connections. A quiet quote can be valid while the connection is alive. Stale or missing inputs reduce forecast quality and block entries according to the configured gates.',
+  'Settings & alerts':'Configure entry thresholds, position sizing, model inputs and discipline limits. Changes are saved by the engine. Lowering a threshold admits more signals but does not establish that they are profitable.',
+  'Sound alerts':'Browser sound preferences for entries, exits, call flips, timing and data warnings. Audio needs a click on the page before it can play. Preferences are stored in this browser; Test previews each sound.',
+};
+export function helpFor(title:string){return sectionHelp[title]??(title.startsWith('Opening K')?sectionHelp['Opening K']:title.startsWith('Your positions')?sectionHelp['Your positions']:undefined);}
+
+/** A portal avoids clipping inside cards; click pins help for touch and keyboard users. */
+export function SectionHelp({title,text}:{title:string;text?:string}){
+  const explanation=text??helpFor(title),id=useId(),trigger=useRef<HTMLButtonElement>(null),popup=useRef<HTMLDivElement>(null);
+  const [open,setOpen]=useState(false),[pinned,setPinned]=useState(false),[position,setPosition]=useState({top:0,left:0,width:320});
+  useLayoutEffect(()=>{if(!open)return;const place=()=>{const r=trigger.current?.getBoundingClientRect();if(!r)return;const width=Math.min(340,window.innerWidth-24),height=popup.current?.offsetHeight??180;
+    setPosition({width,left:Math.max(12,Math.min(r.left,window.innerWidth-width-12)),top:r.bottom+height+12<window.innerHeight?r.bottom+8:Math.max(12,r.top-height-8)});};place();window.addEventListener('resize',place);window.addEventListener('scroll',place,true);return()=>{window.removeEventListener('resize',place);window.removeEventListener('scroll',place,true);};},[open]);
+  useEffect(()=>{if(!open)return;const dismiss=()=>{setOpen(false);setPinned(false);};const key=(e:KeyboardEvent)=>{if(e.key==='Escape')dismiss();};const outside=(e:Event)=>{if(!trigger.current?.contains(e.target as Node)&&!popup.current?.contains(e.target as Node))dismiss();};
+    // Click also covers keyboard activation and embedded browsers that synthesize clicks without pointerdown.
+    document.addEventListener('keydown',key);document.addEventListener('pointerdown',outside);document.addEventListener('click',outside);return()=>{document.removeEventListener('keydown',key);document.removeEventListener('pointerdown',outside);document.removeEventListener('click',outside);};},[open]);
+  if(!explanation)return null;
+  return <><button ref={trigger} type="button" aria-label={`About ${title}`} aria-expanded={open} aria-describedby={open?id:undefined}
+    className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-info/10 hover:text-info"
+    onMouseEnter={()=>setOpen(true)} onMouseLeave={()=>{if(!pinned)setOpen(false);}} onFocus={()=>setOpen(true)} onBlur={()=>{if(!pinned)setOpen(false);}}
+    onClick={e=>{e.stopPropagation();setPinned(!pinned);setOpen(!pinned);}}><Info aria-hidden className="size-3.5"/></button>
+    {open&&createPortal(<div ref={popup} id={id} role="tooltip" className="fixed z-[100] rounded-xl border border-line-strong bg-surface-2 p-4 text-sm leading-relaxed text-muted shadow-xl" style={position}>
+      <div className="mb-1 font-semibold text-fg">{title}</div>{explanation}<div className="mt-2 text-[11px] text-faint">Click the i to keep this open · Esc to dismiss</div></div>,document.body)}</>;
+}

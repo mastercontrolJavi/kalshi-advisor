@@ -28,7 +28,10 @@ export function stackSamples(db:Database.Database):StackSample[]{
   for(const r of rows){
     if(r.result!=='yes'&&r.result!=='no')continue;
     const inputs=JSON.parse(r.context).inputs;if(!inputs||!Number.isFinite(inputs.modelP)||!(inputs.sigma>0))continue;
-    out.push({modelP:inputs.modelP,mid:r.mid,sigma:inputs.sigma,momentum30s:inputs.momentum30s??null,momentum120s:inputs.momentum120s??null,imbalance:inputs.imbalance??null,tradeFlow30s:inputs.tradeFlow30s??null,tradeVolume30s:inputs.tradeVolume30s??null,y:r.result==='yes'?1:0,ticker:r.ticker,horizon:r.horizon});
+    // Preserve the exact feature used live, including an intentional null for a wide/stale book.
+    // Older call records did not store inputs.mid, so only those fall back to the display midpoint.
+    const mid=Object.hasOwn(inputs,'mid')?inputs.mid:r.mid;
+    out.push({modelP:inputs.modelP,mid:Number.isFinite(mid)&&mid>=0&&mid<=1?mid:null,sigma:inputs.sigma,momentum30s:inputs.momentum30s??null,momentum120s:inputs.momentum120s??null,imbalance:inputs.imbalance??null,tradeFlow30s:inputs.tradeFlow30s??null,tradeVolume30s:inputs.tradeVolume30s??null,y:r.result==='yes'?1:0,ticker:r.ticker,horizon:r.horizon});
   }
   return out;
 }

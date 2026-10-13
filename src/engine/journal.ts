@@ -6,7 +6,8 @@ import type {Idea} from './signals';
 import {fee,type FeeSchedule} from './model/fees';
 import type {RealEvent} from './guardrails';
 import type {OpeningCall} from './model/opening';
-export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances','hourly_calls','hourly_outcomes'] as const;
+import {PRICE_FORECAST_SCHEMA} from './quant/price-journal';
+export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances','hourly_calls','hourly_outcomes','price_forecasts'] as const;
 export class Journal {
   db:Database.Database;
   // ADVISOR_DB lets a verification instance run against a copy of the journal without touching the live one.
@@ -28,6 +29,7 @@ export class Journal {
       CREATE TABLE IF NOT EXISTS balances(time INTEGER PRIMARY KEY,balance REAL NOT NULL,portfolio_value REAL);
       CREATE TABLE IF NOT EXISTS account_raw(id TEXT PRIMARY KEY,type TEXT NOT NULL,time INTEGER NOT NULL,context TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS paper_status ON paper_trades(status,ticker);CREATE INDEX IF NOT EXISTS signals_cover ON signals(id,tau,regime,edge);`);
+    this.db.exec(PRICE_FORECAST_SCHEMA);
   }
   log(event:string,context:unknown){this.db.prepare('INSERT INTO events(time,event,context) VALUES(?,?,?)').run(Date.now(),event,JSON.stringify(context));}
   get<T>(key:string,fallback:T):T{const row=this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as {value:string}|undefined;return row?JSON.parse(row.value):fallback;}

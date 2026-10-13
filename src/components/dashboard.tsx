@@ -11,6 +11,8 @@ import {Input} from './ui/input';
 import {Card} from './ui/card';
 import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Tactics,Session,Feeds,Collapsible,WindowBar,Pill,RecentRounds,DataUpdate,actionTone} from './panels';
 import {SiteHeader} from './site-header';
+import {SectionHelp} from './section-help';
+import {PanelBoundary} from './panel-boundary';
 import {cn} from '@/lib/utils';
 import {ago,signedDollars} from './format';
 import {finalMinuteEvidence} from '@/backtest/verdict';
@@ -22,7 +24,7 @@ export default function Dashboard(){
   async function unlock(){try{const r=await fetch('/api/engine/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:override})});const data=await r.json();if(!r.ok)throw new Error(data.error);setOverride('');}catch(e){setError((e as Error).message);}}
   // Sharp crypto traders on Polymarket's matching round, from the markets process (null until it answers).
   const [btc,setBtc]=useState<any>(null);
-  useEffect(()=>{const load=async()=>{try{const r=await fetch('/api/markets/sharps/btc',{cache:'no-store'});if(r.ok)setBtc(await r.json());}catch{}};void load();const t=setInterval(()=>void load(),15000);return()=>clearInterval(t);},[]);
+  useEffect(()=>{let stopped=false,pending:AbortController|null=null;const load=async()=>{if(pending)return;const controller=new AbortController();pending=controller;const timeout=setTimeout(()=>controller.abort(),10000);try{const r=await fetch('/api/markets/sharps/btc',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('Sharps unavailable');const data=await r.json();if(!stopped)setBtc(data);}catch{if(!stopped)setBtc(null);}finally{clearTimeout(timeout);pending=null;}};void load();const t=setInterval(()=>void load(),15000);return()=>{stopped=true;clearInterval(t);pending?.abort();};},[]);
   const action=fresh?s?.evaluation?.action??'NO TRADE':'NO TRADE',tone=actionTone(action),healthy=s?.venues?.filter((v:any)=>v.healthy).length??0;
   const ambient=!fresh?'warn':tone==='yes'||tone==='no'?tone:'none';
   return <>
@@ -33,19 +35,23 @@ export default function Dashboard(){
       <Pill tone={healthy===4?'neutral':'warn'} title="Exchange price feeds live">{healthy}/4 feeds</Pill>
       <span className="num hidden text-xs text-muted md:inline" title="Age of data on screen">{s?ago(Math.max(0,Date.now()-s.engineTime)):'—'}</span>
     </SiteHeader>
-    <main className="mx-auto max-w-[1400px] space-y-4 px-4 pt-4 pb-16 sm:px-6">
+    <main className="mx-auto max-w-[1600px] space-y-4 px-4 pt-4 pb-16 sm:px-6">
       <DataUpdate s={s}/>
       <Instruments s={s}/>
-      <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-8"><SignalPanel s={s} fresh={fresh}/></div>
-        <div className="lg:col-span-4"><ForecastPanel s={s} fresh={fresh} btc={btc}/></div>
+      {!fresh?<div role="status" className="rounded-xl border border-warn/40 bg-warn-dim/30 px-4 py-2 text-sm text-warn">{connected?'Updates are stale':'Reconnecting to the engine'} · entry and exit advice paused. Chart history remains available.</div>:null}
+      <div className="grid items-start gap-4 lg:grid-cols-12">
+        <Card className="min-w-0 p-0 lg:col-span-8">
+          <div className="flex min-h-12 items-center gap-2 border-b border-line px-4 py-2"><ChartCandlestick aria-hidden className="size-4 text-info"/><h2 className="font-medium">Price action</h2><SectionHelp title="Price action"/><span className="ml-auto hidden text-xs text-muted sm:inline">Live candles</span></div>
+          <div className="p-4"><PanelBoundary name="Price chart"><PriceChart s={s} fresh={fresh}/></PanelBoundary></div>
+        </Card>
+        <div className="min-w-0 lg:col-span-4"><SignalPanel s={s} fresh={fresh} compact/></div>
       </div>
       <Positions s={s} fresh={fresh}/>
-      <Collapsible open remember="price-chart" title="Price action" icon={<ChartCandlestick aria-hidden className="size-4 text-info"/>} aside="live candles · Bitcoin or Kalshi YES"><PriceChart s={s}/></Collapsible>
+      <ForecastPanel s={s} fresh={fresh} btc={btc}/>
       <Collapsible open title="Scalp & dip" icon={<Crosshair aria-hidden className="size-4 text-info"/>} aside={fresh&&s?.tactics?.ideas?.length?<span className="text-yes">{s.tactics.ideas.length} setup{s.tactics.ideas.length>1?'s':''} now</span>:'intra-window setups'}><Tactics s={s} fresh={fresh}/></Collapsible>
       <Collapsible open title="Recent rounds" icon={<History aria-hidden className="size-4 text-info"/>} aside={s?.calibration?.roundTrends?.totals?.live300?.n?`5:00 call ${Math.round(s.calibration.roundTrends.totals.live300.rate*100)}% right`:'calls & results'}><RecentRounds s={s}/></Collapsible>
       <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-8"><Collapsible open title="Probability over this window" icon={<ChartIcon aria-hidden className="size-4 text-info"/>} aside={<span className="flex gap-3"><span className="text-yes">— Quant</span><span className="text-faint">┄ Model</span><span className="text-info">— Kalshi</span></span>}><ProbabilityChart data={s?.history??[]}/></Collapsible></div>
+        <div className="lg:col-span-8"><Collapsible open title="Probability over this window" icon={<ChartIcon aria-hidden className="size-4 text-info"/>} aside={<span className="flex gap-3"><span className="text-yes">— Quant</span><span className="text-faint">┄ Model</span><span className="text-info">— Kalshi</span></span>}><PanelBoundary name="Probability chart"><ProbabilityChart data={s?.history??[]}/></PanelBoundary></Collapsible></div>
         <div className="lg:col-span-4"><Collapsible open title="Order book" icon={<BookOpen aria-hidden className="size-4 text-info"/>} aside="top 10 bids"><BookLadder s={s}/></Collapsible></div>
       </div>
       <div className={cn('grid gap-4',s?.config?.showMakerIdeas?'lg:grid-cols-3':'lg:grid-cols-2')}>

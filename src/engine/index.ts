@@ -21,6 +21,9 @@ import {nextDirection,confidence,dueHorizon,dataQuality,type Direction} from './
 import {fitStack,predict,explain,describe,type StackFit,type StackSample} from './quant/stack';
 import {stackSamples,lateSamples} from './quant/samples';
 import {autoBasis,nextWindow,NEXT_HORIZONS} from './quant/forecast';
+import {usableMid} from './quant/quote';
+import {PRICE_HORIZONS,PRICE_VERSION,emptyPriceFit,priceInputs,forecastPrice,type PriceFit} from './quant/price-forecast';
+import {PriceForecastJournal} from './quant/price-journal';
 import {scalp,dips} from './quant/tactics';
 import {rollupMarkets,buildAnalytics} from './analytics';
 import {HourlyBoard,HOURLY_SERIES,HOURLY_HORIZONS,ladder,impliedAbove,hourlyIdeas} from './hourly';
@@ -30,6 +33,7 @@ import {VERDICT_PATH,type Verdict} from '../backtest/verdict';
 import {BacktestRefresher} from './refresh';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
+const priceJournal=new PriceForecastJournal(journal.db);
 {const stored=journal.get<any>('config',null);
   if(stored&&!journal.get('migration:2026-10-07b',false)){
     // Move settings still at their old defaults to the evidence-backed ones (DECISIONS 31); values the user changed are kept.
@@ -195,6 +199,21 @@ calWorker.on('message',(m:any)=>{calBusy=false;for(const [e,d] of m.logs??[])log
   if(m.stack)stack=m.stack;if(m.lateStack)lateStack=m.lateStack;if(m.basis)basisState=m.basis;if(m.calibration)calibration=m.calibration;});
 calWorker.on('error',e=>{calBusy=false;log('calibration-worker-error',{message:e.message});});
 const calibrationTimer=setInterval(()=>{loadVerdict();if(!calBusy){calBusy=true;calWorker.postMessage('tick');}},30000);
+let priceFits:PriceFit[]=PRICE_HORIZONS.map(h=>emptyPriceFit(h)),priceScores:ReturnType<PriceForecastJournal['scores']>={},priceState:any=null;
+const savedPriceFits=journal.get<PriceFit[]>('shortTermFit:v1',[]);
+for(const saved of savedPriceFits)if(saved.version===PRICE_VERSION&&PRICE_HORIZONS.includes(saved.horizon as 30|60|180)&&saved.weights?.length===8&&saved.weights.every(Number.isFinite)&&Number.isFinite(saved.noise))priceFits=priceFits.map(f=>f.horizon===saved.horizon?saved:f);
+let priceWorker:Worker|null=null,priceBusy=false,priceRequested=0;
+function refreshPriceFit(){
+  if(priceBusy&&Date.now()-priceRequested<60000)return;
+  if(priceBusy){void priceWorker?.terminate();priceWorker=null;priceBusy=false;}
+  if(!priceWorker){const worker=new Worker(new URL('./quant/price-worker.ts',import.meta.url),{workerData:{path:process.env.ADVISOR_DB??'./data/advisor.db'}});priceWorker=worker;
+    worker.on('message',(m:any)=>{if(priceWorker!==worker)return;priceBusy=false;if(m.error){log('price-forecast-error',{message:m.error});return;}if(m.fits){priceFits=m.fits;journal.set('shortTermFit:v1',priceFits);log('price-forecast-fit',{horizons:priceFits.map(f=>({horizon:f.horizon,active:f.active,n:f.n,validation:f.validation.n,brier:f.validation.brier}))});}if(m.scores)priceScores=m.scores;});
+    worker.on('error',e=>{if(priceWorker===worker){priceBusy=false;priceWorker=null;}log('price-worker-error',{message:e.message});});
+    worker.on('exit',()=>{if(priceWorker===worker){priceWorker=null;priceBusy=false;}});
+  }
+  priceBusy=true;priceRequested=Date.now();priceWorker.postMessage('tick');
+}
+refreshPriceFit();const priceTimer=setInterval(refreshPriceFit,30000);
 const loop=setInterval(()=>{
   const started=performance.now(),now=Date.now(),time=Math.floor((now+client.clockOffset)/1000)*1000;
   // Only a long gap means sleep/wake; a busy-machine stall of a few seconds leaves sockets intact, and restarting
@@ -216,6 +235,9 @@ const loop=setInterval(()=>{
     if(guards.dailyLocked)journal.set('lockedDay',today);
     if(journal.get('lockedDay','')===today&&override!==today){guards.dailyLocked=true;guards.locked=true;guards.reason='Daily loss limit reached';}
     const venueStates=Object.values(proxy.venues).map(v=>({...v,healthy:healthy(v,now,config.staleMs),age:now-v.updated}));
+    if(newSecond){const healthyPrice=venueStates.filter(v=>v.healthy).length>=3;priceJournal.settle(proxy.history,time,healthyPrice);
+      const inputs=healthyPrice?priceInputs(proxy.history.slice(-301),time):null;if(inputs)priceJournal.capture(time,inputs,priceFits);
+      priceState={time,ready:!!inputs,reason:!healthyPrice?'Needs at least 3 healthy price feeds':!inputs?'Needs 5 uninterrupted minutes of prices':null,horizons:inputs?priceFits.map(f=>forecastPrice(inputs,f,time)):[],scores:priceScores,fitting:priceBusy};}
     const rawVol=volatility(proxy.history,config.halfLifeSeconds,config.realizedBlend),vol=warmVolatility(rawVol,journal.get<{sigma:number;time:number}|null>('lastSigma',null),config.minVolSamples,now);
     if(newSecond&&rawVol.count>=config.minVolSamples&&rawVol.sigma>0&&time%60000===0)journal.set('lastSigma',{sigma:rawVol.sigma,time:now});
     const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,backtestRefresh:{running:refresher.running,lastFinished:refresher.lastFinished,lastExit:refresher.lastExit},next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory};
@@ -245,7 +267,7 @@ const loop=setInterval(()=>{
       const features={imbalance:y+n?(y-n)/(y+n):null,tradeVolume30s:kalshi.status==='connected'?recentTrades.reduce((s,t)=>s+t.count,0):null,tradeFlow30s:kalshi.status==='connected'?recentTrades.reduce((s,t)=>s+(t.takerSide==='yes'?t.count:-t.count),0):null,momentum30s:momentum(30),momentum120s:momentum(120),midModelGap:model&&mid!==null?mid-model.p:null};
       // Quant forecast: stacked blend of the diffusion model, Kalshi and features (see quant/stack.ts).
       // Kalshi's midpoint only counts as a forecast when the book is tight; a wide spread makes it meaningless.
-      const kalshiP=mid!==null&&bv.yesAsk!==null&&bv.yesBid!==null&&bv.yesAsk-bv.yesBid<=.1?mid:null;
+      const kalshiP=usableMid(bv,now,config.bookStaleMs);
       const stackInputs=model?{modelP:model.p,mid:kalshiP,sigma:vol.sigma,momentum30s:features.momentum30s,momentum120s:features.momentum120s,imbalance:features.imbalance,tradeFlow30s:features.tradeFlow30s,tradeVolume30s:features.tradeVolume30s}:null;
       const forecast=tau<60&&lateStack.active==='fitted'?lateStack:stack;
       const q=stackInputs?predict(forecast,stackInputs).p:null,pSignal=config.useQuantForSignals&&q!==null?q:model?.p??.5;
@@ -256,7 +278,7 @@ const loop=setInterval(()=>{
       const firm=latchSignal(latch,rawEvaluation,pSignal,bv,config,schedule,account.balance,now,hardGate?`${hardGate.label}: ${hardGate.detail}`:closedForEntries?'Closed for entries (final minute)':null);
       latch=firm.latch;const evaluation=firm.evaluation;
       const quality=dataQuality({healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kalshiLive:kalshi.status==='connected',bookLive:bv.valid&&now-bv.updated<=config.bookStaleMs,kConfirmed:confirmed,modelReady:!!model,clockSynced:client.clockSynced});
-      const callOf=(p:number,direction:'UP'|'DOWN')=>({direction,p,baseP:model.p,lean:p-model.p,confidence:confidence(p),reasons:explain(stack,stackInputs!),inputs:{...stackInputs,K,kSource:confirmed?'kalshi':'proxy estimate'}});
+      const callOf=(p:number,direction:'UP'|'DOWN')=>({direction,p,baseP:model.p,lean:p-model.p,confidence:confidence(p),reasons:explain(forecast,stackInputs!),inputs:{...stackInputs,K,kSource:confirmed?'kalshi':'proxy estimate'}});
       // Opening call: frozen at the first evaluation after Kalshi publishes K (floor_strike), usually 5–40 s into the
       // window. User request: the call is made against the official opening price, never an estimate.
       if(newSecond&&q!==null&&confirmed&&tau>=(close-open)/1000-OPENING_K_DEADLINE_SECONDS&&!journal.openingCall(market.ticker)){
@@ -310,6 +332,7 @@ const loop=setInterval(()=>{
     // Hourly board: recomputed once per second, reused between the faster publishes.
     if(newSecond){try{hourlyState=computeHourly(time,now,spot,vol,venueStates,guards);}catch(e){log('hourly-error',{message:(e as Error).message});}}
     state.hourly=hourlyState;
+    state.shortTerm=priceState;
     // Calibration (~90 KB) goes out only when it changes and the window history (~80 KB) once a second; the page keeps
     // the last copy. New connections get the full state on connect. This cut the 4 Hz push from ~200 KB to ~30 KB.
     state.calibration=calibration;state.loopMs=performance.now()-started;
@@ -317,5 +340,5 @@ const loop=setInterval(()=>{
     const message=JSON.stringify(sendCalibration&&newSecond?state:{...state,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
-const shutdown=()=>{refresher.stop();void calWorker.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,calibrationTimer,hourlyTimer,hourlySettleTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
+const shutdown=()=>{refresher.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
