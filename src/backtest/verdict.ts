@@ -47,6 +47,19 @@ export function finalMinuteEvidence(v:Verdict|null):{status:'collecting'|'proven
   if(t.ci[1]<0)return {status:'losing',rounds:f.rounds,text:`Final-minute study: entries in the last minute lost money: ${range}.`};
   return {status:'unclear',rounds:f.rounds,text:`Final-minute study: no proven edge yet: ${range}.`};
 }
+/**
+ * The bar a BUY rule must clear before the app shows its signals (Settings → provenSignalsOnly, on by default): the
+ * final-minute bar — ≥ 100 trades, a 95% range above zero and a profit in both halves of the period.
+ * 2026-10-15 edge study (DECISIONS 56): no 15-minute or hourly rule has cleared it; on 9,188 rounds Kalshi's price
+ * alone forecast best out of sample, and the model's disagreements with it lost after fees.
+ */
+export function ruleProven(r:RuleResult|null|undefined):boolean{return !!r&&r.n>=FINAL_MIN_TRADES&&r.ci[0]>0&&r.early>0&&r.late>0;}
+export function signalEvidence(v:Verdict|null,which:'15m'|'hourly',source:'quant'|'model'='quant'):{proven:boolean;text:string}{
+  const r=which==='15m'?source==='model'?v?.buy15Model:v?.buy15:v?.buyHourly;
+  if(ruleProven(r))return {proven:true,text:''};
+  if(!r||!r.n)return {proven:false,text:`Hidden until the ${which==='15m'?'15-minute':'hourly'} BUY rule has been backtested.`};
+  return {proven:false,text:`Hidden: this BUY rule has no proven edge — ${c(r.mean)} per contract after fees over ${r.n.toLocaleString()} past ${which==='15m'?'rounds':'hours'} (likely range ${c(r.ci[0])} to ${c(r.ci[1])}).`};
+}
 /** The evidence behind an advise-mode label, in one line (null when there is nothing to cite). */
 export function sellEvidence(v:Verdict|null,action:string):string|null{
   const t=v?.sellTest;if(!t)return null;const w=t.window,f=t.final;

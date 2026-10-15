@@ -14,10 +14,10 @@ it('prices strikes near the money with the settlement-average model and nets the
   expect(atm.edgeYes!).toBeCloseTo(atm.quant!-.47-.0175,3);expect(rows[0].model!).toBeLessThan(atm.model!);});
 it('ideas pass the same gates as 15-minute signals and are sorted by edge',()=>{
   const ms=[mk(83199.99,'.30','.32'),mk(83099.99,'.88','.90')];
-  const rows=ladder(ms as any,{spot:83260,sigma:.00002,tau:1200,locked:[],basis:0,kHour:null,modelReady:true},baseFees);
+  const rows=ladder(ms as any,{spot:83400,sigma:.00002,tau:1200,locked:[],basis:0,kHour:null,modelReady:true},baseFees);
   const {ideas}=hourlyIdeas(rows,1200,1000,defaults,baseFees,null);expect(ideas[0].side).toBe('yes');expect(ideas[0].strike).toBeCloseTo(83199.99);expect(ideas[0].edge).toBeGreaterThan(defaults.minEdge);
   expect(hourlyIdeas(rows,30,1000,defaults,baseFees,null).ideas).toHaveLength(0);expect(hourlyIdeas(rows,1200,1000,defaults,baseFees,'Daily loss limit reached').reason).toContain('Daily');
-  const thin=ladder([mk(83199.99,'.30','.32','5')] as any,{spot:83260,sigma:.00002,tau:1200,locked:[],basis:0,kHour:null,modelReady:true},baseFees);expect(hourlyIdeas(thin,1200,1000,defaults,baseFees,null).ideas).toHaveLength(0);});
+  const thin=ladder([mk(83199.99,'.30','.32','5')] as any,{spot:83400,sigma:.00002,tau:1200,locked:[],basis:0,kHour:null,modelReady:true},baseFees);expect(hourlyIdeas(thin,1200,1000,defaults,baseFees,null).ideas).toHaveLength(0);});
 it('with no hourly market open, the board finds when the next one opens; once one is open it clears',async()=>{
   const {HourlyBoard}=await import('../src/engine/hourly');const now=Date.parse('2026-10-08T06:00:00Z');let markets:any[]=[];
   const client:any={get:async(path:string)=>path.startsWith('/events')?{events:[{event_ticker:'KXBTCD-26OCT0807',strike_date:'2026-10-08T11:00:00Z'},{event_ticker:'KXBTCD-26OCT0806',strike_date:'2026-10-08T10:00:00Z'}]}:{markets}};

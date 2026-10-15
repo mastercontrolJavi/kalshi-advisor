@@ -73,6 +73,7 @@ export function SignalPanel({s,fresh,compact=false}:{s:any;fresh:boolean;compact
     </div>
     <div className={cn('font-display mt-3 leading-none font-bold tracking-tight uppercase',compact?'text-5xl':'text-6xl sm:text-8xl',toneText[tone])} aria-live="polite">{action}</div>
     {fresh&&ev?.firm?<div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1"><span className={cn('num text-3xl font-semibold',toneText[tone])}>at {ev.firm.limit!=null?cents(ev.firm.limit,0):'—'} or less</span><span className="text-sm text-muted">steady for {mmss(ev.firm.heldMs/1000)}{idea&&ev.firm.limit!=null&&idea.price>ev.firm.limit+1e-9?' · ask is above this price: wait, or skip':''}</span></div>:null}
+    {fresh&&ev?.hidden?<div className="mt-3 flex items-start gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2 text-sm"><FlaskConical aria-hidden className="mt-0.5 size-4 shrink-0 text-muted"/><span>{ev.hidden.text} It is still paper-traded and shows again by itself once it proves an edge. Settings → Entry rules → Only show proven signals.</span></div>:null}
     {fresh&&ev?.forming?<div className="mt-3"><Pill tone="neutral"><Clock aria-hidden className="size-3.5"/>BUY {String(ev.forming.side).toUpperCase()} forming · shows if it holds {Math.max(1,Math.ceil((ev.forming.needMs-ev.forming.ms)/1000))} s more</Pill></div>:null}
     <p className="mt-3 max-w-3xl text-[15px] text-fg/90">{fresh?(idea?ev.reason:failed?`${failed} of ${gates.length} checks failing${waiting?` · ${waiting.label.toLowerCase()} ${waiting.detail}`:''}`:waiting?`All checks clear — waiting: ${waiting.detail}`:ev?.reason??'Warming up'):'Live state unavailable — advice suppressed'}</p>
     {fresh&&!s?.market&&s?.nextOpen?<p className="mt-1 text-sm text-muted">Next round opens {opensAt(s.nextOpen)}. {maintenanceNote()??''}</p>:null}
@@ -206,6 +207,7 @@ export function Tactics({s,fresh}:{s:any;fresh:boolean}){
     :<p className="text-sm text-muted">{!t?'Waiting for live data.':!t.live?'Paused (guardrail, data or market state).':`No setup now. Scalps need ≥ ${cents(cfg?.scalpMinEdge,0)} after fees, ≥ ${Math.round((cfg?.scalpMinSeconds??180)/60)} min left and a tight spread.`}</p>}
     {watch.map(w=><div key={w.side} className={cn('flex items-start gap-2 rounded-xl border px-3 py-2 text-sm',w.verdict==='buy'?'border-yes/30':'border-warn/35 bg-warn-dim/30')}><TrendingDown aria-hidden className={cn('mt-0.5 size-4 shrink-0',w.verdict==='buy'?'text-yes':'text-warn')}/>
       <span>{w.side.toUpperCase()} dropped {cents(w.drop)} ({cents(w.from)} → {cents(w.to)}) in a minute. {w.verdict==='buy'?'Fair value barely moved — likely overreaction.':`Fair value fell ${cents(Math.max(0,w.fairDrop))} too — falling knife, don't catch it.`}</span></div>)}
+    {t?.hidden?<p className="text-sm text-muted">{t.hidden}</p>:null}
     <p className="text-xs text-faint">Every setup is paper-traded (target hit before close, else held to settlement) and scored on the Calibration page. Scalp and dip setups are not in the backtest: it needs second-by-second fills, so only their paper results count as evidence.</p></div>;
 }
 export function MakerIdeas({s,fresh}:{s:any;fresh:boolean}){

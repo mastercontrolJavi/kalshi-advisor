@@ -30,6 +30,7 @@ import {HourlyBoard,HOURLY_SERIES,HOURLY_HORIZONS,ladder,impliedAbove,hourlyIdea
 import {buildHourlyHistory} from './rounds';
 import {priorFit} from './quant/stack';
 import {VERDICT_PATH,type Verdict} from '../backtest/verdict';
+import {gateEvaluation,gateHourly,gateTactics} from './evidence';
 import {BacktestRefresher} from './refresh';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
@@ -161,15 +162,17 @@ function computeHourly(time:number,now:number,spot:number|null,vol:any,venueStat
   const upQuant=upModel!==null?predict(priorFit(),{modelP:upModel,mid:kalshiUp,sigma:vol.sigma,momentum30s:null,momentum120s:null,imbalance:null,tradeFlow30s:null}).p:null;
   const feedsOk=venueStates.every((v:any)=>v.healthy),accountOk=account.ready&&now-account.updated<config.accountStaleMs;
   const blocked=guards.reason??(!modelReady?'Model warming':!feedsOk?'One or more price feeds stale':!accountOk?'Authenticated balance/history unavailable':now-hourlyBoard.updated>15000?'Hourly prices stale':null);
-  const {ideas,reason}=hourlyIdeas(rungs,tau,account.balance,config,schedule,blocked);
+  const {ideas:allIdeas,reason}=hourlyIdeas(rungs,tau,account.balance,config,schedule,blocked);
+  // Paper-trade every best idea, but show (and sound) only a proven rule (evidence.ts).
+  const {ideas,hidden}=gateHourly(allIdeas,verdict,config.provenSignalsOnly);
   if(upQuant!==null&&kHour!==null&&rungs.length){
     const h=HOURLY_HORIZONS.find(h=>tau<=h&&tau>h-30&&!journal.hourlyHorizons(current.event).has(h));
     if(h!==undefined){const atm=rungs.reduce((b,r)=>Math.abs(r.strike-kHour)<Math.abs(b.strike-kHour)?r:b,rungs[0]);
       journal.saveHourlyCall(current.event,h,time,tau,kHour,{direction:upQuant>=.5?'UP':'DOWN',p:upQuant,baseP:upModel!,kalshi:kalshiUp},{ticker:atm.ticker,close:current.close,spot,sigma:vol.sigma});}
   }
   // Paper-trade the best hourly idea (the signals table dedupes by ticker/side/price).
-  const best=ideas[0];
-  if(best)journal.signal(best.ticker,time,{side:best.side,kind:'hourly',price:best.price,fee:best.fee,edge:best.edge,contracts:best.contracts,cost:best.cost,maxLoss:best.maxLoss,queue:0,reason:best.reason} as any,{p:best.fair,tau,regime:vol.regime,close:current.close},schedule);
+  const best=ideas[0],paperBest=allIdeas[0];
+  if(paperBest)journal.signal(paperBest.ticker,time,{side:paperBest.side,kind:'hourly',price:paperBest.price,fee:paperBest.fee,edge:paperBest.edge,contracts:paperBest.contracts,cost:paperBest.cost,maxLoss:paperBest.maxLoss,queue:0,reason:paperBest.reason} as any,{p:paperBest.fair,tau,regime:vol.regime,close:current.close},schedule);
   // Exit plans for hourly positions in this event, priced per strike.
   const held=(account.positions as any[]).filter(p=>String(p.ticker).startsWith(current.event+'-'));
   const heldRungs=new Map(ladder(current.markets.filter(m=>held.some(p=>p.ticker===m.ticker)),inputs,schedule,Infinity).map(r=>[r.ticker,r]));
@@ -178,7 +181,7 @@ function computeHourly(time:number,now:number,spot:number|null,vol:any,venueStat
     return e?{...e,strike:r?.strike??null}:null;}).filter(Boolean);
   return {...base,event:current.event,open:current.open,close:current.close,tau,spot,kHour,kSource:kFill?'proxy average of the 60 s before the hour opened':null,lockedCount:locked?.length??0,
     up:upQuant===null?null:{model:upModel,kalshi:kalshiUp,quant:upQuant,direction:upQuant>=.5?'UP':'DOWN',confidence:confidence(upQuant)},
-    rungs,ideas,reason:best?best.reason:reason,action:best?`BUY ${best.side==='yes'?'ABOVE':'NOT ABOVE'} $${Math.round(best.strike).toLocaleString()}`:'NO TRADE',exits};
+    rungs,ideas,hidden,reason:best?best.reason:hidden&&paperBest?'No proven edge — the hourly BUY idea is hidden.':reason,action:best?`BUY ${best.side==='yes'?'ABOVE':'NOT ABOVE'} $${Math.round(best.strike).toLocaleString()}`:'NO TRADE',exits};
 }
 async function settleHours(){
   const now=Date.now()+client.clockOffset;
@@ -325,9 +328,13 @@ const loop=setInterval(()=>{
         const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,kalshi.books.get(pos.ticker)?.view()??null,schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule),pos.ticker===market.ticker?tau:null);
         if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,peakPct:e.peakPct});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,title:e.notice.title,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,winProb:e.winProb});exitMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
         return e;}).filter(Boolean);
-      state={...common,...tick,market,evaluation,exits,liveCall,nextCall,quality,openingCall:journal.openingCall(market.ticker),
+      // Evidence gate (evidence.ts, DECISIONS 56): the journal and paper trades above saw every signal; the dashboard
+      // and its sounds see only rules that have proven an edge.
+      const shown=gateEvaluation(evaluation,verdict,config.useQuantForSignals&&q!==null?'quant':'model',config.provenSignalsOnly);
+      const tactics=gateTactics(tacticIdeas,dipState.watch,calibration,config.provenSignalsOnly);
+      state={...common,...tick,market,evaluation:shown,exits,liveCall,nextCall,quality,openingCall:journal.openingCall(market.ticker),
         quant:{p:q,model:model?.p??null,mid,active:stack.active,markets:stack.markets,late:{active:lateStack.active,markets:lateStack.markets,inUse:forecast===lateStack,cv:lateStack.cv},basis,autoBasis:basisState,signalSource:config.useQuantForSignals&&q!==null?'quant':'model'},
-        tactics:{live:tacticsLive,ideas:tacticIdeas,dips:dipState.watch},lockedCount:locked?.length??0,lockedImputed:lockedFill?.imputed??0,distance:spot!==null&&K!==null?spot-K:null};
+        tactics:{live:tacticsLive,ideas:tactics.ideas,dips:tactics.watch,hidden:tactics.hidden},lockedCount:locked?.length??0,lockedImputed:lockedFill?.imputed??0,distance:spot!==null&&K!==null?spot-K:null};
     }
     // Hourly board: recomputed once per second, reused between the faster publishes.
     if(newSecond){try{hourlyState=computeHourly(time,now,spot,vol,venueStates,guards);}catch(e){log('hourly-error',{message:(e as Error).message});}}

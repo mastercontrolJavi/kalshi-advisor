@@ -4,17 +4,18 @@ import {autoBasis,nextWindow} from '../src/engine/quant/forecast';
 import {scalp,dips} from '../src/engine/quant/tactics';
 import {baseFees} from '../src/engine/model/fees';
 const neutral={sigma:.00003,momentum30s:0,momentum120s:0,imbalance:0,tradeFlow30s:0};
-it('with no data the stack is an equal logit-average of model and Kalshi, and falls back to the model without a mid',()=>{
-  const p=predict(priorFit(),{...neutral,modelP:.9,mid:.6}).p;expect(p).toBeCloseTo(sigmoid(.5*logit(.9)+.5*logit(.6)),6);
+it('with no data the stack is a 90%-Kalshi logit blend of model and Kalshi, and falls back to the model without a mid',()=>{
+  const p=predict(priorFit(),{...neutral,modelP:.9,mid:.6}).p;expect(p).toBeCloseTo(sigmoid(.1*logit(.9)+.9*logit(.6)),6);
   expect(predict(priorFit(),{...neutral,modelP:.8,mid:null}).p).toBeCloseTo(.8,6);
   expect(predict(priorFit(),{...neutral,modelP:.5,mid:.5}).p).toBeCloseTo(.5,6);});
 it('learns to trust the source that actually predicts outcomes, and scores itself out of sample',()=>{
   let seed=7;const rnd=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
   const samples:StackSample[]=[];
-  for(let i=0;i<300;i++){const truth=.05+.9*rnd(),noisyModel=Math.min(.99,Math.max(.01,truth+(rnd()-.5)*.8));
-    samples.push({...neutral,modelP:noisyModel,mid:truth,y:rnd()<truth?1:0,ticker:'M'+(i%60),horizon:'300'});}
-  const fit=fitStack(samples),w=effectiveWeights(fit,'fittedWeights');expect(w.kalshi).toBeGreaterThan(w.model);expect(fit.markets).toBe(60);
-  expect(fit.cv.stack!).toBeLessThan(fit.cv.model!);expect(fit.cv.markets).toBe(60);expect(fit.active).toBe('fitted');expect(fit.weights).toEqual(fit.fittedWeights);});
+  // The prior already leans on Kalshi, so the test makes Kalshi the noisy source: the fit must learn to move back.
+  for(let i=0;i<300;i++){const truth=.05+.9*rnd(),noisyMid=Math.min(.99,Math.max(.01,truth+(rnd()-.5)*.8));
+    samples.push({...neutral,modelP:truth,mid:noisyMid,y:rnd()<truth?1:0,ticker:'M'+(i%60),horizon:'300'});}
+  const fit=fitStack(samples),w=effectiveWeights(fit,'fittedWeights');expect(w.model).toBeGreaterThan(w.kalshi);expect(fit.markets).toBe(60);
+  expect(fit.cv.stack!).toBeLessThan(fit.cv.kalshi!);expect(fit.cv.markets).toBe(60);expect(fit.active).toBe('fitted');expect(fit.weights).toEqual(fit.fittedWeights);});
 it('keeps the prior blend until the fit beats it out of sample with enough markets',()=>{
   let seed=11;const rnd=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
   const few:StackSample[]=Array.from({length:40},(_,i)=>({...neutral,modelP:.2+.6*rnd(),mid:.5,y:rnd()<.5?1:0,ticker:'F'+(i%10),horizon:'300'}));

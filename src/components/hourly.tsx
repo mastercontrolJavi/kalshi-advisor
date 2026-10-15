@@ -49,6 +49,7 @@ export default function Hourly(){
           </div>
           <div className={cn('font-display mt-4 text-5xl leading-none font-bold tracking-tight uppercase sm:text-7xl',best?(best.side==='yes'?'text-yes':'text-no'):'text-fg')}>{h.action}</div>
           <p className="mt-3 max-w-3xl text-[15px] text-fg/90">{h.reason}</p>
+          {h.hidden?<p className="mt-2 max-w-3xl text-sm text-muted">{h.hidden} Every best idea is still paper-traded; it shows again by itself once proven (Settings → Entry rules).</p>:null}
           {best?<p className="mt-1 text-sm text-muted">Ask {cents(best.price)} + {cents(best.fee,2)} fee{best.belowMinSize?` · one contract costs ${dollars(best.price+best.fee)}`:` · spend / max loss ${dollars(best.maxLoss)}`}</p>:null}
           {best?<BacktestNote s={s} which="hourly"/>:null}
           {h.ideas?.length>1?<ul className="mt-4 space-y-1.5 text-sm">{h.ideas.slice(1).map((i:any)=><li key={i.ticker+i.side} className="flex flex-wrap justify-between gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2"><span>{i.side==='yes'?'Above':'Not above'} <span className="num">${Math.round(i.strike).toLocaleString()}</span> at <span className="num">{cents(i.price)}</span></span><span className="num text-yes">{signedCents(i.edge)}</span></li>)}</ul>:null}

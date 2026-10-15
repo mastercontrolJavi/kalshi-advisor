@@ -5,15 +5,18 @@
  *   logit q = b + a·logit(p_model) + c·(logit(p_mid) − logit(p_model)) + Σ β_i·feature_i
  *
  * a is overall confidence (prior 1, tightly held: shrinking every forecast toward 50% hurt out of sample on the
- * first 20 windows); c is how far to move from the model toward Kalshi (prior ½ = equal logit blend).
+ * first 20 windows); c is how far to move from the model toward Kalshi (prior 0.9: mostly Kalshi, see PRIOR_MEAN).
  *
  * Why: on the first 30 settled windows the Kalshi mid beat the raw model at every horizon, and the fixed
  * momentum/flow lean slightly hurt. A practitioner does not discard either source; they let out-of-sample
- * evidence decide the weights. With no data the prior is an equal logit-average of model and market with zero
+ * evidence decide the weights. With no data the prior is a logit blend weighted 90% to the market with zero
  * feature weights; each settled window moves the weights only as far as the data justifies.
  */
 export const FEATURE_NAMES=['bias','confidence','kalshiShift','momentum2m','momentum30s','bookImbalance','tradeFlow'] as const;
-const PRIOR_MEAN=[0,1,.5,0,0,0,0];
+// kalshiShift prior 0.9 (was 0.5, an equal blend): fitted on 5,513 rounds of 1-minute history (Jul 10 – Sep 6) it came
+// out 0.91, and on the 3,675 later rounds it cut held-out Brier from 0.1576 (½) to 0.1570; Kalshi alone scored 0.1569
+// (scripts/blend-study.ts, DECISIONS 56). The diffusion model adds little that Kalshi's price does not already know.
+const PRIOR_MEAN=[0,1,.9,0,0,0,0];
 // Prior precision: confidence and bias need strong evidence to move; features need real evidence before they count.
 // Bias is held at 0: fitting it learned the recent YES base rate and was the main source of out-of-sample loss
 // (LOMO Brier 0.1651 with bias vs 0.1607 without, 42 markets).

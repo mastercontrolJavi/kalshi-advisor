@@ -1,5 +1,5 @@
 export const defaults = {
-  minEdge: .04, earlyEdge: .08, sweetMinSeconds: 60, sweetMaxSeconds: 900, finalMinuteSignals: false,
+  minEdge: .04, earlyEdge: .08, sweetMinSeconds: 60, sweetMaxSeconds: 900, finalMinuteSignals: false, provenSignalsOnly: true,
   maxSpread: .06, minDepth: 20, makerMargin: .03, minMakerEdge: .02, makerMinSeconds: 120,
   exitMargin: .02, exitMode: 'advise' as 'advise'|'hold'|'risk'|'ev', takeProfitPct: .25, stopLossPct: .5, stopWinProb: .25, trailGiveback: .5, trailFloor: .05, showMakerIdeas: false, signalBelowMinSize: true, useQuantForSignals: true, autoBasis: true,
   scalpMinEdge: .03, scalpMinSeconds: 180, scalpMaxSpread: .03, dipMove: .08, kellyFraction: .25, maxRiskPerTrade: .02, maxContracts: 25,
