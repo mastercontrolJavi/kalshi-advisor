@@ -67,20 +67,35 @@ export function kalshiBtcTicker(startSec:number){
 }
 export const LEAN_HORIZONS=[600,300,120,60] as const;
 export const LEAN_MIN=100;
-export interface LeanStats {horizon:number;calls:number;hits:number;rate:number|null;low:number|null;high:number|null;paper:{n:number;mean:number|null;low:number|null;high:number|null;first:number|null;second:number|null};proven:boolean}
+export interface LeanScore {calls:number;hits:number;rate:number|null;low:number|null;high:number|null;paper:{n:number;mean:number|null;low:number|null;high:number|null;first:number|null;second:number|null};proven:boolean}
+/** `agree`: the same score for rounds where the sharps, the trend (Kalshi favourite) and the last ~3 min all point one way. */
+export interface LeanStats extends LeanScore {horizon:number;agree:LeanScore}
+/**
+ * "Trend + sharps agree" (scripts/trend-study.ts, 2026-10-16): sharps ≥ $100 net on one side, Kalshi already favours that
+ * side (BTC is past the target that way) and the YES mid moved that way over the last ~3 min. Null when any part is
+ * missing or they disagree.
+ */
+export function agreeSide(r:{sharpNet:number;trend:number|null;slope:number|null}):'yes'|'no'|null{
+  if(Math.abs(r.sharpNet)<LEAN_MIN||r.trend===null||r.slope===null||r.trend===0||r.slope===0)return null;
+  const side=r.sharpNet>0?'yes':'no';return (r.trend>0?'yes':'no')===side&&(r.slope>0?'yes':'no')===side?side:null;
+}
 const wilson=(k:number,n:number)=>{if(!n)return [null,null] as const;const z=1.96,p=k/n,d=1+z*z/n,c=(p+z*z/(2*n))/d,h=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n))/d;return [c-h,c+h] as const;};
 /**
  * Per horizon, rounds where sharp wallets had ≥ $100 net on one side: how often that side won, and the paper P&L of buying it
  * on Kalshi at the ask then (plus the taker fee). Hit rate alone is not an edge, Kalshi's price already knows the trend; the
  * paper P&L is the test.
  */
+function score(xs:LeanRow[],sideOf:(r:LeanRow)=>'yes'|'no'):LeanScore{
+  xs=[...xs].sort((a,b)=>a.round-b.round);
+  const hits=xs.filter(r=>sideOf(r)===r.result).length,[low,high]=wilson(hits,xs.length);
+  const pnl=xs.map(r=>{const side=sideOf(r),ask=side==='yes'?r.yesAsk:r.yesBid!==null?1-r.yesBid:null;return ask===null||ask<=0||ask>=1?null:(r.result===side?1:0)-ask-takerFee(ask);}).filter((x):x is number=>x!==null);
+  const m=(a:number[])=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null,mean=m(pnl),sd=pnl.length>1?Math.sqrt(pnl.reduce((s,x)=>s+(x-mean!)**2,0)/(pnl.length-1)):null;
+  const half=pnl.length>>1,first=m(pnl.slice(0,half)),second=m(pnl.slice(half)),lo=mean!==null&&sd!==null?mean-1.96*sd/Math.sqrt(pnl.length):null,hi=mean!==null&&sd!==null?mean+1.96*sd/Math.sqrt(pnl.length):null;
+  return {calls:xs.length,hits,rate:xs.length?hits/xs.length:null,low,high,paper:{n:pnl.length,mean,low:lo,high:hi,first,second},proven:pnl.length>=100&&lo!==null&&lo>0&&(first??0)>0&&(second??0)>0};
+}
 export function leanStats(rows:LeanRow[]):LeanStats[]{
   return LEAN_HORIZONS.map(h=>{
-    const xs=rows.filter(r=>r.horizon===h&&(r.result==='yes'||r.result==='no')&&Math.abs(r.sharpNet)>=LEAN_MIN).sort((a,b)=>a.round-b.round);
-    const hits=xs.filter(r=>(r.sharpNet>0)===(r.result==='yes')).length,[low,high]=wilson(hits,xs.length);
-    const pnl=xs.map(r=>{const side=r.sharpNet>0?'yes':'no',ask=side==='yes'?r.yesAsk:r.yesBid!==null?1-r.yesBid:null;return ask===null||ask<=0||ask>=1?null:(r.result===side?1:0)-ask-takerFee(ask);}).filter((x):x is number=>x!==null);
-    const m=(a:number[])=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null,mean=m(pnl),sd=pnl.length>1?Math.sqrt(pnl.reduce((s,x)=>s+(x-mean!)**2,0)/(pnl.length-1)):null;
-    const half=pnl.length>>1,first=m(pnl.slice(0,half)),second=m(pnl.slice(half)),lo=mean!==null&&sd!==null?mean-1.96*sd/Math.sqrt(pnl.length):null,hi=mean!==null&&sd!==null?mean+1.96*sd/Math.sqrt(pnl.length):null;
-    return {horizon:h,calls:xs.length,hits,rate:xs.length?hits/xs.length:null,low,high,paper:{n:pnl.length,mean,low:lo,high:hi,first,second},proven:pnl.length>=100&&lo!==null&&lo>0&&(first??0)>0&&(second??0)>0};
+    const xs=rows.filter(r=>r.horizon===h&&(r.result==='yes'||r.result==='no')&&Math.abs(r.sharpNet)>=LEAN_MIN);
+    return {horizon:h,...score(xs,r=>r.sharpNet>0?'yes':'no'),agree:score(xs.filter(r=>agreeSide(r)!==null),r=>agreeSide(r)!)};
   });
 }

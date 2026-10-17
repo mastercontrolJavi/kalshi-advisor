@@ -5,7 +5,7 @@ import type {Group,Quote} from './types';
 const DAY=86400000;
 /** A settled market from the public backfill, with its YES mid and ask 24 h and 1 h before the event and the 24-h traded average. */
 /** A stored scanner flag; result and pnl stay null until its market settles yes or no. */
-export interface LeanRow {round:number;horizon:number;time:number;ticker:string;upPrice:number|null;sharpNet:number;allNet:number;sharpWallets:number;yesBid:number|null;yesAsk:number|null;result:string|null}
+export interface LeanRow {round:number;horizon:number;time:number;ticker:string;upPrice:number|null;sharpNet:number;allNet:number;sharpWallets:number;yesBid:number|null;yesAsk:number|null;result:string|null;trend:number|null;slope:number|null}
 export interface FlagRow {id:number;time:number;ticker:string;event:string;group:string;type:string;side:'yes'|'no';price:number;fee:number;edge:number;result:string|null;pnl:number|null}
 export interface BackfillRow {ticker:string;event:string;series:string;grp:'sports'|'politics'|'commodities';title:string;eventTs:number;settleTs:number;result:'yes'|'no';volume:number;p24:number|null;a24:number|null;p1:number|null;a1:number|null;vwap:number|null;priced:0|1}
 /** data/markets.db: the markets process's own journal, so it never contends with the Bitcoin engine's writes. */
@@ -36,6 +36,9 @@ export class MarketsJournal {
       CREATE TABLE IF NOT EXISTS sharp_snaps(time INTEGER NOT NULL,cond TEXT NOT NULL,outcome TEXT NOT NULL,title TEXT,wallets INTEGER NOT NULL,value REAL NOT NULL,avg_entry REAL,cur_price REAL,against INTEGER NOT NULL,ticker TEXT,side TEXT,PRIMARY KEY(time,cond,outcome));
       CREATE TABLE IF NOT EXISTS sharp_links(cond TEXT NOT NULL,ticker TEXT NOT NULL,yes_outcome TEXT NOT NULL,status TEXT NOT NULL,score REAL,title TEXT,decided_at INTEGER,PRIMARY KEY(cond,ticker));
       CREATE TABLE IF NOT EXISTS btc_lean(round INTEGER NOT NULL,horizon INTEGER NOT NULL,time INTEGER NOT NULL,ticker TEXT NOT NULL,up_price REAL,sharp_net REAL NOT NULL,all_net REAL NOT NULL,sharp_wallets INTEGER NOT NULL,yes_bid REAL,yes_ask REAL,result TEXT,PRIMARY KEY(round,horizon));`);
+    // Trend at the lean (2026-10-16): Kalshi YES mid − 50¢ (where BTC is vs the target) and the mid's move over the last ~3 min.
+    const lcols=(this.db.prepare('PRAGMA table_info(btc_lean)').all() as {name:string}[]).map(c=>c.name);
+    if(!lcols.includes('trend'))this.db.exec('ALTER TABLE btc_lean ADD COLUMN trend REAL');if(!lcols.includes('slope'))this.db.exec('ALTER TABLE btc_lean ADD COLUMN slope REAL');
   }
   log(event:string,context:unknown){this.db.prepare('INSERT INTO events(time,event,context) VALUES(?,?,?)').run(Date.now(),event,JSON.stringify(context));}
   get<T>(key:string,fallback:T):T{const row=this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as {value:string}|undefined;return row?JSON.parse(row.value):fallback;}
@@ -107,15 +110,16 @@ export class MarketsJournal {
     const put=this.db.prepare('INSERT OR IGNORE INTO sharp_snaps VALUES(?,?,?,?,?,?,?,?,?,?,?)');
     this.db.transaction(()=>{for(const r of rows)put.run(time,r.cond,r.outcome,r.title,r.wallets,r.value,r.avgEntry,r.curPrice,r.against,r.ticker,r.side);})();
   }
-  putLean(r:{round:number;horizon:number;time:number;ticker:string;upPrice:number|null;sharpNet:number;allNet:number;sharpWallets:number;yesBid:number|null;yesAsk:number|null}){
-    this.db.prepare('INSERT OR IGNORE INTO btc_lean(round,horizon,time,ticker,up_price,sharp_net,all_net,sharp_wallets,yes_bid,yes_ask) VALUES(?,?,?,?,?,?,?,?,?,?)').run(r.round,r.horizon,r.time,r.ticker,r.upPrice,r.sharpNet,r.allNet,r.sharpWallets,r.yesBid,r.yesAsk);
+  putLean(r:{round:number;horizon:number;time:number;ticker:string;upPrice:number|null;sharpNet:number;allNet:number;sharpWallets:number;yesBid:number|null;yesAsk:number|null;trend:number|null;slope:number|null}){
+    this.db.prepare('INSERT OR IGNORE INTO btc_lean(round,horizon,time,ticker,up_price,sharp_net,all_net,sharp_wallets,yes_bid,yes_ask,trend,slope) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(r.round,r.horizon,r.time,r.ticker,r.upPrice,r.sharpNet,r.allNet,r.sharpWallets,r.yesBid,r.yesAsk,r.trend,r.slope);
   }
   leanHorizons(round:number){return new Set((this.db.prepare('SELECT horizon FROM btc_lean WHERE round=?').all(round) as {horizon:number}[]).map(r=>r.horizon));}
   /** Rounds whose Kalshi result is not stored yet, 5+ minutes after they closed. */
   unscoredLean(now:number){return (this.db.prepare('SELECT DISTINCT ticker FROM btc_lean WHERE result IS NULL AND (round+900)*1000<? ORDER BY ticker LIMIT 20').all(now-300000) as {ticker:string}[]).map(r=>r.ticker);}
   scoreLean(ticker:string,result:'yes'|'no'){this.db.prepare('UPDATE btc_lean SET result=? WHERE ticker=?').run(result,ticker);}
   categoryOf(series:string){return (this.db.prepare('SELECT category FROM markets WHERE series_ticker=? AND category IS NOT NULL LIMIT 1').get(series) as {category:string}|undefined)?.category??null;}
-  leanRows(){return this.db.prepare('SELECT round,horizon,time,ticker,up_price AS upPrice,sharp_net AS sharpNet,all_net AS allNet,sharp_wallets AS sharpWallets,yes_bid AS yesBid,yes_ask AS yesAsk,result FROM btc_lean ORDER BY round').all() as LeanRow[];}
+  leanRows(){return this.db.prepare('SELECT round,horizon,time,ticker,up_price AS upPrice,sharp_net AS sharpNet,all_net AS allNet,sharp_wallets AS sharpWallets,yes_bid AS yesBid,yes_ask AS yesAsk,result,trend,slope FROM btc_lean ORDER BY round').all() as LeanRow[];}
+  setLeanTrend(round:number,horizon:number,trend:number|null,slope:number|null){this.db.prepare('UPDATE btc_lean SET trend=?,slope=? WHERE round=? AND horizon=?').run(trend,slope,round,horizon);}
   matchesFor(ticker:string){return this.db.prepare('SELECT ticker,source,ref_id AS refId,method,status,score,title,url,decided_at AS decidedAt FROM matches WHERE ticker=?').all(ticker) as {ticker:string;source:string;refId:string;method:string;status:string;score:number|null;title:string;url:string;decidedAt:number|null}[];}
   decideMatch(ticker:string,source:string,refId:string,status:'confirmed'|'rejected',now:number){return this.db.prepare('UPDATE matches SET status=?,decided_at=? WHERE ticker=? AND source=? AND ref_id=?').run(status,now,ticker,source,refId).changes>0;}
   isRejected(ticker:string,source:string,refId:string){return !!this.db.prepare(`SELECT 1 FROM matches WHERE ticker=? AND source=? AND ref_id=? AND status='rejected'`).get(ticker,source,refId);}

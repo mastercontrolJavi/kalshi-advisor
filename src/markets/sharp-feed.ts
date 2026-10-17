@@ -8,14 +8,14 @@ const LINK_MIN=.8;
 import {sharpLeaderboard,type FalconPost,type SharpWallet} from './sources/falcon';
 import {walletPositions,cryptoLeaders,marketTrades,type FetchJson,type PmPosition,type PmTrade} from './sources/pmdata';
 import {btcRound} from './sources/polymarket';
-import {aggregate,kalshiSide,sharpFlags,lean,kalshiBtcTicker,leanStats,LEAN_HORIZONS,type SharpBet,type LeanStats} from './sharps';
+import {aggregate,kalshiSide,sharpFlags,lean,kalshiBtcTicker,leanStats,agreeSide,LEAN_HORIZONS,type SharpBet,type LeanStats} from './sharps';
 import type {Flag} from './flags';
 type Client=Pick<KalshiClient,'get'>;
 const H=3600000,WALLETS_EVERY=6*H,POSITIONS_EVERY=10*60000,SNAP_EVERY=30*60000,FALCON_WALLETS=100,SHOWN=80;
 export interface Health {name:string;ok:boolean;updated:number|null;error:string|null;detail:string}
 export interface BetLink {ticker:string;side:'yes'|'no';status:string;title:string;yesBid:number|null;yesAsk:number|null;noAsk:number|null;url:string}
 export interface BetView extends SharpBet {links:BetLink[];url:string}
-export interface BtcView {round:number;ticker:string;slug:string|null;tau:number;upPrice:number|null;sharpNet:number;allNet:number;sharpWallets:number;sharpTrades:number;trades:number;updated:number|null;error:string|null;stats:LeanStats[]}
+export interface BtcView {round:number;ticker:string;slug:string|null;tau:number;upPrice:number|null;sharpNet:number;allNet:number;sharpWallets:number;sharpTrades:number;trades:number;updated:number|null;error:string|null;trend:number|null;slope:number|null;agree:'yes'|'no'|null;stats:LeanStats[]}
 export interface SharpsState {updated:number|null;wallets:SharpWallet[];bets:BetView[];btc:BtcView|null;sources:Health[];counts:{wallets:number;crypto:number;positions:number;bets:number}}
 /** Your side of a market you hold, as sharp wallets see it: on your side, against it. */
 export interface SharpSummary {wallets:number;value:number;against:number;againstValue:number;side:'yes'|'no'}
@@ -31,7 +31,7 @@ export class SharpFeed {
   // Every open Kalshi market outside sports, crypto, financials, weather and mention markets (~40k), reloaded every 6 h,
   // for suggesting which Kalshi market a Polymarket one is. The local markets table only holds the scanner's busiest.
   private catalog:{at:number;rows:{ticker:string;title:string;words:Set<string>}[]}={at:0,rows:[]};private searched=new Set<string>();
-  private round:{start:number;info:Awaited<ReturnType<typeof btcRound>>;trades:PmTrade[];updated:number|null;error:string|null}|null=null;private busy=false;
+  private round:{start:number;info:Awaited<ReturnType<typeof btcRound>>;trades:PmTrade[];updated:number|null;error:string|null;mids:{t:number;bid:number|null;ask:number|null;mid:number|null}[]}|null=null;private busy=false;
   constructor(private journal:MarketsJournal,private o:{falcon?:FalconPost;pmData:FetchJson;gamma:FetchJson;client:Client;log:(e:string,d:unknown)=>void}){
     for(const w of journal.walletRows() as SharpWallet[])(w.source==='crypto'?this.crypto:this.wallets).push(w);this.at.wallets=journal.walletsUpdated()??0;
   }
@@ -99,16 +99,25 @@ export class SharpFeed {
   async refreshBtc(nowMs:number){
     const now=Math.floor(nowMs/1000),start=Math.floor(now/900)*900,tau=start+900-now;
     try{
-      if(!this.round||this.round.start!==start)this.round={start,info:null,trades:[],updated:null,error:null};
+      if(!this.round||this.round.start!==start)this.round={start,info:null,trades:[],updated:null,error:null,mids:[]};
       // Re-read each time: the round's Up price comes with it.
       this.round.info=await btcRound(this.o.gamma,start)??this.round.info;
       if(!this.round.info){this.round.error='Polymarket round not listed yet';return;}
       this.round.trades=await marketTrades(this.o.pmData,this.round.info.cond);this.round.updated=nowMs;this.round.error=null;
+      // Kalshi's YES quote every refresh (~20 s), so the trend and its last ~3 min are known when a lean is recorded.
+      const ticker=kalshiBtcTicker(start);
+      try{const {market}=await this.o.client.get('/markets/'+encodeURIComponent(ticker));const q=parseMarket(market,nowMs);
+        this.round.mids.push({t:nowMs,bid:q.yesBid,ask:q.yesAsk,mid:q.yesBid!==null&&q.yesAsk!==null?(q.yesBid+q.yesAsk)/2:null});}catch(e){this.o.log('btc-lean-quote-error',{ticker,message:(e as Error).message});}
       const due=LEAN_HORIZONS.find(h=>tau<=h&&tau>h-30&&!this.journal.leanHorizons(start).has(h));
-      if(due!==undefined){const ticker=kalshiBtcTicker(start),l=lean(this.round.trades,this.sharpSet,now);let yesBid:number|null=null,yesAsk:number|null=null;
-        try{const {market}=await this.o.client.get('/markets/'+encodeURIComponent(ticker));const q=parseMarket(market,nowMs);yesBid=q.yesBid;yesAsk=q.yesAsk;}catch(e){this.o.log('btc-lean-quote-error',{ticker,message:(e as Error).message});}
-        this.journal.putLean({round:start,horizon:due,time:nowMs,ticker,upPrice:this.round.info.upPrice,sharpNet:l.sharpNet,allNet:l.allNet,sharpWallets:l.sharpWallets,yesBid,yesAsk});}
+      if(due!==undefined){const l=lean(this.round.trades,this.sharpSet,now),last=this.round.mids.at(-1),fresh=last&&nowMs-last.t<5000?last:null,{trend,slope}=this.trendNow(nowMs);
+        this.journal.putLean({round:start,horizon:due,time:nowMs,ticker,upPrice:this.round.info.upPrice,sharpNet:l.sharpNet,allNet:l.allNet,sharpWallets:l.sharpWallets,yesBid:fresh?.bid??null,yesAsk:fresh?.ask??null,trend,slope});}
     }catch(e){if(this.round)this.round.error=(e as Error).message;this.o.log('btc-lean-error',{message:(e as Error).message});}
+  }
+  /** Kalshi YES mid − 50¢ now, and its change since the newest quote at least 150 s old (aiming for 3 min); null when unknown. */
+  private trendNow(nowMs:number){
+    const ms=this.round?.mids??[],last=ms.at(-1);if(!last||last.mid===null||nowMs-last.t>30000)return {trend:null,slope:null};
+    const back=[...ms].reverse().find(x=>x.mid!==null&&last.t-x.t>=150000);
+    return {trend:last.mid-.5,slope:back?last.mid-back.mid!:null};
   }
   /** Kalshi's result for recorded rounds (public market data), so the lean can be scored. */
   async scoreBtc(now:number){
@@ -125,7 +134,7 @@ export class SharpFeed {
   }
   state(now=Date.now()):SharpsState{
     const r=this.round,info=r?.info,l=r&&info?lean(r.trades,this.sharpSet,Math.floor(now/1000)):null;
-    const btc:BtcView|null=r?{round:r.start,ticker:kalshiBtcTicker(r.start),slug:info?.slug??null,tau:Math.max(0,r.start+900-Math.floor(now/1000)),upPrice:info?.upPrice??null,sharpNet:l?.sharpNet??0,allNet:l?.allNet??0,sharpWallets:l?.sharpWallets??0,sharpTrades:l?.sharpTrades??0,trades:r.trades.length,updated:r.updated,error:r.error,stats:leanStats(this.journal.leanRows())}:null;
+    const btc:BtcView|null=r?{round:r.start,ticker:kalshiBtcTicker(r.start),slug:info?.slug??null,tau:Math.max(0,r.start+900-Math.floor(now/1000)),upPrice:info?.upPrice??null,sharpNet:l?.sharpNet??0,allNet:l?.allNet??0,sharpWallets:l?.sharpWallets??0,sharpTrades:l?.sharpTrades??0,trades:r.trades.length,updated:r.updated,error:r.error,...this.trendNow(now),agree:l?agreeSide({sharpNet:l.sharpNet,...this.trendNow(now)}):null,stats:leanStats(this.journal.leanRows())}:null;
     return {updated:this.at.positions||null,wallets:[...this.wallets.slice(0,30),...this.crypto.slice(0,10)],bets:this.bets,btc,sources:this.health(now),counts:{wallets:this.wallets.length,crypto:this.crypto.length,positions:this.positions.length,bets:this.bets.length}};
   }
 }

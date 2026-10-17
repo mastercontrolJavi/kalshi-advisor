@@ -1,5 +1,5 @@
 import {it,expect} from 'vitest';
-import {aggregate,kalshiSide,sharpFlags,lean,kalshiBtcTicker,leanStats} from '../src/markets/sharps';
+import {aggregate,kalshiSide,sharpFlags,lean,kalshiBtcTicker,leanStats,agreeSide} from '../src/markets/sharps';
 import type {SharpWallet} from '../src/markets/sources/falcon';
 import type {PmPosition} from '../src/markets/sources/pmdata';
 import type {LeanRow} from '../src/markets/journal';
@@ -29,9 +29,16 @@ it('builds the Kalshi 15-minute ticker from New York time',()=>{
   expect(kalshiBtcTicker(Date.parse('2026-10-10T21:00:00Z')/1000)).toBe('KXBTC15M-26OCT101715-15');
   expect(kalshiBtcTicker(Date.parse('2026-10-11T03:45:00Z')/1000)).toBe('KXBTC15M-26OCT110000-00');});
 it('scores the lean by hit rate and by paper P&L of buying the sharps\' side on Kalshi',()=>{
-  const row=(round:number,net:number,result:'yes'|'no',yesBid=.5,yesAsk=.52):LeanRow=>({round,horizon:300,time:0,ticker:'T'+round,upPrice:.5,sharpNet:net,allNet:0,sharpWallets:2,yesBid,yesAsk,result});
+  const row=(round:number,net:number,result:'yes'|'no',yesBid=.5,yesAsk=.52,trend:number|null=null,slope:number|null=null):LeanRow=>({round,horizon:300,time:0,ticker:'T'+round,upPrice:.5,sharpNet:net,allNet:0,sharpWallets:2,yesBid,yesAsk,result,trend,slope});
   const s=leanStats([row(1,500,'yes'),row(2,-500,'no'),row(3,500,'no'),row(4,50,'yes')]).find(x=>x.horizon===300)!;
-  expect(s.calls).toBe(3);expect(s.hits).toBe(2);expect(s.paper.n).toBe(3);expect(s.proven).toBe(false);});
+  expect(s.calls).toBe(3);expect(s.hits).toBe(2);expect(s.paper.n).toBe(3);expect(s.proven).toBe(false);expect(s.agree.calls).toBe(0);
+  // Trend + sharps agree: only rounds where the sharps, Kalshi's favourite and the last-3-min move all point one way.
+  const a=leanStats([row(1,500,'yes',.7,.72,.21,.05),row(2,-500,'no',.2,.22,-.29,-.04),row(3,500,'no',.7,.72,.21,-.02),row(4,-500,'yes',.7,.72,.21,.05)]).find(x=>x.horizon===300)!;
+  expect(a.calls).toBe(4);expect(a.agree.calls).toBe(2);expect(a.agree.hits).toBe(2);expect(a.agree.proven).toBe(false);});
+it('trend + sharps agree needs all three on one side and a $100 lean',()=>{
+  expect(agreeSide({sharpNet:200,trend:.2,slope:.03})).toBe('yes');expect(agreeSide({sharpNet:-200,trend:-.2,slope:-.03})).toBe('no');
+  expect(agreeSide({sharpNet:200,trend:.2,slope:-.03})).toBeNull();expect(agreeSide({sharpNet:50,trend:.2,slope:.03})).toBeNull();
+  expect(agreeSide({sharpNet:200,trend:null,slope:.03})).toBeNull();expect(agreeSide({sharpNet:200,trend:0,slope:.03})).toBeNull();});
 import {ruleOk} from '../src/markets/crypto';
 import {eiaFor} from '../src/markets/sources/eia';
 it('crypto rounds are modelled only when their rule is the Bitcoin 15-minute settlement; EIA context only for oil and gas',()=>{

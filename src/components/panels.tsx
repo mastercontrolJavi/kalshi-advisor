@@ -90,12 +90,16 @@ export function SignalPanel({s,fresh,compact=false}:{s:any;fresh:boolean;compact
 
 const DirIcon=({d,className}:{d:string;className?:string})=>d==='UP'?<ArrowUpRight aria-hidden className={className}/>:d==='DOWN'?<ArrowDownRight aria-hidden className={className}/>:<Minus aria-hidden className={className}/>;
 /** Polymarket's top crypto traders on the same 15-minute window (markets process, /api/markets/sharps/btc every 15 s). */
-function SharpLean({btc}:{btc:any}){
+function SharpLean({btc,gate}:{btc:any;gate:boolean}){
   const h=btc?.stats?.find((x:any)=>x.horizon===300),net=btc?.sharpNet??0,lean=Math.abs(net)>=100?(net>0?'UP':'DOWN'):null;
+  // Trend + sharps agree (scored at the lean horizon nearest now): shown only once proven while the evidence gate is on.
+  const near=btc?.stats?.length?btc.stats.reduce((a:any,x:any)=>Math.abs(x.horizon-btc.tau)<Math.abs(a.horizon-btc.tau)?x:a):null,ag=near?.agree,agree=btc?.agree==='yes'?'UP':btc?.agree==='no'?'DOWN':null;
+  const agRec=ag?.calls?`${ag.hits}/${ag.calls} won at ${near.horizon/60} min left${ag.paper.mean!=null?`, ${ag.paper.mean>=0?'+':'−'}${Math.abs(ag.paper.mean*100).toFixed(1)}¢ per contract`:''}`:'no settled rounds yet';
   return <section className="border-t border-line pt-4 md:border-t-0 md:pt-0">
     <Heading icon={<Activity aria-hidden className="size-4 text-faint"/>} title="Polymarket sharps" aside={h?.paper?.n?<span>{h.proven?'proven':`unproven · ${h.paper.n} scored`}</span>:<span>scoring starts</span>}/>
     {btc?<><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1"><span className={cn('font-display text-3xl font-bold',lean==='UP'?'text-yes':lean==='DOWN'?'text-no':'text-muted')}>{lean??'No lean'}</span><span className="num text-lg">{net>=0?'+':'−'}${Math.abs(Math.round(net)).toLocaleString()} on Up</span><span className="text-xs text-muted">{btc.sharpWallets} wallet{btc.sharpWallets===1?'':'s'} · Polymarket Up {pct(btc.upPrice,0)}</span></div>
-      <p className="mt-1 text-xs text-muted">{h?.paper?.mean!=null?`Buying the lean side on Kalshi at 5:00 left: ${h.paper.mean>=0?'+':'−'}${Math.abs(h.paper.mean*100).toFixed(1)}¢ per contract over ${h.paper.n} rounds. `:''}Their round settles on a 15-minute average, not Kalshi&apos;s last minute. <a href="/markets/sharps" className="text-info hover:underline">Details</a></p></>
+      <p className="mt-1 text-xs text-muted">{h?.paper?.mean!=null?`Buying the lean side on Kalshi at 5:00 left: ${h.paper.mean>=0?'+':'−'}${Math.abs(h.paper.mean*100).toFixed(1)}¢ per contract over ${h.paper.n} rounds. `:''}Their round settles on a 15-minute average, not Kalshi&apos;s last minute. <a href="/markets/sharps" className="text-info hover:underline">Details</a></p>
+      <p className="mt-1 text-xs text-muted">{agree&&(ag?.proven||!gate)?<span className={cn('font-semibold',agree==='UP'?'text-yes':'text-no')}>Trend + sharps agree: {agree}. </span>:null}Trend + sharps agree rule: {agRec}{ag?.proven?' · proven':` · ${gate?'hidden until proven (100+ rounds, profit with 95% confidence and in both halves)':'unproven'}`}.</p></>
     :<p className="mt-2 text-sm text-muted">Waiting for the markets engine.</p>}
   </section>;
 }
@@ -122,7 +126,7 @@ export function ForecastPanel({s,fresh,btc}:{s:any;fresh:boolean;btc?:any}){
       :<p className="mt-2 text-sm text-muted">{s?.market&&elapsed!==null&&elapsed<180?(s?.kConfirmed?'Making the call for this window…':'Waiting for Kalshi to publish the opening price (K). The call is made the moment it does.'):'No call this window: Kalshi had not published K within 3 minutes, or the engine was not running at the open.'}</p>}
     </section>
     <NextWindow s={s} fresh={fresh}/>
-    {btc!==undefined?<SharpLean btc={btc}/>:null}
+    {btc!==undefined?<SharpLean btc={btc} gate={s?.config?.provenSignalsOnly!==false}/>:null}
     <p className="text-xs text-faint md:col-span-2 xl:col-span-4">Calls blend the model with Kalshi; momentum/flow only count once settled windows prove them. All are scored on the Calibration page.</p>
   </Card>;
 }
