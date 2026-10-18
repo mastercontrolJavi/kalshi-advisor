@@ -32,6 +32,7 @@ import {priorFit} from './quant/stack';
 import {VERDICT_PATH,type Verdict} from '../backtest/verdict';
 import {gateEvaluation,gateHourly,gateTactics} from './evidence';
 import {BacktestRefresher} from './refresh';
+import {classifySetup} from '../backtest/setups';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
 const priceJournal=new PriceForecastJournal(journal.db);
@@ -311,7 +312,11 @@ const loop=setInterval(()=>{
       const tacticsLive=q!==null&&quality.level!=='unreliable'&&!guards.locked&&market.status==='active'&&bv.valid&&now-bv.updated<=config.bookStaleMs;
       const scalpIdea=tacticsLive?scalp(q!,tau,bv,schedule,tcfg):null,dipState=q!==null?dips(tacticsHistory,time,q,bv,schedule,tcfg,tau):{watch:[],idea:null};
       const tacticIdeas=[scalpIdea,tacticsLive?dipState.idea:null].filter((t):t is NonNullable<typeof scalpIdea>=>!!t).map(t=>({...t,...size(t.side==='yes'?q!:1-q!,t.price,account.balance??0,config,schedule)}));
-      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation,rawAction:rawEvaluation.action};
+      // Chart setup (backtest/setups.ts): coin flip / trend / strong trend / dip, on the basis-corrected price, so the
+      // dashboard can show how the same setup paid on past rounds (verdict.setups).
+      let prior60:number|null=null;for(let i=proxy.history.length-1;i>=0&&proxy.history[i].time>=time-60000;i--)if(proxy.history[i].time===time-60000){prior60=proxy.history[i].price;break;}
+      const setup=spot!==null&&K!==null&&vol.sigma>0?classifySetup({tau,spot:spot+basis,k:K,sigma:vol.sigma,spot60:prior60!==null?prior60+basis:null}):null;
+      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,setup,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation,rawAction:rawEvaluation.action};
       // The taker signal is journaled (and paper-traded) once, at the price shown when it confirmed, not every second it stands.
       const newFirm=evaluation.idea&&evaluation.firm&&evaluation.firm.id!==journaledLatch?[evaluation.idea]:[];
       if(newSecond){journal.tick(tick);if(newFirm.length)journaledLatch=evaluation.firm!.id;for(const idea of [...newFirm,...evaluation.makers,...tacticIdeas.map(t=>({...t,queue:0}))])journal.signal(market.ticker,time,idea as any,tick,schedule);

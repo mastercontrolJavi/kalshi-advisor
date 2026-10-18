@@ -6,6 +6,7 @@ import {SectionHelp,helpFor} from './section-help';
 import {cn} from '@/lib/utils';
 import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,ago,opensAt,maintenanceNote} from './format';
 import {ruleVerdict,exitVerdict,finalMinuteEvidence,sellEvidence} from '@/backtest/verdict';
+import {describeSetup} from '@/backtest/setups';
 
 export type Tone='yes'|'no'|'warn'|'neutral';
 export const toneText:Record<Tone,string>={yes:'text-yes',no:'text-no',warn:'text-warn',neutral:'text-fg'};
@@ -57,6 +58,16 @@ export function BacktestNote({s,which}:{s:any;which:'15m'|'hourly'}){
     <FlaskConical aria-hidden className={cn('mt-0.5 size-4 shrink-0',v.tone==='warn'?'text-warn':v.tone==='yes'?'text-yes':'text-muted')}/><span>{v.text}</span></div>;
 }
 
+/** The chart setup on screen (coin flip / trend / strong trend / dip) and how the same setup paid on past rounds. */
+export function SetupReadout({s}:{s:any}){
+  const st=s?.setup;if(!st)return null;const d=describeSetup(st,s?.backtest?.setups);
+  return <div className={cn('mt-3 rounded-xl border px-3 py-2',d.tone==='warn'?'border-warn/40 bg-warn-dim/30':d.tone==='yes'?'border-yes/35 bg-yes-dim/30':'border-line bg-surface-2/60')}>
+    <div className="flex flex-wrap items-baseline justify-between gap-x-3"><span className="label">Chart setup</span><span className={cn('font-display text-xl font-bold uppercase',d.tone==='warn'?'text-warn':d.tone==='yes'?'text-yes':'text-fg')}>{d.title}</span></div>
+    <p className="mt-1 text-sm">{d.situation}</p>
+    <ul className="mt-1 space-y-0.5 text-xs text-muted">{d.lines.map(l=><li key={l}>{l}</li>)}</ul>
+  </div>;
+}
+
 export function WindowBar({s}:{s:any}){
   const total=s?.market?(Date.parse(s.market.close_time)-Date.parse(s.market.open_time))/1000:900,tau=Math.max(0,s?.tau??0),done=s?.market?1-tau/total:0;
   return <div className="h-1 w-full bg-line" aria-hidden><div className={cn('bar-fill h-full',tau<=60?'bg-warn':'bg-info')} style={{width:`${done*100}%`}}/></div>;
@@ -76,6 +87,7 @@ export function SignalPanel({s,fresh,compact=false}:{s:any;fresh:boolean;compact
     {fresh&&ev?.hidden?<div className="mt-3 flex items-start gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2 text-sm"><FlaskConical aria-hidden className="mt-0.5 size-4 shrink-0 text-muted"/><span>{ev.hidden.text} It is still paper-traded and shows again by itself once it proves an edge. Settings → Entry rules → Only show proven signals.</span></div>:null}
     {fresh&&ev?.forming?<div className="mt-3"><Pill tone="neutral"><Clock aria-hidden className="size-3.5"/>BUY {String(ev.forming.side).toUpperCase()} forming · shows if it holds {Math.max(1,Math.ceil((ev.forming.needMs-ev.forming.ms)/1000))} s more</Pill></div>:null}
     <p className="mt-3 max-w-3xl text-[15px] text-fg/90">{fresh?(idea?ev.reason:failed?`${failed} of ${gates.length} checks failing${waiting?` · ${waiting.label.toLowerCase()} ${waiting.detail}`:''}`:waiting?`All checks clear — waiting: ${waiting.detail}`:ev?.reason??'Warming up'):'Live state unavailable — advice suppressed'}</p>
+    {fresh&&s?.market?<SetupReadout s={s}/>:null}
     {fresh&&!s?.market&&s?.nextOpen?<p className="mt-1 text-sm text-muted">Next round opens {opensAt(s.nextOpen)}. {maintenanceNote()??''}</p>:null}
     {idea?<BacktestNote s={s} which="15m"/>:null}
     {idea?<p className="mt-1 text-sm text-muted">{paperOnly?<><span className="text-info">Below 1 contract at your risk settings — logged as a paper trade.</span> One contract would cost {dollars(idea.price+idea.fee)}.</>:<>Spend / max loss {dollars(idea.maxLoss)} · ask {cents(idea.price)} + {cents(idea.fee,2)} fee</>}</p>:null}
@@ -99,7 +111,8 @@ function SharpLean({btc,gate}:{btc:any;gate:boolean}){
     <Heading icon={<Activity aria-hidden className="size-4 text-faint"/>} title="Polymarket sharps" aside={h?.paper?.n?<span>{h.proven?'proven':`unproven · ${h.paper.n} scored`}</span>:<span>scoring starts</span>}/>
     {btc?<><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1"><span className={cn('font-display text-3xl font-bold',lean==='UP'?'text-yes':lean==='DOWN'?'text-no':'text-muted')}>{lean??'No lean'}</span><span className="num text-lg">{net>=0?'+':'−'}${Math.abs(Math.round(net)).toLocaleString()} on Up</span><span className="text-xs text-muted">{btc.sharpWallets} wallet{btc.sharpWallets===1?'':'s'} · Polymarket Up {pct(btc.upPrice,0)}</span></div>
       <p className="mt-1 text-xs text-muted">{h?.paper?.mean!=null?`Buying the lean side on Kalshi at 5:00 left: ${h.paper.mean>=0?'+':'−'}${Math.abs(h.paper.mean*100).toFixed(1)}¢ per contract over ${h.paper.n} rounds. `:''}Their round settles on a 15-minute average, not Kalshi&apos;s last minute. <a href="/markets/sharps" className="text-info hover:underline">Details</a></p>
-      <p className="mt-1 text-xs text-muted">{agree&&(ag?.proven||!gate)?<span className={cn('font-semibold',agree==='UP'?'text-yes':'text-no')}>Trend + sharps agree: {agree}. </span>:null}Trend + sharps agree rule: {agRec}{ag?.proven?' · proven':` · ${gate?'hidden until proven (100+ rounds, profit with 95% confidence and in both halves)':'unproven'}`}.</p></>
+      <p className="mt-1 text-xs text-muted">{agree&&(ag?.proven||!gate)?<span className={cn('font-semibold',agree==='UP'?'text-yes':'text-no')}>Trend + sharps agree: {agree}. </span>:null}Trend + sharps agree rule: {agRec}{ag?.proven?' · proven':` · ${gate?'hidden until proven (100+ rounds, profit with 95% confidence and in both halves)':'unproven'}`}.</p>
+      {near?.pmGap?.paper?.n?<p className="mt-1 text-xs text-muted">Polymarket&apos;s own price vs Kalshi&apos;s: when they differed by 3¢+ at {near.horizon/60} min left, buying the side Polymarket favoured made {near.pmGap.paper.mean>=0?'+':'−'}{Math.abs(near.pmGap.paper.mean*100).toFixed(1)}¢ per contract over {near.pmGap.paper.n} rounds{near.pmGap.paper.high!=null&&near.pmGap.paper.high<0?" — Kalshi’s price was the better one":""}.</p>:null}</>
     :<p className="mt-2 text-sm text-muted">Waiting for the markets engine.</p>}
   </section>;
 }

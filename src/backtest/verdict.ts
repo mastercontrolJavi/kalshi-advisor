@@ -2,6 +2,7 @@
  * The compact backtest verdict the live app shows beside its signals. `npm run backtest` writes it to
  * data/backtest-verdict.json; the engine reloads it when the file changes. No Node imports: the UI formats it too.
  */
+import type {SetupStats} from './setups';
 export const VERDICT_PATH='./data/backtest-verdict.json';
 export interface RuleResult {n:number;mean:number;ci:[number,number];early:number;late:number}
 export interface Verdict {
@@ -19,6 +20,8 @@ export interface Verdict {
   finalMinute:{rounds:number;trade:RuleResult|null}|null;
   /** Selling vs holding when the quant forecast is ≥ 3¢ below the net bid: 1–15 min left (history) and last 90 s (live journal). */
   sellTest?:{window:RuleResult;final:RuleResult|null}|null;
+  /** How each chart setup (src/backtest/setups.ts) paid per time-left window; shown beside the live setup. */
+  setups?:SetupStats[];
 }
 const c=(x:number)=>`${x>=0?'+':'−'}${Math.abs(x*100).toFixed(1)}¢`;
 const date=(ts:number)=>new Date(ts*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});

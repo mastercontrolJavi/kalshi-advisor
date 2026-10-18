@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import {dirname} from 'node:path';
 import {HistoryStore,SERIES15,SERIES_HOURLY} from './history';
 import {finalMinuteStudy} from './live';
+import {setupStats} from './setup-stats';
 import {VERDICT_PATH,type Verdict,type RuleResult} from './verdict';
 import {spotSeries,basisTrack,buildRows,scoreBy,priceBuckets,calibration,simulate,summarize,appRule,sellVsHold,priceBand,atMinute,modelP,median,bankroll,clusterCI,type Row,type Picker,type ExitRule,type Score,type Bucket,type Summary,type Trade} from './sim';
 const c=(x:number)=>Number.isFinite(x)?`${x>=0?'+':''}${(x*100).toFixed(1)}¢`:'—';
@@ -38,7 +39,7 @@ export function analyze(store:HistoryStore,log:(m:string)=>void=()=>{},journal:D
   const from=Math.min(...m15.map(m=>m.open_ts)),to=Math.max(...m15.map(m=>m.close_ts));
   const s=spotSeries(store.spot(from-4*3600,to)),basis=basisTrack(store.markets(SERIES15),s);
   log(`Replaying ${m15.length} 15-minute rounds`);
-  const rows=buildRows(m15,store.allCandles(SERIES15),s,basis.at,{cluster:'ticker'});
+  const c15=store.allCandles(SERIES15),rows=buildRows(m15,c15,s,basis.at,{cluster:'ticker'});
   const split=median(rows.map(r=>r.time)),rounds=new Set(rows.map(r=>r.cluster)).size;
   const minuteOrder=Array.from({length:14},(_,i)=>`${14-i} min`);
   const accuracy=scoreBy(rows,r=>`${Math.round(r.tau/60)} min`,minuteOrder);
@@ -150,7 +151,7 @@ export function analyze(store:HistoryStore,log:(m:string)=>void=()=>{},journal:D
     exits:{fixed:fixedVsHold,trailing:trailVsHold},kalshiBetter:{fifteen:kalshiWins.length,fifteenOf:accuracy.length,hourly:hourly?.accuracy.filter(a=>a.diffCI[0]>0).length??0,hourlyOf:hourly?.accuracy.length??0},
     profitable:winners.map(w=>w.name),strategies:all.length,ruin:[1,.25,.1,.02].map(stake=>({stake,ruined:bankroll(strategies15[0].trades,stake).ruined})),
     longshot:{fifteen:lowBucket(fair),hourly:hourly?lowBucket(hourly.fair):null},finalMinute:final?{rounds:final.rounds,trade:rule(final.model)}:null,
-    sellTest:{window:rule(sellWindow),final:final?rule(final.sell):null}};
+    sellTest:{window:rule(sellWindow),final:final?rule(final.sell):null},setups:setupStats(m15,c15,s,basis.at)};
   const strip=(l:Line[])=>l.map(({name,s})=>({name,s}));
   return {markdown:md,summary,verdict,json:{from,to,rounds,accuracy,overall,fair,fairLate,calModel,calKalshi,scales,strategies15:strip(strategies15),hourly:hourly?{...hourly,strategies:strip(hourly.strategies)}:null,final,basis:{median:median(raw),q25,q75},verdict}};
 }

@@ -34,7 +34,10 @@ it('scores the lean by hit rate and by paper P&L of buying the sharps\' side on 
   expect(s.calls).toBe(3);expect(s.hits).toBe(2);expect(s.paper.n).toBe(3);expect(s.proven).toBe(false);expect(s.agree.calls).toBe(0);
   // Trend + sharps agree: only rounds where the sharps, Kalshi's favourite and the last-3-min move all point one way.
   const a=leanStats([row(1,500,'yes',.7,.72,.21,.05),row(2,-500,'no',.2,.22,-.29,-.04),row(3,500,'no',.7,.72,.21,-.02),row(4,-500,'yes',.7,.72,.21,.05)]).find(x=>x.horizon===300)!;
-  expect(a.calls).toBe(4);expect(a.agree.calls).toBe(2);expect(a.agree.hits).toBe(2);expect(a.agree.proven).toBe(false);});
+  expect(a.calls).toBe(4);expect(a.agree.calls).toBe(2);expect(a.agree.hits).toBe(2);expect(a.agree.proven).toBe(false);
+  // Polymarket vs Kalshi: only rounds where the two prices differ by 3¢+, buying the side Polymarket prices higher.
+  const g=leanStats([{...row(1,0,'yes',.5,.52),upPrice:.6},{...row(2,0,'no',.5,.52),upPrice:.52},{...row(3,0,'no',.5,.52),upPrice:.4}]).find(x=>x.horizon===300)!;
+  expect(g.pmGap.calls).toBe(2);expect(g.pmGap.hits).toBe(2);});
 it('trend + sharps agree needs all three on one side and a $100 lean',()=>{
   expect(agreeSide({sharpNet:200,trend:.2,slope:.03})).toBe('yes');expect(agreeSide({sharpNet:-200,trend:-.2,slope:-.03})).toBe('no');
   expect(agreeSide({sharpNet:200,trend:.2,slope:-.03})).toBeNull();expect(agreeSide({sharpNet:50,trend:.2,slope:.03})).toBeNull();

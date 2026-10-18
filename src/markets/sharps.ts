@@ -69,7 +69,9 @@ export const LEAN_HORIZONS=[600,300,120,60] as const;
 export const LEAN_MIN=100;
 export interface LeanScore {calls:number;hits:number;rate:number|null;low:number|null;high:number|null;paper:{n:number;mean:number|null;low:number|null;high:number|null;first:number|null;second:number|null};proven:boolean}
 /** `agree`: the same score for rounds where the sharps, the trend (Kalshi favourite) and the last ~3 min all point one way. */
-export interface LeanStats extends LeanScore {horizon:number;agree:LeanScore}
+/** pmGap: rounds where Polymarket's Up price and Kalshi's YES mid differed by ≥ 3¢, buying on Kalshi the side Polymarket priced higher. */
+export interface LeanStats extends LeanScore {horizon:number;agree:LeanScore;pmGap:LeanScore}
+export const PM_GAP=.03;
 /**
  * "Trend + sharps agree" (scripts/trend-study.ts, 2026-10-16): sharps ≥ $100 net on one side, Kalshi already favours that
  * side (BTC is past the target that way) and the YES mid moved that way over the last ~3 min. Null when any part is
@@ -96,6 +98,7 @@ function score(xs:LeanRow[],sideOf:(r:LeanRow)=>'yes'|'no'):LeanScore{
 export function leanStats(rows:LeanRow[]):LeanStats[]{
   return LEAN_HORIZONS.map(h=>{
     const xs=rows.filter(r=>r.horizon===h&&(r.result==='yes'||r.result==='no')&&Math.abs(r.sharpNet)>=LEAN_MIN);
-    return {horizon:h,...score(xs,r=>r.sharpNet>0?'yes':'no'),agree:score(xs.filter(r=>agreeSide(r)!==null),r=>agreeSide(r)!)};
+    const gaps=rows.filter(r=>r.horizon===h&&(r.result==='yes'||r.result==='no')&&r.upPrice!==null&&r.yesBid!==null&&r.yesAsk!==null&&Math.abs(r.upPrice-(r.yesBid+r.yesAsk)/2)>=PM_GAP);
+    return {horizon:h,...score(xs,r=>r.sharpNet>0?'yes':'no'),agree:score(xs.filter(r=>agreeSide(r)!==null),r=>agreeSide(r)!),pmGap:score(gaps,r=>r.upPrice!>(r.yesBid!+r.yesAsk!)/2?'yes':'no')};
   });
 }
