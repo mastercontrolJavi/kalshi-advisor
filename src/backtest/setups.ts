@@ -27,7 +27,26 @@ export function classifySetup(i:{tau:number;spot:number;k:number;sigma:number;sp
 export interface SetupRecord extends RuleResult {win:number;paid:number}
 /** with = the side BTC is on (for a dip: the trend side); against = the other side (for a dip: chasing the bounce). */
 export interface SetupStats {window:SetupWindow;kind:SetupKind;with:SetupRecord|null;against:SetupRecord|null}
+/** Your own settled rounds in one cell (engine/my-setups.ts): up = rounds that made money; pnl = the whole round as the
+ *  app records it (fills + settlement, after fees); staked = price × contracts of every buy; flips = rounds where you
+ *  later bought the other side too, and what those rounds made. */
+export interface MyRecord {n:number;up:number;pnl:number;staked:number;flips:number;flipPnl:number}
+/** with = your first buy was on the side BTC was on; against = the other side (same split as SetupStats). */
+export interface MySetupCell {window:SetupWindow;kind:SetupKind;with:MyRecord|null;against:MyRecord|null}
+/** rounds = settled rounds placed in a cell; unclassified = settled rounds with no journal tick at the first buy or < 2 min left. */
+export interface MySetups {updated:number;rounds:number;unclassified:number;cells:MySetupCell[]}
 const c=(x:number)=>`${x>=0?'+':'−'}${Math.abs(x*100).toFixed(1)}¢`;
+const usd=(x:number)=>`${x>=0?'+':'−'}$${Math.abs(x).toFixed(Math.abs(x)<1?2:0)}`;
+const plus=(a:MyRecord,b:MyRecord):MyRecord=>({n:a.n+b.n,up:a.up+b.up,pnl:a.pnl+b.pnl,staked:a.staked+b.staked,flips:a.flips+b.flips,flipPnl:a.flipPnl+b.flipPnl});
+/** Your rounds in the live setup's cell, with YES/NO named the way the history lines name them (with = BTC's side now). */
+export function myRecordText(s:Setup,mine:MySetups|null|undefined):string|null{
+  if(!mine||!s.window)return null;
+  const cell=mine.cells.find(x=>x.window===s.window&&x.kind===s.kind),w=cell?.with??null,a=cell?.against??null;
+  if(!w&&!a)return 'Your record here: none of your rounds yet.';
+  const t=w&&a?plus(w,a):(w??a)!,yes=s.side==='yes'?'YES':'NO',no=s.side==='yes'?'NO':'YES',rounds=(n:number)=>`${n} round${n===1?'':'s'}`;
+  const split=w&&a?`buying ${yes} ${w.n} (${usd(w.pnl)}), ${no} ${a.n} (${usd(a.pnl)})`:`buying ${w?yes:no}`;
+  return `Your record here: ${rounds(t.n)}, ${t.up} up, ${usd(t.pnl)} on $${t.staked.toFixed(0)} staked — ${split}.${t.flips?` You flipped sides in ${t.flips} of them (${usd(t.flipPnl)}).`:''}`;
+}
 const proven=(r:SetupRecord)=>r.n>=100&&r.ci[0]>0&&r.early>0&&r.late>0;
 const loses=(r:SetupRecord)=>r.ci[1]<0;
 export const SETUP_TITLE:Record<SetupKind,string>={coinflip:'Coin flip',dip:'Dip in a trend',strong:'Strong trend',trend:'Trend'};
@@ -39,8 +58,8 @@ export function recordText(r:SetupRecord|null,what:string){
 export function setupTone(st:SetupStats|null,kind:SetupKind):'yes'|'warn'|'neutral'{
   if(kind==='coinflip')return 'warn';const w=st?.with;return w&&proven(w)?'yes':w&&loses(w)?'warn':'neutral';
 }
-/** What to show for the live setup: a title, the plain-language situation, and the history lines. */
-export function describeSetup(s:Setup,stats:SetupStats[]|null|undefined){
+/** What to show for the live setup: a title, the plain-language situation, the history lines and your own record. */
+export function describeSetup(s:Setup,stats:SetupStats[]|null|undefined,mine?:MySetups|null){
   const st=stats?.find(x=>x.window===s.window&&x.kind===s.kind)??null,up=s.side==='yes',dir=up?'UP':'DOWN',yes=up?'YES':'NO',no=up?'NO':'YES';
   const away=`BTC $${Math.abs(s.dist).toFixed(0)} ${up?'above':'below'} the target`;
   const title=s.kind==='coinflip'?'Coin flip':`${SETUP_TITLE[s.kind]} ${dir}`;
@@ -51,5 +70,5 @@ export function describeSetup(s:Setup,stats:SetupStats[]|null|undefined){
     :s.kind==='coinflip'?[recordText(st?.with??null,`Past rounds, ${s.window} min left: buying ${yes}`),recordText(st?.against??null,`Buying ${no}`)]
     :s.kind==='dip'?[recordText(st?.with??null,`Past dips, ${s.window} min left: buying the trend (${yes})`),recordText(st?.against??null,`Chasing the bounce (${no})`)]
     :[recordText(st?.with??null,`Past rounds, ${s.window} min left: buying ${yes}`),recordText(st?.against??null,`Betting against it (${no})`)];
-  return {title,situation,lines,tone:setupTone(st,s.kind)};
+  return {title,situation,lines,mine:myRecordText(s,mine),tone:setupTone(st,s.kind)};
 }

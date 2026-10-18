@@ -58,13 +58,13 @@ export function BacktestNote({s,which}:{s:any;which:'15m'|'hourly'}){
     <FlaskConical aria-hidden className={cn('mt-0.5 size-4 shrink-0',v.tone==='warn'?'text-warn':v.tone==='yes'?'text-yes':'text-muted')}/><span>{v.text}</span></div>;
 }
 
-/** The chart setup on screen (coin flip / trend / strong trend / dip) and how the same setup paid on past rounds. */
+/** The chart setup on screen (coin flip / trend / strong trend / dip), how the same setup paid on past rounds, and your own rounds in it. */
 export function SetupReadout({s}:{s:any}){
-  const st=s?.setup;if(!st)return null;const d=describeSetup(st,s?.backtest?.setups);
+  const st=s?.setup;if(!st)return null;const d=describeSetup(st,s?.backtest?.setups,s?.mySetups);
   return <div className={cn('mt-3 rounded-xl border px-3 py-2',d.tone==='warn'?'border-warn/40 bg-warn-dim/30':d.tone==='yes'?'border-yes/35 bg-yes-dim/30':'border-line bg-surface-2/60')}>
     <div className="flex flex-wrap items-baseline justify-between gap-x-3"><span className="label">Chart setup</span><span className={cn('font-display text-xl font-bold uppercase',d.tone==='warn'?'text-warn':d.tone==='yes'?'text-yes':'text-fg')}>{d.title}</span></div>
     <p className="mt-1 text-sm">{d.situation}</p>
-    <ul className="mt-1 space-y-0.5 text-xs text-muted">{d.lines.map(l=><li key={l}>{l}</li>)}</ul>
+    <ul className="mt-1 space-y-0.5 text-xs text-muted">{d.lines.map(l=><li key={l}>{l}</li>)}{d.mine?<li className="text-fg/85">{d.mine}</li>:null}</ul>
   </div>;
 }
 

@@ -32,7 +32,8 @@ import {priorFit} from './quant/stack';
 import {VERDICT_PATH,type Verdict} from '../backtest/verdict';
 import {gateEvaluation,gateHourly,gateTactics} from './evidence';
 import {BacktestRefresher} from './refresh';
-import {classifySetup} from '../backtest/setups';
+import {classifySetup,type MySetups} from '../backtest/setups';
+import {mySetups} from './my-setups';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
 const priceJournal=new PriceForecastJournal(journal.db);
@@ -77,6 +78,9 @@ let latch:Latch=emptyLatch(),latchTicker='',journaledLatch=0;
 let verdict:Verdict|null=null,verdictMtime=-1;
 function loadVerdict(){try{const m=statSync(VERDICT_PATH).mtimeMs;if(m!==verdictMtime){verdict=JSON.parse(readFileSync(VERDICT_PATH,'utf8'));verdictMtime=m;journal.log('backtest-verdict-loaded',{generated:verdict?.generated});}}catch{verdict=null;verdictMtime=-1;}}
 loadVerdict();
+// Your own record per chart setup (my-setups.ts), shown under the setup's history; rebuilt at most once a minute.
+let mine:{at:number;value:MySetups|null}={at:0,value:null};
+function mySetupsCached(now:number){if(now-mine.at>=60000){mine.at=now;try{mine.value=mySetups(journal,now);}catch(e){log('my-setups-error',{message:(e as Error).message});}}return mine.value;}
 // Daily automatic backtest refresh in a separate low-priority process (see refresh.ts).
 const refresher=new BacktestRefresher(log);const refresherTimer=setInterval(()=>refresher.tick(),5*60000);
 let settledOnce=false,sentCalibration:number|null=null;
@@ -244,7 +248,7 @@ const loop=setInterval(()=>{
       priceState={time,ready:!!inputs,reason:!healthyPrice?'Needs at least 3 healthy price feeds':!inputs?'Needs 5 uninterrupted minutes of prices':null,horizons:inputs?priceFits.map(f=>forecastPrice(inputs,f,time)):[],scores:priceScores,fitting:priceBusy};}
     const rawVol=volatility(proxy.history,config.halfLifeSeconds,config.realizedBlend),vol=warmVolatility(rawVol,journal.get<{sigma:number;time:number}|null>('lastSigma',null),config.minVolSamples,now);
     if(newSecond&&rawVol.count>=config.minVolSamples&&rawVol.sigma>0&&time%60000===0)journal.set('lastSigma',{sigma:rawVol.sigma,time:now});
-    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,backtestRefresh:{running:refresher.running,lastFinished:refresher.lastFinished,lastExit:refresher.lastExit},next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory};
+    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,backtestRefresh:{running:refresher.running,lastFinished:refresher.lastFinished,lastExit:refresher.lastExit},next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory,mySetups:mySetupsCached(now)};
     if(!market){
       // Between windows: poll every second so the next market and its K are picked up immediately.
       if(now-lastFastRefresh>1000){lastFastRefresh=now;safe('market-refresh-error',refresh);}
