@@ -34,6 +34,7 @@ import {gateEvaluation,gateHourly,gateTactics} from './evidence';
 import {BacktestRefresher} from './refresh';
 import {classifySetup,type MySetups} from '../backtest/setups';
 import {mySetups} from './my-setups';
+import {SLOW_FIELDS} from './stream';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
 const priceJournal=new PriceForecastJournal(journal.db);
@@ -83,7 +84,7 @@ let mine:{at:number;value:MySetups|null}={at:0,value:null};
 function mySetupsCached(now:number){if(now-mine.at>=60000){mine.at=now;try{mine.value=mySetups(journal,now);}catch(e){log('my-setups-error',{message:(e as Error).message});}}return mine.value;}
 // Daily automatic backtest refresh in a separate low-priority process (see refresh.ts).
 const refresher=new BacktestRefresher(log);const refresherTimer=setInterval(()=>refresher.tick(),5*60000);
-let settledOnce=false,sentCalibration:number|null=null;
+let settledOnce=false,sentCalibration:number|null=null,shownPositions='';
 let previousTicker='',lastLoop=Date.now(),lastSecond=0,lastPublish=0,lastFastRefresh=0,settling=false,refreshing=false;
 const safe=(name:string,fn:()=>Promise<void>)=>void fn().catch(e=>log(name,{message:e.message}));
 async function refresh(){if(refreshing)return;refreshing=true;try{await kalshi.refresh();for(const m of kalshi.markets){known.set(m.ticker,m);journal.set('market:'+m.ticker,m);}await kalshi.fallback();}finally{refreshing=false;}}
@@ -339,6 +340,10 @@ const loop=setInterval(()=>{
         const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,delayed?null:kalshi.books.get(pos.ticker)?.view()??null,schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule),pos.ticker===market.ticker?tau:null);
         if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,peakPct:e.peakPct});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,title:e.notice.title,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,winProb:e.winProb});exitMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
         return e;}).filter(Boolean);
+      // What Your positions shows, journaled when it changes (with the dashboards connected), so a card that stays empty
+      // while the engine holds a position can be traced (user report, 2026-10-21).
+      const shownNow=(exits as any[]).map(e=>`${e.ticker}:${Math.round(e.contracts*100)/100}`).join(',');
+      if(shownNow!==shownPositions){shownPositions=shownNow;log('positions-shown',{positions:(exits as any[]).map(e=>({ticker:e.ticker,side:e.side,contracts:e.contracts,action:e.action})),dashboards:wss.clients.size,maxBuffered:Math.max(0,...[...wss.clients].map(c=>c.bufferedAmount))});}
       // Evidence gate (evidence.ts, DECISIONS 56): the journal and paper trades above saw every signal; the dashboard
       // and its sounds see only rules that have proven an edge.
       const shown=gateEvaluation(evaluation,verdict,config.useQuantForSignals&&q!==null?'quant':'model',config.provenSignalsOnly);
@@ -355,7 +360,9 @@ const loop=setInterval(()=>{
     // the last copy. New connections get the full state on connect. This cut the 4 Hz push from ~200 KB to ~30 KB.
     state.calibration=calibration;state.loopMs=performance.now()-started;
     const sendCalibration=calibration?.updated!==sentCalibration;sentCalibration=calibration?.updated??null;
-    const message=JSON.stringify(sendCalibration&&newSecond?state:{...state,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
+    // Slow fields (stream.ts: verdict, setup records, hourly board, settings…) also go once a second only (~240 → ~130 KB/s).
+    const slow=newSecond?{}:Object.fromEntries(SLOW_FIELDS.map(k=>[k,undefined]));
+    const message=JSON.stringify({...state,...slow,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
 const shutdown=()=>{refresher.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};

@@ -25,7 +25,8 @@ server.on('upgrade',(req,socket,head)=>{
   if(!target||!req.headers.origin||new URL(req.headers.origin).host!==req.headers.host){socket.destroy();return;}
   wss.handleUpgrade(req,socket,head,downstream=>{
     const upstream=new WebSocket(`ws://127.0.0.1:${target}/ws`,{headers:req.headers.authorization?{Authorization:req.headers.authorization}:{}});
-    upstream.on('message',m=>{if(downstream.readyState===WebSocket.OPEN)downstream.send(m.toString());});
+    // A tab that can't keep up skips to newer updates instead of queueing an ever-older backlog (the engine has the same guard).
+    upstream.on('message',m=>{if(downstream.readyState===WebSocket.OPEN&&downstream.bufferedAmount<1000000)downstream.send(m.toString());});
     upstream.on('error',()=>downstream.close(1011,'Backend unavailable'));upstream.on('close',()=>downstream.close());downstream.on('close',()=>upstream.close());
   });
 });
