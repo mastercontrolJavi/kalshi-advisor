@@ -11,13 +11,15 @@ import {priceProjection,type PricePrediction} from '@/engine/quant/price-forecas
 import {PriceProjectionBand} from './price-projection';
 type View='btc'|'kalshi';
 const TFS:Record<View,[number,string][]>={btc:[[5,'5s'],[15,'15s'],[60,'1m'],[300,'5m']],kalshi:[[5,'5s'],[15,'15s'],[60,'1m']]};
-const SHOWN=120,KEY='panel:price-chart:view';
+// Kalshi YES is the default (2026-10-21, user reads Kalshi's candles): one round of 15-s candles fills the panel, so each
+// candle is about twice as wide as at 120. The key moved to :2 so the new default applies once over an older saved view.
+const SHOWN:Record<View,number>={btc:120,kalshi:60},KEY='panel:price-chart:view:2';
 const chip=(on:boolean)=>cn('inline-flex min-h-9 cursor-pointer items-center rounded-xl px-3 text-sm transition-colors',on?'bg-surface-2 text-fg':'text-muted hover:text-fg');
 const ts=(t:number)=>t as UTCTimestamp;
 const hhmm=(t:Time)=>new Date(Number(t)*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
 /**
  * Live candles: Bitcoin (the model's own 4-venue spot, with each round's opening price K as a dashed step line) or this
- * round's Kalshi YES price (with the quant forecast and the raw model as lines). History comes from /api/engine/candles
+ * round's Kalshi YES price (with the quant forecast and the raw model as lines, which can be hidden). History comes from /api/engine/candles
  * (the last 2 h of 1-s prices) and is refreshed every minute; between those, every 4 Hz state update moves the last candle.
  */
 export default function PriceChart({s,fresh=true}:{s:any;fresh?:boolean}){
@@ -29,9 +31,10 @@ export default function PriceChart({s,fresh=true}:{s:any;fresh?:boolean}){
   const ends=useRef(new WeakMap<ISeriesApi<'Line'>,number>());
   const extend=(l:ISeriesApi<'Line'>|undefined,time:number,value:number)=>{if(!l||!Number.isFinite(value)||time<(ends.current.get(l)??-Infinity))return;l.update({time:ts(time),value});ends.current.set(l,time);};
   const [horizon,setHorizon]=useState(60);
-  const [view,setView]=useState<View>('btc'),[tf,setTf]=useState(15),[loaded,setLoaded]=useState(0),[error,setError]=useState('');
-  useEffect(()=>{try{const v=JSON.parse(localStorage.getItem(KEY)??'null');if(v&&(v.view==='btc'||v.view==='kalshi')&&TFS[v.view as View].some(([x])=>x===v.tf)){setView(v.view);setTf(v.tf);}}catch{}},[]);
-  const choose=(v:View,t:number)=>{setView(v);setTf(t);try{localStorage.setItem(KEY,JSON.stringify({view:v,tf:t}));}catch{}};
+  const [view,setView]=useState<View>('kalshi'),[tf,setTf]=useState(15),[lines,setLines]=useState(true),[loaded,setLoaded]=useState(0),[error,setError]=useState('');
+  useEffect(()=>{try{const v=JSON.parse(localStorage.getItem(KEY)??'null');if(v&&(v.view==='btc'||v.view==='kalshi')&&TFS[v.view as View].some(([x])=>x===v.tf)){setView(v.view);setTf(v.tf);}if(typeof v?.lines==='boolean')setLines(v.lines);}catch{}},[]);
+  const save=(v:View,t:number,l:boolean)=>{try{localStorage.setItem(KEY,JSON.stringify({view:v,tf:t,lines:l}));}catch{}};
+  const choose=(v:View,t:number)=>{setView(v);setTf(t);save(v,t,lines);},toggleLines=()=>{setLines(!lines);save(view,tf,!lines);};
   useEffect(()=>{const el=box.current;if(!el)return;
     const c=createChart(el,{autoSize:true,layout:{background:{color:'transparent'},textColor:k.axis,fontSize:11,fontFamily:'inherit'},grid:{vertLines:{visible:false},horzLines:{color:k.grid}},
       rightPriceScale:{borderVisible:false,scaleMargins:{top:.12,bottom:.08}},timeScale:{borderVisible:false,timeVisible:true,secondsVisible:true,rightOffset:3,tickMarkFormatter:hhmm},
@@ -55,12 +58,14 @@ export default function PriceChart({s,fresh=true}:{s:any;fresh?:boolean}){
       const kp=kPoints(withCurrent(),candles.current);kl.setData(kp.map(p=>({...p,time:ts(p.time)})));ends.current.set(kl,kp.at(-1)?.time??-Infinity);extra.current=[kl];}
     else{const h:any[]=(s?.history??[]).filter((x:any)=>x.market!=null);candles.current=aggregate(h.map(x=>[x.time,x.market*100]),tf);m.setData(candles.current.map(x=>({...x,time:ts(x.time)})));
       m.createPriceLine({price:50,color:k.line,lineWidth:1,lineStyle:LineStyle.Dotted,axisLabelVisible:false,title:''});
-      const line=(key:'quant'|'model',color:string,style:LineStyle)=>{const l=c.addSeries(LineSeries,{color,lineWidth:key==='quant'?2:1,lineStyle:style,priceLineVisible:false,lastValueVisible:key==='quant',crosshairMarkerVisible:false,title:key==='quant'?'Quant':'',priceFormat:fmt});
+      const line=(key:'quant'|'model',color:string,style:LineStyle)=>{const l=c.addSeries(LineSeries,{visible:lines,color,lineWidth:key==='quant'?2:1,lineStyle:style,priceLineVisible:false,lastValueVisible:key==='quant',crosshairMarkerVisible:false,title:key==='quant'?'Quant':'',priceFormat:fmt});
         const pts=new Map<number,number>();for(const x of s?.history??[])if(x[key]!=null)pts.set(bucketOf(x.time,tf),x[key]*100);const sorted=[...pts].sort((a,b)=>a[0]-b[0]);l.setData(sorted.map(([t,v])=>({time:ts(t),value:v})));ends.current.set(l,sorted.at(-1)?.[0]??-Infinity);return l;};
       extra.current=[line('quant',k.yes,LineStyle.Solid),line('model',k.axis,LineStyle.Dashed)];}
-    const n=candles.current.length;if(n){if(same&&timeRange&&!following)c.timeScale().setVisibleRange(timeRange);else {const span=same&&range?range.to-range.from:SHOWN+3;c.timeScale().setVisibleLogicalRange({from:Math.max(0,n+3-span),to:n+3});}}
+    const n=candles.current.length;if(n){if(same&&timeRange&&!following)c.timeScale().setVisibleRange(timeRange);else {const span=same&&range?range.to-range.from:SHOWN[view]+3;c.timeScale().setVisibleLogicalRange({from:Math.max(0,n+3-span),to:n+3});}}
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[view,tf,loaded,view==='kalshi'?ticker:null]);
+  // Forecast lines on/off without rebuilding the candles.
+  useEffect(()=>{if(view==='kalshi')for(const l of extra.current)l.applyOptions({visible:lines});},[lines,view]);
   // Live: each state update moves the last candle (and the K / forecast lines) without redrawing the history.
   useEffect(()=>{const m=main.current;if(!m||!s?.engineTime||!fresh)return;const t=s.engineTime;if(t<=lastUpdate.current)return;lastUpdate.current=t;
     if(view==='btc'){if(!(s.proxy>0))return;samples.current.push([t,s.proxy]);while(samples.current.length&&samples.current[0][0]<t-7200000)samples.current.shift();
@@ -77,29 +82,30 @@ export default function PriceChart({s,fresh=true}:{s:any;fresh?:boolean}){
     const range=c.timeScale().getVisibleRange(),following=!range||Number(range.to)>=Number(candles.current.at(-1)?.time??Infinity),width=c.timeScale().getVisibleLogicalRange();
     if(!projection.current){const lines=[0,1,2].map(i=>c.addSeries(LineSeries,{color:i===0?k.info:'rgba(116,173,255,0.4)',lineWidth:i===0?2:1,lineStyle:LineStyle.Dashed,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,priceFormat:{type:'price',precision:2,minMove:.01}}));const band=new PriceProjectionBand(c,lines[0]);lines[0].attachPrimitive(band);projection.current={lines,band};}
     const points=priceProjection(p,tf);for(const [i,key] of (['expected','low','high'] as const).entries())projection.current.lines[i].setData(points.map(x=>({time:ts(x.time),value:x[key]})));projection.current.band.setData(points);
-    if(following){const end=c.timeScale().timeToIndex(ts(points.at(-1)!.time),false);if(end!==null){const span=width?width.to-width.from:SHOWN+3;c.timeScale().setVisibleLogicalRange({from:Math.max(0,end+3-span),to:end+3});}}
+    if(following){const end=c.timeScale().timeToIndex(ts(points.at(-1)!.time),false);if(end!==null){const span=width?width.to-width.from:SHOWN.btc+3;c.timeScale().setVisibleLogicalRange({from:Math.max(0,end+3-span),to:end+3});}}
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[s?.shortTerm?.time,horizon,view,tf,loaded,fresh]);
   function latest(){const c=chart.current;if(!c)return;const p:PricePrediction|undefined=view==='btc'&&projection.current?s?.shortTerm?.horizons?.find((p:PricePrediction)=>p.horizon===horizon):undefined;
-    const endTime=p?Math.floor(p.targetTime/1000):candles.current.at(-1)?.time;if(endTime===undefined)return;const end=c.timeScale().timeToIndex(ts(endTime),true);if(end!==null)c.timeScale().setVisibleLogicalRange({from:Math.max(0,end-SHOWN),to:end+3});}
+    const endTime=p?Math.floor(p.targetTime/1000):candles.current.at(-1)?.time;if(endTime===undefined)return;const end=c.timeScale().timeToIndex(ts(endTime),true);if(end!==null)c.timeScale().setVisibleLogicalRange({from:Math.max(0,end-SHOWN[view]),to:end+3});}
   const last=candles.current.at(-1),K=s?.K,diff=view==='btc'&&last&&K>0?last.close-K:null;
   const label=view==='btc'?`Bitcoin ${tf}-second candles${last?`, last $${last.close.toFixed(2)}`:''}${diff!=null?`, ${diff>=0?'above':'below'} the opening price by $${Math.abs(diff).toFixed(2)}`:''}`:`Kalshi YES price candles this round${last?`, last ${last.close.toFixed(1)} cents`:''}`;
   return <div>
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
       <div role="group" aria-label="Chart" className="flex gap-1">{([['btc','Bitcoin'],['kalshi','Kalshi YES']] as [View,string][]).map(([v,l])=><button key={v} type="button" aria-pressed={view===v} onClick={()=>choose(v,TFS[v].some(([x])=>x===tf)?tf:15)} className={cn(chip(view===v),'font-medium')}>{l}</button>)}</div>
       <div role="group" aria-label="Candle length" className="flex gap-1">{TFS[view].map(([x,l])=><button key={x} type="button" aria-pressed={tf===x} onClick={()=>choose(view,x)} className={chip(tf===x)}>{l}</button>)}</div>
+      {view==='kalshi'?<button type="button" aria-pressed={lines} onClick={toggleLines} className={chip(lines)}>Forecast lines</button>:null}
       <div className="ml-auto flex flex-wrap items-baseline gap-x-3 text-sm">{view==='btc'?<>
         <span className="num text-lg font-semibold">{last?`$${last.close.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`:'—'}</span>
         {diff!=null?<span className={cn('num',diff>=0?'text-yes':'text-no')}>{diff>=0?'+':'−'}${Math.abs(diff).toFixed(2)} vs K</span>:null}
         <span className="flex items-center gap-1.5 text-xs text-muted"><span aria-hidden className="inline-block w-4 border-t border-dashed border-warn"/>K (opening price)</span></>
-        :<><span className="num text-lg font-semibold">{last?`${last.close.toFixed(1)}¢`:'—'}</span><span className="flex items-center gap-1.5 text-xs text-muted"><span aria-hidden className="inline-block h-0.5 w-4 bg-yes"/>Quant <span aria-hidden className="ml-1 inline-block w-4 border-t border-dashed border-faint"/>Model</span></>}</div>
+        :<><span className="num text-lg font-semibold">{last?`${last.close.toFixed(1)}¢`:'—'}</span>{lines?<span className="flex items-center gap-1.5 text-xs text-muted"><span aria-hidden className="inline-block h-0.5 w-4 bg-yes"/>Quant <span aria-hidden className="ml-1 inline-block w-4 border-t border-dashed border-faint"/>Model</span>:null}</>}</div>
     </div>
     <div className="relative"><div ref={box} role="img" aria-label={label} className="chart-tall mt-3"/>
       {!candles.current.length?<div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted">{error?'Waiting for live prices':loaded?(view==='kalshi'?'Waiting for a live two-sided Kalshi book':'Waiting for price samples'):'Loading price history…'}</div>:null}
     </div>
     <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted"><span>{fresh?'Live updates':'Updates paused'} · {candles.current.length} candles</span>{view==='btc'&&fresh&&s?.shortTerm?.ready?<span className="text-info">Dashed + shade: {horizon===30?'30s':horizon===60?'1m':'3m'} estimate · 80% range</span>:null}<button type="button" className="inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 hover:bg-surface-2 hover:text-fg" onClick={latest}><LocateFixed aria-hidden className="size-3.5"/>Latest</button></div>
     {error?<p className="mt-2 text-xs text-warn">Price history unavailable ({error}); showing live prices only.</p>
-      :<p className="mt-2 text-xs text-faint">{view==='btc'?'The model\'s own spot (median of healthy exchange feeds; may differ from official BRTI). Kalshi settles on the last 60 s average against K.':'YES mid this round; green is the quant forecast the signals use, dashed the raw model. Gaps are seconds with no two-sided book.'}</p>}
+      :<p className="mt-2 text-xs text-faint">{view==='btc'?'The model\'s own spot (median of healthy exchange feeds; may differ from official BRTI). Kalshi settles on the last 60 s average against K.':lines?'YES mid this round; green is the quant forecast the signals use, dashed the raw model. Gaps are seconds with no two-sided book.':'YES mid this round. Gaps are seconds with no two-sided book. Forecast lines are hidden.'}</p>}
     <ShortTermForecast board={s?.shortTerm??null} fresh={fresh} horizon={horizon} onSelect={setHorizon} bitcoin={view==='btc'}/>
   </div>;
 }
