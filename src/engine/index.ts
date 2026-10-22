@@ -248,7 +248,7 @@ const loop=setInterval(()=>{
       priceState={time,ready:!!inputs,reason:!healthyPrice?'Needs at least 3 healthy price feeds':!inputs?'Needs 5 uninterrupted minutes of prices':null,horizons:inputs?priceFits.map(f=>forecastPrice(inputs,f,time)):[],scores:priceScores,fitting:priceBusy};}
     const rawVol=volatility(proxy.history,config.halfLifeSeconds,config.realizedBlend),vol=warmVolatility(rawVol,journal.get<{sigma:number;time:number}|null>('lastSigma',null),config.minVolSamples,now);
     if(newSecond&&rawVol.count>=config.minVolSamples&&rawVol.sigma>0&&time%60000===0)journal.set('lastSigma',{sigma:rawVol.sigma,time:now});
-    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,backtestRefresh:{running:refresher.running,lastFinished:refresher.lastFinished,lastExit:refresher.lastExit},next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory,mySetups:mySetupsCached(now)};
+    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,delay:Math.round(kalshi.delay.ms),delayed:kalshi.delay.delayed,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,backtestRefresh:{running:refresher.running,lastFinished:refresher.lastFinished,lastExit:refresher.lastExit},next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory,mySetups:mySetupsCached(now)};
     if(!market){
       // Between windows: poll every second so the next market and its K are picked up immediately.
       if(now-lastFastRefresh>1000){lastFastRefresh=now;safe('market-refresh-error',refresh);}
@@ -275,11 +275,13 @@ const loop=setInterval(()=>{
       const features={imbalance:y+n?(y-n)/(y+n):null,tradeVolume30s:kalshi.status==='connected'?recentTrades.reduce((s,t)=>s+t.count,0):null,tradeFlow30s:kalshi.status==='connected'?recentTrades.reduce((s,t)=>s+(t.takerSide==='yes'?t.count:-t.count),0):null,momentum30s:momentum(30),momentum120s:momentum(120),midModelGap:model&&mid!==null?mid-model.p:null};
       // Quant forecast: stacked blend of the diffusion model, Kalshi and features (see quant/stack.ts).
       // Kalshi's midpoint only counts as a forecast when the book is tight; a wide spread makes it meaningless.
-      const kalshiP=usableMid(bv,now,config.bookStaleMs);
+      // A delayed book (FeedDelay: still updating but seconds behind Kalshi) is not a forecast: the 2026-10-21 loss round
+      // showed YES at 11¢ while Kalshi traded at 90¢, and the 90% Kalshi weight pinned the quant to it.
+      const delayMs=kalshi.delay.ms,delayed=kalshi.delay.delayed,kalshiP=delayed?null:usableMid(bv,now,config.bookStaleMs);
       const stackInputs=model?{modelP:model.p,mid:kalshiP,sigma:vol.sigma,momentum30s:features.momentum30s,momentum120s:features.momentum120s,imbalance:features.imbalance,tradeFlow30s:features.tradeFlow30s,tradeVolume30s:features.tradeVolume30s}:null;
       const forecast=tau<60&&lateStack.active==='fitted'?lateStack:stack;
       const q=stackInputs?predict(forecast,stackInputs).p:null,pSignal=config.useQuantForSignals&&q!==null?q:model?.p??.5;
-      const rawEvaluation=evaluate(pSignal,tau,book,market,account.balance,config,schedule,{feedsHealthy:venueStates.every(v=>v.healthy),healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kConfirmed:confirmed,lock:guards.reason,modelReady:!!model,accountReady:account.ready&&now-account.updated<config.accountStaleMs,now});
+      const rawEvaluation=evaluate(pSignal,tau,book,market,account.balance,config,schedule,{feedsHealthy:venueStates.every(v=>v.healthy),healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kConfirmed:confirmed,lock:guards.reason,modelReady:!!model,bookDelayMs:delayMs,accountReady:account.ready&&now-account.updated<config.accountStaleMs,now});
       // Hard gates end a shown BUY at once; spread and depth blips do not (they are what made signals flash).
       if(latchTicker!==market.ticker){latch=emptyLatch(latch.id);latchTicker=market.ticker;}
       const hardGate=rawEvaluation.gates?.find(g=>!g.ok&&['market','feeds','book','k','model','account','guards'].includes(g.key)),closedForEntries=tau<(config.finalMinuteSignals?5:60);
@@ -313,14 +315,14 @@ const loop=setInterval(()=>{
       // Tactics: scalp and dip ideas, priced after fees, only on live data and outside locks.
       if(newSecond&&q!==null)tacticsHistory.push({time,yesAsk:bv.yesAsk,noAsk:bv.noAsk,q});while(tacticsHistory.length>120)tacticsHistory.shift();
       const tcfg={scalpMinEdge:config.scalpMinEdge,scalpMinSeconds:config.scalpMinSeconds,scalpMaxSpread:config.scalpMaxSpread,dipMove:config.dipMove,minDepth:config.minDepth,minEdge:config.minEdge};
-      const tacticsLive=q!==null&&quality.level!=='unreliable'&&!guards.locked&&market.status==='active'&&bv.valid&&now-bv.updated<=config.bookStaleMs;
+      const tacticsLive=q!==null&&quality.level!=='unreliable'&&!guards.locked&&market.status==='active'&&bv.valid&&now-bv.updated<=config.bookStaleMs&&!delayed;
       const scalpIdea=tacticsLive?scalp(q!,tau,bv,schedule,tcfg):null,dipState=q!==null?dips(tacticsHistory,time,q,bv,schedule,tcfg,tau):{watch:[],idea:null};
       const tacticIdeas=[scalpIdea,tacticsLive?dipState.idea:null].filter((t):t is NonNullable<typeof scalpIdea>=>!!t).map(t=>({...t,...size(t.side==='yes'?q!:1-q!,t.price,account.balance??0,config,schedule)}));
       // Chart setup (backtest/setups.ts): coin flip / trend / strong trend / dip, on the basis-corrected price, so the
       // dashboard can show how the same setup paid on past rounds (verdict.setups).
       let prior60:number|null=null;for(let i=proxy.history.length-1;i>=0&&proxy.history[i].time>=time-60000;i--)if(proxy.history[i].time===time-60000){prior60=proxy.history[i].price;break;}
       const setup=spot!==null&&K!==null&&vol.sigma>0?classifySetup({tau,spot:spot+basis,k:K,sigma:vol.sigma,spot60:prior60!==null?prior60+basis:null}):null;
-      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,setup,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation,rawAction:rawEvaluation.action};
+      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,setup,kalshiDelay:Math.round(delayMs),book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation,rawAction:rawEvaluation.action};
       // The taker signal is journaled (and paper-traded) once, at the price shown when it confirmed, not every second it stands.
       const newFirm=evaluation.idea&&evaluation.firm&&evaluation.firm.id!==journaledLatch?[evaluation.idea]:[];
       if(newSecond){journal.tick(tick);if(newFirm.length)journaledLatch=evaluation.firm!.id;for(const idea of [...newFirm,...evaluation.makers,...tacticIdeas.map(t=>({...t,queue:0}))])journal.signal(market.ticker,time,idea as any,tick,schedule);
@@ -334,7 +336,7 @@ const loop=setInterval(()=>{
         if(posClose!==null&&posClose<=time){const official=journal.db.prepare('SELECT result FROM outcomes WHERE ticker=?').get(pos.ticker) as {result:'yes'|'no'}|undefined;
           const avg=filledSeconds(proxy.history,posClose-60000,posClose),k=Number(posMarket!.floor_strike);
           closed={result:official?.result??null,estimate:avg&&Number.isFinite(k)&&k>0?(mean(avg.values)+basis>=k?'yes':'no'):null};}
-        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,kalshi.books.get(pos.ticker)?.view()??null,schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule),pos.ticker===market.ticker?tau:null);
+        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,delayed?null:kalshi.books.get(pos.ticker)?.view()??null,schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule),pos.ticker===market.ticker?tau:null);
         if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,peakPct:e.peakPct});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,title:e.notice.title,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,winProb:e.winProb});exitMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
         return e;}).filter(Boolean);
       // Evidence gate (evidence.ts, DECISIONS 56): the journal and paper trades above saw every signal; the dashboard

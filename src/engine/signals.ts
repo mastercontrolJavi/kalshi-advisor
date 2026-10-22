@@ -1,7 +1,7 @@
 import type {Config} from './config';
 import {fee,type FeeSchedule} from './model/fees';
 import type {Market} from './feeds/kalshi';
-import {Orderbook} from './feeds/orderbook';
+import {Orderbook,MAX_BOOK_DELAY_MS} from './feeds/orderbook';
 export interface Idea {side:'yes'|'no';kind:'taker'|'maker'|'scalp'|'dip'|'hourly';target?:number;price:number;fee:number;edge:number;contracts:number;cost:number;maxLoss:number;queue:number;reason:string;belowMinSize?:boolean}
 export function size(prob:number,price:number,balance:number,config:Config,schedule:FeeSchedule,kind:'taker'|'maker'='taker'){
   if(!Number.isFinite(balance)||balance<=0||price<=0||price>=1||prob<=price)return {contracts:0,cost:0,maxLoss:0};
@@ -19,7 +19,7 @@ export function roundDownTick(price:number,market:Market){
 }
 export interface Gate {key:string;label:string;ok:boolean;detail:string;advisory?:boolean;wait?:boolean}
 export interface Evaluation {action:string;reason:string;idea:Idea|null;makers:Idea[];edges:{yes:number|null;no:number|null};gates?:Gate[]}
-type Conditions={feedsHealthy:boolean;kConfirmed:boolean;lock:string|null;modelReady:boolean;accountReady:boolean;now:number;healthyFeeds?:number;totalFeeds?:number};
+type Conditions={feedsHealthy:boolean;kConfirmed:boolean;lock:string|null;modelReady:boolean;accountReady:boolean;now:number;healthyFeeds?:number;totalFeeds?:number;bookDelayMs?:number};
 const cents=(x:number)=>`${(x*100).toFixed(1)}¢`;
 /** Every taker gate for the better-edge side, pass/fail with the observed value, so NO TRADE is explainable at a glance. */
 export function gateChecklist(p:number,tau:number,book:Orderbook,market:Market,balance:number|null,config:Config,schedule:FeeSchedule,c:Conditions):Gate[]{
@@ -27,11 +27,12 @@ export function gateChecklist(p:number,tau:number,book:Orderbook,market:Market,b
   const side=yes>=no?'yes':'no',edge=Math.max(yes,no),price=side==='yes'?v.yesAsk:v.noAsk,bid=side==='yes'?v.yesBid:v.noBid,depth=side==='yes'?v.yesDepth:v.noDepth;
   // Final-minute entries (5–59 s left) only when the user turns finalMinuteSignals on, e.g. after the study proves an edge.
   const minTau=config.finalMinuteSignals?5:60,inSweet=(tau>=config.sweetMinSeconds||tau>=minTau&&tau<60)&&tau<=config.sweetMaxSeconds,sizing=price!==null&&balance!==null?size(side==='yes'?p:1-p,price,balance,config,schedule):{contracts:0};
-  const bookLive=book.valid&&c.now-book.updated<=config.bookStaleMs;
+  // A book still updating but far behind Kalshi (FeedDelay) is as unusable as a silent one.
+  const delayed=(c.bookDelayMs??0)>MAX_BOOK_DELAY_MS,bookLive=book.valid&&c.now-book.updated<=config.bookStaleMs&&!delayed;
   return [
     {key:'market',label:'Market open',ok:market.status==='active',detail:market.status},
     {key:'feeds',label:'Price feeds',ok:c.feedsHealthy,detail:c.totalFeeds?`${c.healthyFeeds}/${c.totalFeeds} live`:c.feedsHealthy?'live':'stale'},
-    {key:'book',label:'Kalshi book',ok:bookLive&&schedule.verified,detail:!schedule.verified?'fees unverified':bookLive?v.source==='ws'?'live':'REST fallback':'stale'},
+    {key:'book',label:'Kalshi book',ok:bookLive&&schedule.verified,detail:!schedule.verified?'fees unverified':delayed?`${Math.round(c.bookDelayMs!/1000)} s behind Kalshi`:bookLive?v.source==='ws'?'live':'REST fallback':'stale'},
     {key:'k',label:'Opening K',ok:c.kConfirmed||config.allowEstimatedK,detail:c.kConfirmed?'confirmed':'estimated'},
     {key:'model',label:'Model',ok:c.modelReady,detail:c.modelReady?'warm':'warming'},
     {key:'account',label:'Account',ok:c.accountReady&&balance!==null,detail:c.accountReady?'synced':'unavailable'},
@@ -48,7 +49,7 @@ export function gateChecklist(p:number,tau:number,book:Orderbook,market:Market,b
 export function evaluate(p:number,tau:number,book:Orderbook,market:Market,balance:number|null,config:Config,schedule:FeeSchedule,conditions:Conditions):Evaluation {
   const v=book.view(),edges={yes:v.yesAsk===null?null:p-v.yesAsk-fee(v.yesAsk,1,'taker',schedule),no:v.noAsk===null?null:1-p-v.noAsk-fee(v.noAsk,1,'taker',schedule)};
   const result:Evaluation={action:'NO TRADE',reason:'No positive edge',idea:null,makers:[],edges,gates:gateChecklist(p,tau,book,market,balance,config,schedule,conditions)};
-  const common=market.status!=='active'?'Market not active':!conditions.modelReady?'Model warming or incomplete average':!schedule.verified?'Fee schedule unsupported':!book.valid||conditions.now-book.updated>config.bookStaleMs?'Orderbook unavailable or stale':!conditions.feedsHealthy?'One or more price feeds stale':!conditions.kConfirmed&&!config.allowEstimatedK?'K estimated or unavailable':conditions.lock;
+  const common=market.status!=='active'?'Market not active':!conditions.modelReady?'Model warming or incomplete average':!schedule.verified?'Fee schedule unsupported':!book.valid||conditions.now-book.updated>config.bookStaleMs?'Orderbook unavailable or stale':(conditions.bookDelayMs??0)>MAX_BOOK_DELAY_MS?`Kalshi prices ${Math.round(conditions.bookDelayMs!/1000)} s behind`:!conditions.feedsHealthy?'One or more price feeds stale':!conditions.kConfirmed&&!config.allowEstimatedK?'K estimated or unavailable':conditions.lock;
   if(!common&&tau>=config.makerMinSeconds){for(const side of ['yes','no'] as const){const fair=side==='yes'?p:1-p,ask=side==='yes'?v.yesAsk:v.noAsk;if(ask===null)continue;const price=roundDownTick(Math.min(fair-config.makerMargin,ask-.001),market);if(price<=0)continue;const f=fee(price,1,'maker',schedule),edge=fair-price-f;if(edge>=config.minMakerEdge)result.makers.push({side,kind:'maker',price,fee:f,edge,queue:book.queue(side,price),...size(fair,price,balance??0,config,schedule,'maker'),reason:'Resting estimate; queue ahead includes better prices, adverse selection uncalibrated'});}}
   if(common){result.reason=common;return result;}
   if(!conditions.accountReady||balance===null){result.reason='Authenticated balance/history unavailable';return result;}
