@@ -21,3 +21,21 @@ export function flagStats(rows:FlagRow[]):FlagStats[]{
   });
 }
 export const evidence=(stats:FlagStats[],type:string,group:string)=>stats.find(s=>s.type===type&&s.group===group)??null;
+
+/** Copying the sharps, one result per game: by category and overall (Top traders page, 2026-10-22). */
+export interface CopyRecord {group:string;n:number;wins:number;implied:number;mean:number;low:number;high:number;first:number|null;second:number|null;proven:boolean;since:number|null}
+/**
+ * The first settled copy flag (sharp-yes or sharp-no) on each event, so one game counts once however many times it was
+ * flagged. Wins against the wins the Kalshi prices paid implied; mean P&L per contract after the fee with a 95% range
+ * (games are independent); halves by time. Proven = the same bar as every other rule.
+ */
+export function copyRecord(rows:FlagRow[]):CopyRecord[]{
+  const first=new Map<string,FlagRow&{pnl:number}>();
+  for(const r of [...rows].sort((a,b)=>a.time-b.time))if(r.type.startsWith('sharp')&&r.pnl!==null&&!first.has(r.event))first.set(r.event,r as FlagRow&{pnl:number});
+  const groups=new Map<string,(FlagRow&{pnl:number})[]>();for(const r of first.values())for(const g of [r.group,'all'])(groups.get(g)??groups.set(g,[]).get(g)!).push(r);
+  return [...groups].map(([group,xs]):CopyRecord=>{
+    const n=xs.length,m=mean(xs.map(r=>r.pnl))!,sd=n>1?Math.sqrt(xs.reduce((s,r)=>s+(r.pnl-m)**2,0)/(n-1)):0,h=1.96*sd/Math.sqrt(Math.max(1,n)),half=n>>1;
+    const f=mean(xs.slice(0,half).map(r=>r.pnl)),sec=mean(xs.slice(half).map(r=>r.pnl));
+    return {group,n,wins:xs.filter(r=>r.pnl>0).length,implied:xs.reduce((s,r)=>s+r.price,0),mean:m,low:m-h,high:m+h,first:f,second:sec,proven:n>=PROVEN_N&&m-h>0&&(f??0)>0&&(sec??0)>0,since:xs[0]?.time??null};
+  }).sort((a,b)=>b.n-a.n);
+}

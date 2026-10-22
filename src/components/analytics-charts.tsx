@@ -15,7 +15,7 @@ export function DailyChart({data}:{data:{day:string;pnl:number;markets:number}[]
   return <div className="chart" role="img" aria-label="Realized P&L per day"><ResponsiveContainer width="100%" height="100%"><BarChart data={data} margin={{top:8,right:8,bottom:0,left:0}}>
     <CartesianGrid stroke={k.grid} vertical={false}/><XAxis dataKey="day" stroke={k.axis} tick={{fontSize:11}} tickLine={false}/><YAxis tickFormatter={money} width={56} stroke={k.axis} tick={{fontSize:11}} tickLine={false} axisLine={false}/>
     <ReferenceLine y={0} stroke={k.line}/><Tooltip contentStyle={tooltip} formatter={(v,_n,p)=>[`${money(Number(v))} · ${(p.payload as any).markets} markets`,'Day']}/>
-    <Bar dataKey="pnl" radius={[4,4,0,0]} isAnimationActive={false}>{data.map(d=><Cell key={d.day} fill={d.pnl>=0?k.yes:'#ff6b86'}/>)}</Bar></BarChart></ResponsiveContainer></div>;
+    <Bar dataKey="pnl" radius={[4,4,0,0]} isAnimationActive={false}>{data.map(d=><Cell key={d.day} fill={d.pnl>=0?k.yes:k.no}/>)}</Bar></BarChart></ResponsiveContainer></div>;
 }
 export function TrendChart({data}:{data:{time:number;avgPnl:number|null;winRate:number}[]}){
   return <div className="chart" role="img" aria-label="Rolling 10-market average P&L and win rate"><ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{top:8,right:8,bottom:0,left:0}}>

@@ -35,9 +35,15 @@ import {BacktestRefresher} from './refresh';
 import {classifySetup,type MySetups} from '../backtest/setups';
 import {mySetups} from './my-setups';
 import {SLOW_FIELDS} from './stream';
+import {PaperDesk,type MarketNow} from './paper';
+import {Orderbook} from './feeds/orderbook';
+import {effectiveFees} from './feeds/kalshi';
+import {baseFees} from './model/fees';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
 const priceJournal=new PriceForecastJournal(journal.db);
+// Paper trading on the live round (paper.ts): its own account in the journal, settled by the same results.
+const desk=new PaperDesk(journal);
 {const stored=journal.get<any>('config',null);
   if(stored&&!journal.get('migration:2026-10-07b',false)){
     // Move settings still at their old defaults to the evidence-backed ones (DECISIONS 31); values the user changed are kept.
@@ -100,11 +106,50 @@ async function settlements(){
       // Pending market results may arrive minutes after the close. Keep retrying without a cutoff.
       if(m.result==='yes'||m.result==='no'){
         const px=journal.get<number|null>('closing-average:'+m.ticker,null),actual=m.expiration_value!==''&&m.expiration_value!==undefined&&Number.isFinite(Number(m.expiration_value))?Number(m.expiration_value):null;
-        journal.settle(m.ticker,m.result,now,actual,px,Number.isFinite(m.floor_strike)?m.floor_strike:null,m);
+        journal.settle(m.ticker,m.result,now,actual,px,Number.isFinite(m.floor_strike)?m.floor_strike:null,m);desk.invalidate();
       }
     }
     settledOnce=true;
   }finally{settling=false;}
+}
+/** What a copied sharp bet carried into the paper fill (sanitised: it comes from the page). */
+function copyContext(c:any):Record<string,unknown>{
+  if(!c||typeof c!=='object')return {};const str=(x:unknown,n:number)=>typeof x==='string'?x.slice(0,n):null,num=(x:unknown)=>Number.isFinite(Number(x))?Number(x):null;
+  return {copy:{cond:str(c.cond,100),outcome:str(c.outcome,200),title:str(c.title,300),group:str(c.group,30),wallets:num(c.wallets),value:num(c.value),avgEntry:num(c.avgEntry)}};
+}
+/**
+ * The market for a paper order. The current Bitcoin round uses the live book and its delay check; any other Kalshi
+ * market (a copied sports, politics or crypto bet) is read now: its order book and its series' fee schedule.
+ */
+async function paperMarket(ticker?:string,extra:Record<string,unknown>={}):Promise<MarketNow>{
+  const m=state.market;
+  if(ticker&&ticker!==m?.ticker){
+    if(!/^[A-Z0-9][A-Z0-9._-]{2,99}$/.test(ticker))throw new Error('Unknown Kalshi market');
+    const now=Date.now(),[{market:mk},ob]=await Promise.all([client.get('/markets/'+encodeURIComponent(ticker)),client.get('/markets/'+encodeURIComponent(ticker)+'/orderbook')]);
+    const book=new Orderbook();book.snapshot(ob.orderbook_fp?.yes_dollars??[],ob.orderbook_fp?.no_dollars??[],'rest');const v=book.view();
+    let schedule={...baseFees,precision:config.feePrecision};
+    try{const {series}=await client.get('/series/'+encodeURIComponent(String(mk.event_ticker).split('-')[0]));schedule={...effectiveFees(series,[],mk.event_ticker,now+client.clockOffset),precision:config.feePrecision};}catch{}
+    return {ticker,tau:(Date.parse(mk.close_time)-(now+client.clockOffset))/1000,active:mk.status==='active',book:v,delayed:false,delayMs:0,schedule,bookStaleMs:config.bookStaleMs,now,
+      context:{title:[mk.title,mk.yes_sub_title].filter(Boolean).join(' · '),close:Date.parse(mk.close_time),url:`https://kalshi.com/markets/${String(mk.event_ticker).split('-')[0].toLowerCase()}`,
+        mid:v.yesBid!==null&&v.yesAsk!==null?(v.yesBid+v.yesAsk)/2:null,spread:v.yesBid!==null&&v.yesAsk!==null?v.yesAsk-v.yesBid:null,feeVerified:schedule.verified,...extra}};
+  }
+  if(!m)throw new Error('No round is open right now');
+  const book=kalshi.books.get(m.ticker)?.view(),now=Date.now();if(!book)throw new Error('No Kalshi book yet');
+  const mid=book.yesBid!==null&&book.yesAsk!==null?(book.yesBid+book.yesAsk)/2:null;
+  return {ticker:m.ticker,tau:(Date.parse(m.close_time)-(now+client.clockOffset))/1000,active:m.status==='active',book,delayed:kalshi.delay.delayed,delayMs:kalshi.delay.ms,
+    schedule:{...kalshi.fees,precision:config.feePrecision},bookStaleMs:config.bookStaleMs,now,
+    context:{setup:state.setup??null,q:state.quant?.p??null,model:state.quant?.model??null,mid,spread:book.yesBid!==null&&book.yesAsk!==null?book.yesAsk-book.yesBid:null,dist:state.distance??null,K:state.K??null,proxy:state.proxy??null,...extra}};
+}
+/**
+ * Paper positions outside the current Bitcoin round (copied bets, or a round that closed while the engine was off):
+ * marked at Kalshi's live bids and settled on Kalshi's own result, checked every 30 s.
+ */
+const paperMarks=new Map<string,{yesBid:number|null;noBid:number|null}>();
+async function paperSweep(){
+  const cur=state.market?.ticker,price=(x:unknown)=>{const n=Number(x);return Number.isFinite(n)&&n>0?n:null;};
+  for(const t of desk.openTickers()){if(t===cur)continue;const {market:mk}=await client.get('/markets/'+encodeURIComponent(t));
+    if(mk.result==='yes'||mk.result==='no'){desk.setResult(t,mk.result);paperMarks.delete(t);log('paper-settled',{ticker:t,result:mk.result});continue;}
+    paperMarks.set(t,{yesBid:price(mk.yes_bid_dollars),noBid:price(mk.no_bid_dollars)});}
 }
 const server=createServer(async(req,res)=>{
   res.setHeader('Cache-Control','no-store');
@@ -127,11 +172,15 @@ const server=createServer(async(req,res)=>{
       res.setHeader('Content-Type','application/json');res.end(JSON.stringify({samples:proxy.history.filter(x=>x.time>=since).map(x=>[x.time,Math.round(x.price*100)/100]),rounds}));return;}
     if(req.method==='GET'&&path==='/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;}
     if(req.method==='GET'&&path.startsWith('/export/')){const table=path.slice(8);const csv=journal.export(table);res.writeHead(200,{'Content-Type':'text/csv','Content-Disposition':`attachment; filename="${table}.csv"`});res.end(csv);return;}
-    if(req.method==='POST'&&['/settings','/override'].includes(path)){
+    if(req.method==='GET'&&path==='/sim/report'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(desk.report(verdict?.setups)));return;}
+    if(req.method==='POST'&&['/settings','/override','/sim/order','/sim/reset'].includes(path)){
       const origin=req.headers.origin,host=req.headers['x-forwarded-host']??req.headers.host;
       if(!origin||new URL(origin).host!==host){res.writeHead(403);res.end('Origin rejected');return;}
       let body='';for await(const chunk of req){body+=chunk;if(body.length>16384)throw new Error('Request too large');}
       const data=JSON.parse(body);
+      if(path==='/sim/reset'){const account=desk.reset(Number(data.bankroll));log('paper-account',account);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,account}));return;}
+      if(path==='/sim/order'){const result=desk.order({side:data.side,action:data.action,contracts:data.contracts===undefined?undefined:Number(data.contracts),dollars:data.dollars===undefined?undefined:Number(data.dollars)},await paperMarket(typeof data.ticker==='string'?data.ticker:undefined,copyContext(data.copy)));
+        log('paper-order',{message:result.message,fills:result.fills.map(f=>({ticker:f.ticker,side:f.side,action:f.action,contracts:f.contracts,price:f.price}))});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,...result}));return;}
       if(path==='/settings'){config=validateConfig({...config,...data});journal.set('config',config);log('settings-updated',config);}
       else {if(data.confirmation!=='I accept the risk')throw new Error('Type I accept the risk');journal.set('overrideDay',dayKey(Date.now()));log('daily-lock-override',{day:dayKey(Date.now())});}
       res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,config}));return;
@@ -150,6 +199,7 @@ const settlementTimer=setInterval(()=>safe('settlement-error',settlements),10000
 const hourlyTimer=setInterval(()=>safe('hourly-refresh-error',()=>hourlyBoard.refresh(Date.now()+client.clockOffset)),3000);
 const hourlySettleTimer=setInterval(()=>safe('hourly-settle-error',settleHours),30000);
 const pruneTimer=setInterval(()=>journal.prune(),3600000);journal.prune();
+const paperTimer=setInterval(()=>safe('paper-sweep-error',paperSweep),30000);
 // Hourly Bitcoin (KXBTCD): one REST read of every strike every 3 s, priced with the same settlement-average model.
 const hourlyBoard=new HourlyBoard(client),hourlyMemory=new Map<string,ExitMemory>();
 let hourlyState:any=null,hourlyHistory=buildHourlyHistory(journal.db);
@@ -356,6 +406,11 @@ const loop=setInterval(()=>{
     if(newSecond){try{hourlyState=computeHourly(time,now,spot,vol,venueStates,guards);}catch(e){log('hourly-error',{message:(e as Error).message});}}
     state.hourly=hourlyState;
     state.shortTerm=priceState;
+    // The paper account marked at the live bids (the hold value uses the quant forecast on the current round).
+    state.sim=desk.summary((ticker,side)=>{const live=kalshi.books.get(ticker);
+      if(!live){const f=paperMarks.get(ticker);return {bid:f?(side==='yes'?f.yesBid:f.noBid):null,fair:null};}
+      const v=kalshi.delay.delayed?null:live.view(),cur=state.market?.ticker===ticker?state.quant?.p:null;
+      return {bid:v?(side==='yes'?v.yesBid:v.noBid):null,fair:cur==null?null:side==='yes'?cur:1-cur};});
     // Calibration (~90 KB) goes out only when it changes and the window history (~80 KB) once a second; the page keeps
     // the last copy. New connections get the full state on connect. This cut the 4 Hz push from ~200 KB to ~30 KB.
     state.calibration=calibration;state.loopMs=performance.now()-started;
@@ -365,5 +420,5 @@ const loop=setInterval(()=>{
     const message=JSON.stringify({...state,...slow,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
-const shutdown=()=>{refresher.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
+const shutdown=()=>{refresher.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

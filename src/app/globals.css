@@ -1,25 +1,31 @@
 @import "tailwindcss";
 
-/* Night-ops instrument panel. Semantic tokens only; components never use raw hex. */
+/* Dusk (2026-10-22 redesign, user: "cooler, nicer, not too terminal"): deep indigo ink instead of black-and-grid, mint
+   for YES and ember for NO, sentence-case labels, numbers in the body face with tabular figures. Semantic tokens only;
+   components never use raw hex, so every page follows these. */
 @theme inline {
-  --color-bg: #06080b;
-  --color-surface: #0c1015;
-  --color-surface-2: #121820;
-  --color-line: #1c242e;
-  --color-line-strong: #2a3542;
-  --color-fg: #e8edf2;
-  --color-muted: #94a1b0;   /* 6.9:1 on surface */
-  --color-faint: #6b7886;   /* 4.5:1 on surface — meta text only */
-  --color-yes: #3ee08f;
-  --color-yes-dim: #0f3b27;
-  --color-no: #ff6b86;
-  --color-no-dim: #45131f;
-  --color-warn: #f5b942;
-  --color-warn-dim: #3d2c0a;
-  --color-info: #74adff;
-  --font-display: var(--font-barlow), 'Arial Narrow', sans-serif;
-  --font-sans: var(--font-plex), system-ui, sans-serif;
-  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+  --color-bg: #0f1222;
+  --color-surface: #171b30;
+  --color-surface-2: #1e2440;
+  --color-line: #283050;
+  --color-line-strong: #3a4372;
+  --color-fg: #eef0fa;
+  --color-muted: #a6acc9;   /* ~7:1 on surface */
+  --color-faint: #8189ab;   /* ~4.6:1 on surface — meta text only */
+  --color-yes: #5eead4;
+  --color-yes-dim: #103d3c;
+  --color-no: #ff8a70;
+  --color-no-dim: #45221d;
+  --color-warn: #ffc46b;
+  --color-warn-dim: #42301a;
+  --color-info: #9aa8ff;
+  --font-display: var(--font-display-face), system-ui, sans-serif;
+  --font-sans: var(--font-sans-face), system-ui, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', monospace;
+  /* Large monitors (27–32"): a third column instead of empty margins. */
+  --breakpoint-3xl: 120rem;
+  /* Ultrawide and 4K: wider still before margins. */
+  --breakpoint-4xl: 160rem;
 }
 
 :root { color-scheme: dark; }
@@ -27,38 +33,36 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; min-height: 100dvh;
   background-color: var(--color-bg);
+  /* A dusk sky: indigo light from the top left, a faint mint glow low on the right. */
   background-image:
-    linear-gradient(var(--color-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--color-line) 1px, transparent 1px);
-  background-size: 48px 48px;
-  background-position: -1px -1px;
+    radial-gradient(110% 70% at 10% -10%, rgb(79 70 229 / .22), transparent 60%),
+    radial-gradient(80% 60% at 100% 110%, rgb(94 234 212 / .07), transparent 60%);
   background-attachment: fixed;
   color: var(--color-fg);
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
 }
-/* Fade the grid so it reads as texture, not content. */
-body::before { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: radial-gradient(120% 80% at 50% 0%, transparent 0%, var(--color-bg) 70%); }
 
 /* Ambient signal light: the page glows with the current call. */
 .ambient { position: fixed; inset: -20% -10% auto; height: 70vh; z-index: -1; pointer-events: none; opacity: 0; transition: opacity .6s ease, background .6s ease; }
-.ambient[data-tone="yes"] { opacity: 1; background: radial-gradient(50% 60% at 50% 0%, rgb(62 224 143 / .16), transparent 70%); }
-.ambient[data-tone="no"] { opacity: 1; background: radial-gradient(50% 60% at 50% 0%, rgb(255 107 134 / .16), transparent 70%); }
-.ambient[data-tone="warn"] { opacity: .8; background: radial-gradient(50% 60% at 50% 0%, rgb(245 185 66 / .10), transparent 70%); }
+.ambient[data-tone="yes"] { opacity: 1; background: radial-gradient(50% 60% at 50% 0%, rgb(94 234 212 / .16), transparent 70%); }
+.ambient[data-tone="no"] { opacity: 1; background: radial-gradient(50% 60% at 50% 0%, rgb(255 138 112 / .16), transparent 70%); }
+.ambient[data-tone="warn"] { opacity: .8; background: radial-gradient(50% 60% at 50% 0%, rgb(255 196 107 / .10), transparent 70%); }
 
-.label { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .14em; color: var(--color-muted); }
-.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+/* A small title above a figure or a section: sentence case, quiet, never shouted. */
+.label { font-size: 12.5px; font-weight: 600; letter-spacing: .005em; color: var(--color-muted); }
+.num { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1; letter-spacing: -.015em; }
 .chart { height: 260px; min-width: 0; }
 @media (max-width: 640px) { .chart { height: 210px; } }
 /* Candles need more height than the line charts to read wicks. */
-.chart-tall { height: 360px; min-width: 0; }
+.chart-tall { height: clamp(300px, 46dvh, 640px); min-width: 0; }
 @media (max-width: 640px) { .chart-tall { height: 260px; } }
-.instrument-strip .label { font-size: 10px; letter-spacing: .08em; }
+.instrument-strip .label { font-size: 12px; }
 @media (max-width: 640px) {
   .instrument-strip .num { font-size: 15px; margin-top: 2px; }
   .instrument-strip button { width: 22px; height: 24px; }
-  .instrument-strip .label { font-size: 10px; letter-spacing: .02em; }
+  .instrument-strip .label { font-size: 11.5px; }
 }
 
 summary { cursor: pointer; list-style: none; }
@@ -79,3 +83,5 @@ input[type=checkbox] { accent-color: var(--color-yes); width: 20px; height: 20px
   .ambient, details > summary .chev, .bar-fill { transition: none !important; }
 }
 .bar-fill { transition: width .3s ease, left .3s ease; }
+.dial-arc { transition: stroke-dashoffset .9s linear, stroke .4s ease; }
+@media (prefers-reduced-motion: reduce) { .dial-arc { transition: none; } }

@@ -7,7 +7,7 @@ import {fee,type FeeSchedule} from './model/fees';
 import type {RealEvent} from './guardrails';
 import type {OpeningCall} from './model/opening';
 import {PRICE_FORECAST_SCHEMA} from './quant/price-journal';
-export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances','hourly_calls','hourly_outcomes','price_forecasts'] as const;
+export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances','hourly_calls','hourly_outcomes','price_forecasts','sim_accounts','sim_fills'] as const;
 export class Journal {
   db:Database.Database;
   // ADVISOR_DB lets a verification instance run against a copy of the journal without touching the live one.

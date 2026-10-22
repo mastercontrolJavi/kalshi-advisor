@@ -13,7 +13,7 @@ import {isBitcoin} from './categories';
 import type {MarketMemory} from './holdsell';
 import {BackfillRefresher} from './refresh';
 import {Scanner,type ScanRow} from './scanner';
-import {flagStats,type FlagStats} from './scoring';
+import {flagStats,type FlagStats,copyRecord} from './scoring';
 import {References,type HeldRef} from './references';
 import {GAMMA} from './sources/polymarket';
 import {ODDS_HOST} from './sources/odds';
@@ -93,7 +93,7 @@ const server=createServer((req,res)=>{
   if(req.method==='GET'&&path==='/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;}
   if(req.method==='GET'&&path==='/scan'){try{const body=JSON.stringify(scanState());res.setHeader('Content-Type','application/json');res.end(body);}catch(e){log('scan-error',{message:(e as Error).message});res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}return;}
   if(req.method==='GET'&&path==='/sharps/btc'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(sharps.state().btc));return;}
-  if(req.method==='GET'&&path==='/sharps'){try{const stats=flagStats(journal.flagRows()).filter(s=>s.type.startsWith('sharp'));res.setHeader('Content-Type','application/json');res.end(JSON.stringify({...sharps.state(),stats}));}catch(e){log('sharps-error',{message:(e as Error).message});res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}return;}
+  if(req.method==='GET'&&path==='/sharps'){try{const rows=journal.flagRows(),stats=flagStats(rows).filter(s=>s.type.startsWith('sharp'));res.setHeader('Content-Type','application/json');res.end(JSON.stringify({...sharps.state(),stats,copy:copyRecord(rows)}));}catch(e){log('sharps-error',{message:(e as Error).message});res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}return;}
   if(req.method==='GET'&&path==='/record'){try{const body=JSON.stringify(recordState());res.setHeader('Content-Type','application/json');res.end(body);}catch(e){log('record-error',{message:(e as Error).message});res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}return;}
   // You confirm or reject a suggested Kalshi market for a Polymarket one on the Sharps tab. Same-origin only.
   if(req.method==='POST'&&path==='/sharp-link'){

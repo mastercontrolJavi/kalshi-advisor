@@ -17,11 +17,11 @@ const ext={target:'_blank',rel:'noreferrer',className:'text-info hover:underline
 const price=(v:number|null|undefined)=>v!=null&&v<.01?cents(v,2):cents(v);
 const short=(a:string)=>`${a.slice(0,6)}…${a.slice(-4)}`;
 const signed=(v:number)=>`${v>=0?'+':'−'}${dollars(Math.abs(v))}`;
-const SPORT=/^(nfl|cfb|cbb|nba|wnba|nhl|mlb|mls|epl|lal|sea|bun|fl1|ucl|uel|atp|wta|ufc|f1|nascar|pga|lol|cs2|val|dota)-/;
+export const SPORT=/^(nfl|cfb|cbb|nba|wnba|nhl|mlb|mls|epl|lal|sea|bun|fl1|ucl|uel|atp|wta|ufc|f1|nascar|pga|lol|cs2|val|dota)-/;
 /** Category chip for a Polymarket bet: by its linked Kalshi market's place in the chips, else by its event slug. */
-const groupOf=(b:any)=>SPORT.test(b.eventSlug??'')?'sports':/bitcoin|ethereum|solana|btc|eth|xrp|crypto|oil|gold/i.test(b.title)?'commodities':'politics';
+export const groupOf=(b:any)=>SPORT.test(b.eventSlug??'')?'sports':/bitcoin|ethereum|solana|btc|eth|xrp|crypto|oil|gold/i.test(b.title)?'commodities':'politics';
 /** A copy flag can fire: 3+ wallets, $3,000+, little against, a trusted link, Kalshi's ask within 3¢ of their entry. */
-function copyState(b:any,l:any):{tone:Tone;text:string}{
+export function copyState(b:any,l:any):{tone:Tone;text:string}{
   const ask=l.side==='yes'?l.yesAsk:l.noAsk;
   if(l.status==='suggested')return {tone:'neutral',text:'confirm the market to score copies'};
   if(b.wallets<3||b.value<3000)return {tone:'neutral',text:'needs 3+ wallets and $3,000'};
