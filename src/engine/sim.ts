@@ -11,23 +11,23 @@ export type Side='yes'|'no';
 export type Level=[number,number];
 /** Bids per side, best first, as Orderbook.view() gives them. */
 export interface BookSides {yes:Level[];no:Level[]}
-export interface Quote {contracts:number;price:number;fee:number;/** buy: dollars paid incl. fee; sell: dollars received after fee */cash:number;levels:number;partial:boolean}
+export interface Quote {contracts:number;price:number;fee:number;/** buy: dollars paid incl. fee; sell: dollars received after fee */cash:number;levels:number;partial:boolean;/** the last (worst) level reached: the limit for a real order that fills the same way */limit:number}
 const other=(s:Side):Side=>s==='yes'?'no':'yes';
 /** What a market order gets now. `want.dollars` (buys) spends up to that much including the fee. */
 export function quoteOrder(book:BookSides,side:Side,action:'buy'|'sell',want:{contracts?:number;dollars?:number},schedule:FeeSchedule):Quote{
   const levels:Level[]=action==='buy'?book[other(side)].map(([p,q]):Level=>[Math.round((1-p)*10000)/10000,q]):book[side];
   let target=want.contracts!==undefined?Math.floor(want.contracts):Infinity,budget=action==='buy'&&want.dollars!==undefined?want.dollars:Infinity;
-  if(!(target>0)&&!(budget>0))return {contracts:0,price:0,fee:0,cash:0,levels:0,partial:false};
-  let n=0,gross=0,fees=0,used=0;
+  if(!(target>0)&&!(budget>0))return {contracts:0,price:0,fee:0,cash:0,levels:0,partial:false,limit:0};
+  let n=0,gross=0,fees=0,used=0,limit=0;
   for(const [p,q] of levels){
     if(n>=target||!(p>0&&p<1))break;
     let take=Math.min(Math.floor(q),target-n);
     if(Number.isFinite(budget)){take=Math.min(take,Math.floor((budget-gross-fees)/p));while(take>0&&gross+fees+take*p+fee(p,take,'taker',schedule)>budget+1e-9)take--;}
     if(take<=0){if(Number.isFinite(budget))break;continue;}
-    n+=take;gross+=take*p;fees+=fee(p,take,'taker',schedule);used++;
+    n+=take;gross+=take*p;fees+=fee(p,take,'taker',schedule);used++;limit=p;
   }
   const price=n?gross/n:0,partial=Number.isFinite(target)?n<target:false;
-  return {contracts:n,price,fee:Math.round(fees*1e6)/1e6,cash:Math.round((action==='buy'?gross+fees:gross-fees)*1e6)/1e6,levels:used,partial};
+  return {contracts:n,price,fee:Math.round(fees*1e6)/1e6,cash:Math.round((action==='buy'?gross+fees:gross-fees)*1e6)/1e6,levels:used,partial,limit};
 }
 export interface SimFill {id?:number;time:number;ticker:string;side:Side;action:'buy'|'sell';contracts:number;price:number;fee:number;context?:any}
 export interface SimPosition {ticker:string;side:Side;contracts:number;/** dollars still in the position, fees included */cost:number}

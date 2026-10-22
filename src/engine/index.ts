@@ -36,6 +36,7 @@ import {classifySetup,type MySetups} from '../backtest/setups';
 import {mySetups} from './my-setups';
 import {SLOW_FIELDS} from './stream';
 import {PaperDesk,type MarketNow} from './paper';
+import {RealCopy,orderBody,describeFill,newClientOrderId} from './real-copy';
 import {Orderbook} from './feeds/orderbook';
 import {effectiveFees} from './feeds/kalshi';
 import {baseFees} from './model/fees';
@@ -44,6 +45,8 @@ const journal=new Journal();let config=journal.config();
 const priceJournal=new PriceForecastJournal(journal.db);
 // Paper trading on the live round (paper.ts): its own account in the journal, settled by the same results.
 const desk=new PaperDesk(journal);
+// Real copy orders (real-copy.ts): confirmed quotes only, capped, off until switched on in Settings.
+const realCopy=new RealCopy();
 {const stored=journal.get<any>('config',null);
   if(stored&&!journal.get('migration:2026-10-07b',false)){
     // Move settings still at their old defaults to the evidence-backed ones (DECISIONS 31); values the user changed are kept.
@@ -173,11 +176,22 @@ const server=createServer(async(req,res)=>{
     if(req.method==='GET'&&path==='/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;}
     if(req.method==='GET'&&path.startsWith('/export/')){const table=path.slice(8);const csv=journal.export(table);res.writeHead(200,{'Content-Type':'text/csv','Content-Disposition':`attachment; filename="${table}.csv"`});res.end(csv);return;}
     if(req.method==='GET'&&path==='/sim/report'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(desk.report(verdict?.setups)));return;}
-    if(req.method==='POST'&&['/settings','/override','/sim/order','/sim/reset'].includes(path)){
+    if(req.method==='POST'&&['/settings','/override','/sim/order','/sim/reset','/real/quote','/real/order'].includes(path)){
       const origin=req.headers.origin,host=req.headers['x-forwarded-host']??req.headers.host;
       if(!origin||new URL(origin).host!==host){res.writeHead(403);res.end('Origin rejected');return;}
       let body='';for await(const chunk of req){body+=chunk;if(body.length>16384)throw new Error('Request too large');}
       const data=JSON.parse(body);
+      if(path==='/real/quote'){const lock=state.guards?.locked?String(state.guards.reason??'guardrail lock'):null;
+        const q=realCopy.quote(await paperMarket(typeof data.ticker==='string'?data.ticker:undefined,copyContext(data.copy)),data.side,data.dollars===undefined?undefined:Number(data.dollars),
+          {enabled:config.realCopyEnabled,cap:config.realCopyMaxDollars,balance:account.balance,lock,now:Date.now()});
+        const {context:_c,...quote}=q;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,quote,balance:account.balance}));return;}
+      if(path==='/real/order'){const q=realCopy.take(data.token,Date.now());
+        // Checked again at the moment of sending: the switch or a lock may have changed during the 30 s.
+        if(!config.realCopyEnabled)throw new Error('Real copy orders were switched off');if(state.guards?.locked)throw new Error(`Real orders are paused: ${state.guards.reason??'guardrail lock'}`);
+        const body=orderBody(q,newClientOrderId());log('real-order-sent',{...body,cost:q.cost,cap:q.cap,copy:q.context.copy??null});
+        let r:any;try{r=await client.post('/portfolio/events/orders',body);}catch(e){log('real-order-error',{client_order_id:body.client_order_id,message:(e as Error).message});throw e;}
+        const result=describeFill(q,r);log('real-order-result',{client_order_id:body.client_order_id,order_id:r.order_id,fill_count:r.fill_count,remaining_count:r.remaining_count,average_fill_price:r.average_fill_price,average_fee_paid:r.average_fee_paid});
+        void account.onFill();res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,order_id:r.order_id,...result}));return;}
       if(path==='/sim/reset'){const account=desk.reset(Number(data.bankroll));log('paper-account',account);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,account}));return;}
       if(path==='/sim/order'){const result=desk.order({side:data.side,action:data.action,contracts:data.contracts===undefined?undefined:Number(data.contracts),dollars:data.dollars===undefined?undefined:Number(data.dollars)},await paperMarket(typeof data.ticker==='string'?data.ticker:undefined,copyContext(data.copy)));
         log('paper-order',{message:result.message,fills:result.fills.map(f=>({ticker:f.ticker,side:f.side,action:f.action,contracts:f.contracts,price:f.price}))});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,...result}));return;}

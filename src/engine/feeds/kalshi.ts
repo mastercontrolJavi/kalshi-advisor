@@ -13,9 +13,9 @@ export function effectiveFees(series:any,changes:any[],event:string,now:number):
   const quadratic=['quadratic','quadratic_with_maker_fees','quadratic_with_combo_maker_fees'];
   return {...baseFees,takerMultiplier:m,makerMultiplier:type==='quadratic_with_maker_fees'||type==='quadratic_with_combo_maker_fees'?m:0,verified:quadratic.includes(type)&&Number.isFinite(m)&&m>=0};
 }
-export function signedHeaders(key:KeyObject,id:string,path:string,timestamp:number){
+export function signedHeaders(key:KeyObject,id:string,path:string,timestamp:number,method:'GET'|'POST'='GET'){
   const ts=String(Math.round(timestamp));
-  const text=Buffer.from(ts+'GET'+path.split('?')[0]);
+  const text=Buffer.from(ts+method+path.split('?')[0]);
   const signature=key.asymmetricKeyType==='ed25519'?sign(null,text,key):sign('sha256',text,{key,padding:constants.RSA_PKCS1_PSS_PADDING,saltLength:32});
   return {'KALSHI-ACCESS-KEY':id,'KALSHI-ACCESS-TIMESTAMP':ts,'KALSHI-ACCESS-SIGNATURE':signature.toString('base64')};
 }
@@ -26,7 +26,22 @@ export class KalshiClient {
     if(id&&keyPath&&existsSync(keyPath)){this.key=createPrivateKey(readFileSync(keyPath));if(!['rsa','ed25519'].includes(this.key.asymmetricKeyType??''))throw new Error('Kalshi keys must be Ed25519 or RSA PEM');}
   }
   get authenticated(){return !!this.key&&!!this.id;}
-  headers(path:string){if(!this.key)throw new Error('Kalshi key unavailable');return signedHeaders(this.key,this.id,path,Date.now()+this.clockOffset);}
+  headers(path:string,method:'GET'|'POST'='GET'){if(!this.key)throw new Error('Kalshi key unavailable');return signedHeaders(this.key,this.id,path,Date.now()+this.clockOffset,method);}
+  /**
+   * A signed POST (real copy orders only, 2026-10-22). Sent once, never retried: an order is not idempotent, and a
+   * retry after a timeout could buy twice. Kalshi's error message is passed back as it is.
+   */
+  post(path:string,body:unknown):Promise<any>{
+    if(!path.startsWith('/')||path.startsWith('//')||path.includes('://'))throw new Error('Invalid Kalshi API path');
+    const run=async()=>{
+      if(!this.clockSynced)throw new Error('Server clock not synchronized');
+      const response=await fetch(REST+path,{method:'POST',headers:{...this.headers('/trade-api/v2'+path,'POST'),'Content-Type':'application/json'},body:JSON.stringify(body),redirect:'error',signal:AbortSignal.timeout(10000)});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(`Kalshi refused the order (HTTP ${response.status}): ${data?.error?.message??data?.message??data?.code??'no reason given'}`);
+      return data;
+    };
+    const task=this.tail.then(run,run);this.tail=task.catch(()=>{}).then(()=>new Promise(r=>setTimeout(r,this.spacingMs)));return task;
+  }
   get(path:string,auth=false):Promise<any>{
     if(!path.startsWith('/')||path.startsWith('//')||path.includes('://'))throw new Error('Invalid Kalshi API path');
     const run=async()=>{

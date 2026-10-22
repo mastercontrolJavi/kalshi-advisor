@@ -1,6 +1,6 @@
 'use client';
 import {useCallback,useEffect,useMemo,useState} from 'react';
-import {Trophy,Users,ExternalLink,Layers,Info,Plus,Check,Copy} from 'lucide-react';
+import {Trophy,Users,ExternalLink,Layers,Info,Plus,Check,Copy,TriangleAlert} from 'lucide-react';
 import {useLive} from './use-live';
 import {SiteHeader} from './site-header';
 import {Card} from './ui/card';
@@ -39,6 +39,7 @@ export default function Traders(){
   useEffect(()=>{let stop=false;fetch('/api/engine/sim/report',{cache:'no-store'}).then(x=>x.ok?x.json():null).then(d=>{if(!stop)setReport(d);}).catch(()=>{});return()=>{stop=true;};},[sim?.version]);
   const [combo,setCombo]=useState<string[]>([]),entrance=useEntrance<HTMLElement>();
   const ideas=useMemo<Idea[]>(()=>(r?.bets??[]).flatMap((b:any)=>(b.links??[]).map((l:any)=>({b,l,ask:l.side==='yes'?l.yesAsk:l.noAsk,state:copyState(b,l)}))),[r]);
+  const real={enabled:!!engine.state?.config?.realCopyEnabled,cap:engine.state?.config?.realCopyMaxDollars??null,balance:engine.state?.account?.balance??null};
   const ready=ideas.filter(i=>i.state.tone==='yes'),watching=ideas.filter(i=>i.state.tone!=='yes'),unmatched=(r?.bets??[]).filter((b:any)=>!b.links?.length);
   const chosen=ready.filter(i=>combo.includes(i.l.ticker+i.l.side));
   const toggle=(i:Idea)=>{const k=i.l.ticker+i.l.side;setCombo(c=>c.includes(k)?c.filter(x=>x!==k):[...c,k].slice(-6));};
@@ -55,7 +56,7 @@ export default function Traders(){
         <section aria-labelledby="copy-now" className="space-y-3">
           <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 id="copy-now" className="font-display text-2xl font-semibold">Copy now</h2>
             <span className="text-sm text-muted">{ready.length?`${ready.length} bet${ready.length===1?'':'s'} meet the copy rule: 3+ wallets, $3,000+, little against, Kalshi no more than 3¢ above their entry`:'Nothing meets the copy rule right now. Bets still forming are under Watching.'}</span></div>
-          {ready.length?<div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 3xl:grid-cols-4">{ready.map(i=><IdeaCard key={i.l.ticker+i.l.side} i={i} account={account} equity={sim?.equity??0} inCombo={combo.includes(i.l.ticker+i.l.side)} toggle={()=>toggle(i)}/>)}</div>
+          {ready.length?<div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 3xl:grid-cols-4">{ready.map(i=><IdeaCard key={i.l.ticker+i.l.side} i={i} account={account} equity={sim?.equity??0} real={real} inCombo={combo.includes(i.l.ticker+i.l.side)} toggle={()=>toggle(i)}/>)}</div>
             :<Empty>When three or more ranked wallets back the same bet with $3,000+ and Kalshi is still near their price, it appears here.</Empty>}
         </section>
         {chosen.length>=2?<ComboCard legs={chosen} clear={()=>setCombo([])}/>:chosen.length===1?<p className="text-sm text-muted">Add one more bet to see a combo estimate.</p>:null}
@@ -107,11 +108,13 @@ function RecordCard({copy,updated,positions}:{copy:any[]|undefined;updated:numbe
   </Card>;
 }
 
-function IdeaCard({i,account,equity,inCombo,toggle}:{i:Idea;account:any;equity:number;inCombo:boolean;toggle:()=>void}){
+function IdeaCard({i,account,equity,real,inCombo,toggle}:{i:Idea;account:any;equity:number;real:{enabled:boolean;cap:number|null;balance:number|null};inCombo:boolean;toggle:()=>void}){
   const {b,l,ask}=i,[amount,setAmount]=useState(String(Math.max(5,Math.round((equity||500)*.02)))),[busy,setBusy]=useState(false),[status,setStatus]=useState<{ok:boolean;text:string}|null>(null);
-  const flash=useFlash<HTMLDivElement>(status?.ok?status.text:null),edgeVsEntry=b.avgEntry!=null&&ask!=null?ask-b.avgEntry:null;
-  async function copy(){setBusy(true);setStatus(null);try{const d=await post('sim/order',{ticker:l.ticker,side:l.side,action:'buy',dollars:Number(amount),
-    copy:{cond:b.cond,outcome:b.outcome,title:b.title,group:groupOf(b),wallets:b.wallets,value:b.value,avgEntry:b.avgEntry}});setStatus({ok:true,text:d.message});}catch(e){setStatus({ok:false,text:(e as Error).message});}finally{setBusy(false);}}
+  const flash=useFlash<HTMLDivElement>(status?.ok?status.text:null),edgeVsEntry=b.avgEntry!=null&&ask!=null?ask-b.avgEntry:null,[quote,setQuote]=useState<any>(null);
+  const copyInfo={cond:b.cond,outcome:b.outcome,title:b.title,group:groupOf(b),wallets:b.wallets,value:b.value,avgEntry:b.avgEntry};
+  async function quoteReal(){setBusy(true);setStatus(null);try{const d=await post('real/quote',{ticker:l.ticker,side:l.side,dollars:Number(amount),copy:copyInfo});setQuote(d.quote);}catch(e){setStatus({ok:false,text:(e as Error).message});}finally{setBusy(false);}}
+  async function sendReal(){if(!quote)return;setBusy(true);try{const d=await post('real/order',{token:quote.token});setStatus({ok:d.filled>0,text:d.text});}catch(e){setStatus({ok:false,text:(e as Error).message});}finally{setBusy(false);setQuote(null);}}
+  async function copy(){setBusy(true);setStatus(null);try{const d=await post('sim/order',{ticker:l.ticker,side:l.side,action:'buy',dollars:Number(amount),copy:copyInfo});setStatus({ok:true,text:d.message});}catch(e){setStatus({ok:false,text:(e as Error).message});}finally{setBusy(false);}}
   return <Card ref={flash} className={cn('rise flex flex-col gap-3 p-4',inCombo&&'border-info/60')}>
     <div className="flex items-center justify-between gap-2"><Pill tone="neutral">{kindOf(b)}</Pill><span className="text-xs text-muted">{b.endDate?`ends ${new Date(b.endDate).toLocaleDateString([],{month:'short',day:'numeric'})}`:''}</span></div>
     <div><div className="font-display text-xl font-semibold leading-tight">{b.outcome}</div><div className="mt-1 line-clamp-2 text-sm text-muted">{l.title}</div></div>
@@ -121,6 +124,9 @@ function IdeaCard({i,account,equity,inCombo,toggle}:{i:Idea;account:any;equity:n
     <div className="mt-auto flex gap-2"><label className="sr-only" htmlFor={`amt-${l.ticker}-${l.side}`}>Paper amount in dollars</label>
       <Input id={`amt-${l.ticker}-${l.side}`} className="w-24" type="number" inputMode="decimal" min={1} step="any" value={amount} onChange={e=>setAmount(e.target.value)}/>
       <Button className="flex-1" disabled={busy||!account||!(Number(amount)>0)} onClick={()=>void copy()}>{busy?'Copying…':account?'Copy to paper':'Start a paper account first'}</Button></div>
+    {real.enabled?<Button variant="outline" className="border-warn/60 text-warn hover:border-warn" disabled={busy||!(Number(amount)>0)} onClick={()=>void quoteReal()}>Buy on Kalshi · real money{real.cap!=null?` (up to ${dollars(Math.min(real.cap,Number(amount)||real.cap))})`:''}</Button>
+      :<p className="text-xs text-faint">Real orders are off. Turn them on in Settings → Real copy orders (15-min page) to buy this on Kalshi from here.</p>}
+    {quote?<RealConfirm quote={quote} balance={real.balance} busy={busy} onConfirm={()=>void sendReal()} onCancel={()=>setQuote(null)}/>:null}
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm"><a href={l.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-info hover:underline">Open on Kalshi<ExternalLink aria-hidden className="size-3.5"/></a>
       <a href={b.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-fg">Polymarket<ExternalLink aria-hidden className="size-3.5"/></a>
       <button type="button" aria-pressed={inCombo} onClick={toggle} className={cn('ml-auto inline-flex min-h-8 cursor-pointer items-center gap-1 rounded-full px-2.5 text-xs transition-colors',inCombo?'bg-info/15 text-info':'text-muted hover:text-fg')}>{inCombo?<Check aria-hidden className="size-3.5"/>:<Plus aria-hidden className="size-3.5"/>}{inCombo?'In combo':'Add to combo'}</button></div>
@@ -142,4 +148,27 @@ function ComboCard({legs,clear}:{legs:Idea[];clear:()=>void}){
     {sameGame?<p className="mt-3 text-sm text-warn">Two legs are from the same game: they win or lose together more often than the prices assume.</p>:null}
     <p className="mt-3 max-w-3xl text-xs text-faint">An estimate only. Kalshi prices combos itself, usually a little worse than the legs multiplied, and every leg&apos;s margin compounds: a combo pays more but wins less often. It only beats single bets when each leg has an edge on its own, so check each leg&apos;s record first. Build the real combo on Kalshi.</p>
   </Card>;
+}
+
+/** The last step before real money moves: exactly what Kalshi will be asked to do, for 30 s. Cancel has the focus. */
+function RealConfirm({quote,balance,busy,onConfirm,onCancel}:{quote:any;balance:number|null;busy:boolean;onConfirm:()=>void;onCancel:()=>void}){
+  const [now,setNow]=useState(Date.now()),left=Math.max(0,Math.ceil((quote.expires-now)/1000)),cancelRef=useCallback((el:HTMLButtonElement|null)=>el?.focus(),[]);
+  useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),500);const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')onCancel();};window.addEventListener('keydown',esc);return()=>{clearInterval(t);window.removeEventListener('keydown',esc);};},[onCancel]);
+  useEffect(()=>{if(left===0)onCancel();},[left,onCancel]);
+  return <div role="dialog" aria-modal="true" aria-labelledby="real-title" className="fixed inset-0 z-50 flex items-center justify-center bg-bg/85 p-4 backdrop-blur-md">
+    <Card className="w-full max-w-md space-y-4 border-warn/50">
+      <div className="flex items-center gap-2 text-warn"><TriangleAlert aria-hidden className="size-5"/><h2 id="real-title" className="font-display text-2xl font-bold">Place a real order on Kalshi</h2></div>
+      <p className="text-sm text-muted">{quote.title??quote.ticker}</p>
+      <dl className="grid grid-cols-2 gap-y-2 text-sm">
+        <dt className="text-muted">Buy</dt><dd className="num text-right font-semibold">{quote.count} {quote.side.toUpperCase()}</dd>
+        <dt className="text-muted">Price</dt><dd className="num text-right">about {cents(quote.avgPrice,1)}, never above {cents(quote.limit,1)}</dd>
+        <dt className="text-muted">Total with fee</dt><dd className="num text-right font-semibold">{dollars(quote.cost)}</dd>
+        <dt className="text-muted">Pays if right</dt><dd className="num text-right text-yes">{dollars(quote.count)}</dd>
+        <dt className="text-muted">Most you can lose</dt><dd className="num text-right text-no">{dollars(quote.cost)}</dd>
+        <dt className="text-muted">Your cap · Kalshi cash</dt><dd className="num text-right">{dollars(quote.cap)} · {dollars(balance)}</dd>
+      </dl>
+      <p className="text-xs text-faint">Real money from your Kalshi account. Sent as an immediate-or-cancel limit order: if the price has moved, it buys fewer contracts or none, never at a worse price. This quote expires in {left} s.</p>
+      <div className="flex gap-2"><Button ref={cancelRef} variant="ghost" className="flex-1" onClick={onCancel}>Cancel</Button>
+        <Button className="flex-1 bg-warn text-bg shadow-none hover:bg-warn/85" disabled={busy||left===0} onClick={onConfirm}>{busy?'Sending…':`Place real order · ${dollars(quote.cost)}`}</Button></div>
+    </Card></div>;
 }
