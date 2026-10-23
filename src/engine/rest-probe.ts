@@ -10,11 +10,14 @@ export function compareRest(serverNow:number,wsTradeTime:number|null,restTradeTi
   return {restTradeAgeMs:restTradeTime===null?null:serverNow-restTradeTime,wsTradeAgeMs:wsTradeTime===null?null:serverNow-wsTradeTime,
     restLeadMs:restTradeTime!==null&&wsTradeTime!==null?restTradeTime-wsTradeTime:null,rest,ws,sameQuote:rest.yesBid===ws.yesBid&&rest.yesAsk===ws.yesAsk};
 }
-/** Every 2 s while the stream is delayed, and once a minute otherwise as the normal baseline. Never affects trading. */
+/**
+ * Every 10 s while the stream is delayed (it was every 2 s until the REST backup, DECISIONS 64, began reading the book
+ * each second), and once a minute otherwise as the normal baseline. Never affects trading.
+ */
 export class RestProbe {
   private busy=false;private last=0;
   constructor(private client:KalshiClient,private log:(event:string,data:unknown)=>void){}
-  due(now:number,delayed:boolean){return !this.busy&&now-this.last>=(delayed?2000:60000);}
+  due(now:number,delayed:boolean){return !this.busy&&now-this.last>=(delayed?10000:60000);}
   async run(ticker:string,delayMs:number,wsTradeTime:number|null,ws:Quote,now=Date.now()){
     this.busy=true;this.last=now;
     try{

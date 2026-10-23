@@ -3,7 +3,7 @@ import {Orderbook,FeedDelay,MAX_BOOK_DELAY_MS,MAX_LOOP_LAG_MS,delaySide} from '.
 import {ProxyFeed,type Venue} from '../src/engine/feeds/proxy';
 import {LoopLag} from '../src/engine/loop-lag';
 import {RestProbe,compareRest} from '../src/engine/rest-probe';
-import {delayCause} from '../src/components/delay-cause';
+import {delayCause,backupNote} from '../src/components/delay-cause';
 import {KalshiFeed,KalshiClient} from '../src/engine/feeds/kalshi';
 import {evaluate} from '../src/engine/signals';
 import {defaults} from '../src/engine/config';
@@ -82,6 +82,28 @@ it('probes REST once and logs the comparison, without touching trading',async()=
   await p.run('A',21_000,now-21_000,{yesBid:.41,yesAsk:.43},now);
   expect(logs[0][0]).toBe('rest-probe');expect(logs[0][1]).toMatchObject({ticker:'A',delayed:true,rest:{yesBid:.88,yesAsk:.9},sameQuote:false});
   expect(logs[0][1].restLeadMs).toBeGreaterThan(19_000);
-  // Every 2 s while delayed, once a minute otherwise.
-  expect(p.due(now+1000,true)).toBe(false);expect(p.due(now+2000,true)).toBe(true);expect(p.due(now+30_000,false)).toBe(false);
+  // Every 10 s while delayed, once a minute otherwise.
+  expect(p.due(now+9000,true)).toBe(false);expect(p.due(now+10_000,true)).toBe(true);expect(p.due(now+30_000,false)).toBe(false);
+});
+it('uses the REST book while the stream is behind, only while it is fresh, and drops it once the stream catches up',async()=>{
+  const client=new KalshiClient('','');let calls=0;
+  client.get=(async()=>{calls++;return {orderbook_fp:{yes_dollars:[['0.88','10']],no_dollars:[['0.10','5']]}};}) as any;
+  const f=new KalshiFeed(client,()=>{}),t0=Date.now(),stream=new Orderbook();stream.snapshot([['.41','5']],[['.57','5']]);
+  f.books.set('A',stream);f.markets=[{ticker:'A',event_ticker:'E',open_time:new Date(t0-60_000).toISOString(),close_time:new Date(t0+60_000).toISOString(),status:'active'},
+    {ticker:'B',event_ticker:'E',open_time:new Date(t0+60_000).toISOString(),close_time:new Date(t0+960_000).toISOString(),status:'initialized'}];
+  // On time: the stream, no REST reads.
+  await f.pollBackup(t0);expect(calls).toBe(0);expect(f.current('A',t0)).toMatchObject({source:'stream',delayed:false});
+  // 12 s behind: only the open round is re-read over REST, and its book is used while ≤ 2 s old.
+  f.delay.observe(t0-1000,t0-1000+100);f.delay.observe(t0,t0+12_000);expect(f.delay.delayed).toBe(true);
+  expect(f.current('A',t0)).toMatchObject({source:'stream',delayed:true});
+  await f.pollBackup(t0);expect(calls).toBe(1);
+  const now=Date.now(),c=f.current('A',now)!;expect(c).toMatchObject({source:'rest',delayed:false});expect(c.book.view()).toMatchObject({yesBid:.88,yesAsk:.9,source:'rest'});
+  expect(f.current('A',now+2500)).toMatchObject({source:'stream',delayed:true});
+  // Caught up: back to the stream, the backup cleared.
+  f.delay.observe(t0+20_000,t0+20_100);expect(f.delay.delayed).toBe(false);await f.pollBackup();expect(f.backup.size).toBe(0);
+  expect(f.current('A')).toMatchObject({source:'stream',delayed:false});expect(f.current('Z')).toBeNull();
+});
+it('the warning says where prices come from while the REST backup is in use',()=>{
+  expect(backupNote({delayed:false,delay:9400,backup:600})).toBe('Kalshi’s live stream is 9.4 s behind, so prices here come from Kalshi’s regular API instead (0.6 s old, re-read every second).');
+  expect(backupNote({delayed:true,delay:9400,backup:null})).toBeNull();expect(backupNote({delayed:false,delay:0,backup:null})).toBeNull();
 });

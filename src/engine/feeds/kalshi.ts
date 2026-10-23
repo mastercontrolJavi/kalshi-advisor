@@ -1,7 +1,7 @@
 import {constants,createPrivateKey,sign,type KeyObject} from 'node:crypto';
 import {readFileSync,existsSync} from 'node:fs';
 import {ReconnectingSocket} from './socket';
-import {Orderbook,SubscriptionSequence,FeedDelay} from './orderbook';
+import {Orderbook,SubscriptionSequence,FeedDelay,MAX_BOOK_DELAY_MS} from './orderbook';
 import {baseFees,type FeeSchedule} from '../model/fees';
 export const REST='https://external-api.kalshi.com/trade-api/v2';
 export const WS='wss://external-api-ws.kalshi.com/trade-api/ws/v2';
@@ -66,7 +66,7 @@ export class KalshiClient {
 }
 export class KalshiFeed {
   markets:Market[]=[];books=new Map<string,Orderbook>();status='disconnected';lag:number|null=null;lastMessage=0;fees:FeeSchedule={...baseFees,verified:false};
-  trades:{ticker:string;time:number;yesPrice:number;count:number;takerSide:string}[]=[];delay=new FeedDelay();
+  trades:{ticker:string;time:number;yesPrice:number;count:number;takerSide:string}[]=[];delay=new FeedDelay();backup=new Map<string,{book:Orderbook;started:number}>();private backingUp=false;
   private socket?:ReconnectingSocket;private generation=0;private pruned=0;private bookSid:number|null=null;private sequence=new SubscriptionSequence();private signature='';private refreshing=false;private polling=false;private feesUpdated=0;
   constructor(public client:KalshiClient,private log:(event:string,data:unknown)=>void,private onTrade:(t:any)=>void=()=>{},private onFill:()=>void=()=>{}){}
   async refresh(){
@@ -113,6 +113,28 @@ export class KalshiFeed {
       if(t.time-this.pruned>=1000){this.pruned=t.time;this.trades=this.trades.filter(x=>x.time>t.time-120000);}
       this.onTrade(t);}
     if(m.type==='fill')this.onFill();
+  }
+  /**
+   * REST backup while the stream is behind (DECISIONS 64). On 2026-10-22, 117 of 117 REST checks during stream delays
+   * of up to 17.5 s had a latest trade 0.2 s old, so Kalshi's REST API stays current when its WebSocket lags. The open
+   * rounds' books are re-read about once a second until the stream catches up; the age counts from the request start
+   * (including any queue wait), so a slow reply is never mistaken for a fresh one.
+   */
+  async pollBackup(now=Date.now()){
+    if(!this.delay.delayed){this.backup.clear();return;}
+    if(this.backingUp)return;this.backingUp=true;
+    try{for(const m of this.markets.filter(m=>Date.parse(m.open_time)<=now+this.client.clockOffset)){const started=Date.now();
+      const r=await this.client.get('/markets/'+encodeURIComponent(m.ticker)+'/orderbook');if(!this.delay.delayed)break;
+      const book=new Orderbook();book.snapshot(r.orderbook_fp?.yes_dollars??[],r.orderbook_fp?.no_dollars??[],'rest');this.backup.set(m.ticker,{book,started});}}
+    catch(e){this.log('book-backup-error',{message:(e as Error).message});}
+    finally{this.backingUp=false;}
+  }
+  /** The book to trade on: the stream while it is on time, else the REST backup while ≤ 2 s old, else the late stream (delayed). */
+  current(ticker:string,now=Date.now()):{book:Orderbook;delayMs:number;delayed:boolean;source:'stream'|'rest'}|null{
+    const stream=this.books.get(ticker);if(!stream)return null;
+    if(!this.delay.delayed)return {book:stream,delayMs:this.delay.ms,delayed:false,source:'stream'};
+    const b=this.backup.get(ticker),age=b?now-b.started:Infinity;
+    return b&&age<=MAX_BOOK_DELAY_MS?{book:b.book,delayMs:age,delayed:false,source:'rest'}:{book:stream,delayMs:this.delay.ms,delayed:true,source:'stream'};
   }
   async fallback(){if(this.polling)return;this.polling=true;try{for(const m of this.markets){const b=this.books.get(m.ticker)!;if(this.status==='connected'&&b.valid&&b.source==='ws')continue;const r=await this.client.get('/markets/'+encodeURIComponent(m.ticker)+'/orderbook');if(b.valid&&b.source==='ws')continue;b.snapshot(r.orderbook_fp?.yes_dollars??[],r.orderbook_fp?.no_dollars??[],'rest');}}finally{this.polling=false;}}
   recover(){for(const b of this.books.values())b.valid=false;this.connect();void this.fallback().catch(e=>this.log('book-resync-error',{message:e.message}));}

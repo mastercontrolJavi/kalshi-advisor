@@ -140,9 +140,9 @@ async function paperMarket(ticker?:string,extra:Record<string,unknown>={}):Promi
         mid:v.yesBid!==null&&v.yesAsk!==null?(v.yesBid+v.yesAsk)/2:null,spread:v.yesBid!==null&&v.yesAsk!==null?v.yesAsk-v.yesBid:null,feeVerified:schedule.verified,...extra}};
   }
   if(!m)throw new Error('No round is open right now');
-  const book=kalshi.books.get(m.ticker)?.view(),now=Date.now();if(!book)throw new Error('No Kalshi book yet');
+  const now=Date.now(),chosen=kalshi.current(m.ticker,now),book=chosen?.book.view();if(!book||!chosen)throw new Error('No Kalshi book yet');
   const mid=book.yesBid!==null&&book.yesAsk!==null?(book.yesBid+book.yesAsk)/2:null;
-  return {ticker:m.ticker,tau:(Date.parse(m.close_time)-(now+client.clockOffset))/1000,active:m.status==='active',book,delayed:kalshi.delay.delayed,delayMs:kalshi.delay.ms,
+  return {ticker:m.ticker,tau:(Date.parse(m.close_time)-(now+client.clockOffset))/1000,active:m.status==='active',book,delayed:chosen.delayed,delayMs:chosen.delayMs,
     schedule:{...kalshi.fees,precision:config.feePrecision},bookStaleMs:config.bookStaleMs,now,
     context:{setup:state.setup??null,q:state.quant?.p??null,model:state.quant?.model??null,mid,spread:book.yesBid!==null&&book.yesAsk!==null?book.yesAsk-book.yesBid:null,dist:state.distance??null,K:state.K??null,proxy:state.proxy??null,...extra}};
 }
@@ -211,6 +211,7 @@ server.listen(Number(process.env.ENGINE_PORT??3001),'127.0.0.1',()=>log('engine-
 proxy.start();safe('initial-refresh-error',async()=>{await refresh();await account.sync();});
 const refreshTimer=setInterval(()=>safe('market-refresh-error',refresh),5000);
 const fallbackTimer=setInterval(()=>safe('book-fallback-error',()=>kalshi.fallback()),2000);
+const backupTimer=setInterval(()=>safe('book-backup-error',()=>kalshi.pollBackup()),500);
 const accountTimer=setInterval(()=>safe('account-sync-error',()=>account.sync()),30000);
 const settlementTimer=setInterval(()=>safe('settlement-error',settlements),10000);
 const hourlyTimer=setInterval(()=>safe('hourly-refresh-error',()=>hourlyBoard.refresh(Date.now()+client.clockOffset)),3000);
@@ -320,7 +321,9 @@ const loop=setInterval(()=>{
       priceState={time,ready:!!inputs,reason:!healthyPrice?'Needs at least 3 healthy price feeds':!inputs?'Needs 5 uninterrupted minutes of prices':null,horizons:inputs?priceFits.map(f=>forecastPrice(inputs,f,time)):[],scores:priceScores,fitting:priceBusy};}
     const rawVol=volatility(proxy.history,config.halfLifeSeconds,config.realizedBlend),vol=warmVolatility(rawVol,journal.get<{sigma:number;time:number}|null>('lastSigma',null),config.minVolSamples,now);
     if(newSecond&&rawVol.count>=config.minVolSamples&&rawVol.sigma>0&&time%60000===0)journal.set('lastSigma',{sigma:rawVol.sigma,time:now});
-    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,delay:Math.round(kalshi.delay.ms),delayed:kalshi.delay.delayed,...feedCheck,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,backtestRefresh:{running:refresher.running,lastFinished:refresher.lastFinished,lastExit:refresher.lastExit},next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory,mySetups:mySetupsCached(now)};
+    // The round's book: the stream, or the REST backup while the stream is behind (kalshi.current, DECISIONS 64).
+    const roundBook=market?kalshi.current(market.ticker,now):null;
+    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,lag:kalshi.lag,delay:Math.round(kalshi.delay.ms),delayed:roundBook?roundBook.delayed:kalshi.delay.delayed,backup:roundBook?.source==='rest'?Math.round(roundBook.delayMs):null,...feedCheck,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,backtestRefresh:{running:refresher.running,lastFinished:refresher.lastFinished,lastExit:refresher.lastExit},next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory,mySetups:mySetupsCached(now)};
     if(!market){
       // Between windows: poll every second so the next market and its K are picked up immediately.
       if(now-lastFastRefresh>1000){lastFastRefresh=now;safe('market-refresh-error',refresh);}
@@ -328,7 +331,7 @@ const loop=setInterval(()=>{
       state={...common,market:null,nextOpen:upcoming?Date.parse(upcoming.open_time):null,evaluation:{action:'NO TRADE',reason:upcoming?'No round is open right now':'No active market',idea:null,makers:[]}};
     }
     else {
-      const close=Date.parse(market.close_time),open=Date.parse(market.open_time),tau=(close-time)/1000,book=kalshi.books.get(market.ticker)!;
+      const close=Date.parse(market.close_time),open=Date.parse(market.open_time),tau=(close-time)/1000,book=roundBook!.book;
       if(previousTicker!==market.ticker){seriesHistory.length=0;tacticsHistory.length=0;previousTicker=market.ticker;log('market-open-observed',{ticker:market.ticker,open:market.open_time,close:market.close_time});}
       const confirmed=Number.isFinite(market.floor_strike)&&market.floor_strike!>0;
       // Kalshi publishes floor_strike shortly after the open; poll every second until it lands.
@@ -349,10 +352,11 @@ const loop=setInterval(()=>{
       // Kalshi's midpoint only counts as a forecast when the book is tight; a wide spread makes it meaningless.
       // A delayed book (FeedDelay: still updating but seconds behind Kalshi) is not a forecast: the 2026-10-21 loss round
       // showed YES at 11¢ while Kalshi traded at 90¢, and the 90% Kalshi weight pinned the quant to it.
-      const delayMs=kalshi.delay.ms,delayed=kalshi.delay.delayed,kalshiP=delayed?null:usableMid(bv,now,config.bookStaleMs);
+      // With the REST backup in use, delayMs is the backup's age and the book is current again (DECISIONS 64).
+      const delayMs=roundBook!.delayMs,delayed=roundBook!.delayed,kalshiP=delayed?null:usableMid(bv,now,config.bookStaleMs);
       // Log-only: is Kalshi's REST API current while the stream is behind? (rest-probe.ts)
-      if(restProbe.due(now,delayed)){let wsTrade:number|null=null;for(let i=kalshi.trades.length-1;i>=0;i--)if(kalshi.trades[i].ticker===market.ticker){wsTrade=kalshi.trades[i].time;break;}
-        void restProbe.run(market.ticker,delayMs,wsTrade,{yesBid:bv.yesBid,yesAsk:bv.yesAsk},now);}
+      if(restProbe.due(now,kalshi.delay.delayed)){let wsTrade:number|null=null;for(let i=kalshi.trades.length-1;i>=0;i--)if(kalshi.trades[i].ticker===market.ticker){wsTrade=kalshi.trades[i].time;break;}
+        const sv=kalshi.books.get(market.ticker)!.view();void restProbe.run(market.ticker,kalshi.delay.ms,wsTrade,{yesBid:sv.yesBid,yesAsk:sv.yesAsk},now);}
       const stackInputs=model?{modelP:model.p,mid:kalshiP,sigma:vol.sigma,momentum30s:features.momentum30s,momentum120s:features.momentum120s,imbalance:features.imbalance,tradeFlow30s:features.tradeFlow30s,tradeVolume30s:features.tradeVolume30s}:null;
       const forecast=tau<60&&lateStack.active==='fitted'?lateStack:stack;
       const q=stackInputs?predict(forecast,stackInputs).p:null,pSignal=config.useQuantForSignals&&q!==null?q:model?.p??.5;
@@ -397,7 +401,7 @@ const loop=setInterval(()=>{
       // dashboard can show how the same setup paid on past rounds (verdict.setups).
       let prior60:number|null=null;for(let i=proxy.history.length-1;i>=0&&proxy.history[i].time>=time-60000;i--)if(proxy.history[i].time===time-60000){prior60=proxy.history[i].price;break;}
       const setup=spot!==null&&K!==null&&vol.sigma>0?classifySetup({tau,spot:spot+basis,k:K,sigma:vol.sigma,spot60:prior60!==null?prior60+basis:null}):null;
-      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,setup,kalshiDelay:Math.round(delayMs),coinbaseDelay:feedCheck.coinbaseDelay,exchangeDelay:feedCheck.exchangeDelay,loopLag:feedCheck.loopLag,delaySide:side,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation,rawAction:rawEvaluation.action};
+      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,setup,kalshiDelay:Math.round(kalshi.delay.ms),bookSource:roundBook!.source,bookDelay:Math.round(delayMs),coinbaseDelay:feedCheck.coinbaseDelay,exchangeDelay:feedCheck.exchangeDelay,loopLag:feedCheck.loopLag,delaySide:side,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,close,evaluation,rawAction:rawEvaluation.action};
       // The taker signal is journaled (and paper-traded) once, at the price shown when it confirmed, not every second it stands.
       const newFirm=evaluation.idea&&evaluation.firm&&evaluation.firm.id!==journaledLatch?[evaluation.idea]:[];
       if(newSecond){journal.tick(tick);if(newFirm.length)journaledLatch=evaluation.firm!.id;for(const idea of [...newFirm,...evaluation.makers,...tacticIdeas.map(t=>({...t,queue:0}))])journal.signal(market.ticker,time,idea as any,tick,schedule);
@@ -411,7 +415,7 @@ const loop=setInterval(()=>{
         if(posClose!==null&&posClose<=time){const official=journal.db.prepare('SELECT result FROM outcomes WHERE ticker=?').get(pos.ticker) as {result:'yes'|'no'}|undefined;
           const avg=filledSeconds(proxy.history,posClose-60000,posClose),k=Number(posMarket!.floor_strike);
           closed={result:official?.result??null,estimate:avg&&Number.isFinite(k)&&k>0?(mean(avg.values)+basis>=k?'yes':'no'):null};}
-        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,delayed?null:kalshi.books.get(pos.ticker)?.view()??null,schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule),pos.ticker===market.ticker?tau:null);
+        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,(()=>{const c=kalshi.current(pos.ticker,now);return c&&!c.delayed?c.book.view():null;})(),schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule),pos.ticker===market.ticker?tau:null);
         if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,peakPct:e.peakPct});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,title:e.notice.title,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,winProb:e.winProb});exitMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
         return e;}).filter(Boolean);
       // What Your positions shows, journaled when it changes (with the dashboards connected), so a card that stays empty
@@ -433,7 +437,7 @@ const loop=setInterval(()=>{
     // The paper account marked at the live bids (the hold value uses the quant forecast on the current round).
     state.sim=desk.summary((ticker,side)=>{const live=kalshi.books.get(ticker);
       if(!live){const f=paperMarks.get(ticker);return {bid:f?(side==='yes'?f.yesBid:f.noBid):null,fair:null};}
-      const v=kalshi.delay.delayed?null:live.view(),cur=state.market?.ticker===ticker?state.quant?.p:null;
+      const c=kalshi.current(ticker,now),v=c&&!c.delayed?c.book.view():null,cur=state.market?.ticker===ticker?state.quant?.p:null;
       return {bid:v?(side==='yes'?v.yesBid:v.noBid):null,fair:cur==null?null:side==='yes'?cur:1-cur};});
     // Calibration (~90 KB) goes out only when it changes and the window history (~80 KB) once a second; the page keeps
     // the last copy. New connections get the full state on connect. This cut the 4 Hz push from ~200 KB to ~30 KB.
@@ -444,5 +448,5 @@ const loop=setInterval(()=>{
     const message=JSON.stringify({...state,...slow,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
-const shutdown=()=>{refresher.stop();loopLag.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
+const shutdown=()=>{refresher.stop();loopLag.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
