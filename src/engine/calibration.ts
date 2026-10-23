@@ -1,3 +1,4 @@
+import {benchmarkScores} from './quant/benchmark-journal';
 import type {Journal} from './journal';
 import {mean} from './model/math';
 import {wilson} from './model/opening';
@@ -63,7 +64,7 @@ export function buildCalibration(journal:Journal,stack?:StackFit,basis?:{correct
   const live=LIVE_HORIZONS.map(h=>({horizon:h,...openingScore(liveRows.filter(r=>r.horizon===h))}));
   const nextRows=journal.db.prepare('SELECT n.horizon,n.ticker,n.direction,n.p,n.base_p,NULL AS mid,r.result FROM next_calls n LEFT JOIN outcomes r ON r.ticker=n.ticker ORDER BY n.time').all() as any[];
   const next=NEXT_HORIZONS.map(h=>({horizon:h,...openingScore(nextRows.filter(r=>r.horizon===h))}));
-  const quant=stack?{active:stack.active,n:stack.n,markets:stack.markets,cv:stack.cv,weights:describe(stack),effective:effectiveWeights(stack),fittedEffective:effectiveWeights(stack,'fittedWeights'),basis,history:journal.get<any[]>('quantHistory',[]).map(h=>({time:h.time,markets:h.markets,stack:h.cv?.stack,prior:h.cv?.prior,model:h.cv?.model,kalshi:h.cv?.kalshi}))}:null;
+  const quant=stack?{active:stack.active,reason:stack.reason,n:stack.n,markets:stack.markets,cv:stack.cv,weights:describe(stack),effective:effectiveWeights(stack),fittedEffective:effectiveWeights(stack,'fittedWeights'),basis,history:journal.get<any[]>('quantHistory',[]).map(h=>({time:h.time,markets:h.markets,method:h.cv?.method??'legacy mixed-time validation',stack:h.cv?.stack,prior:h.cv?.prior,model:h.cv?.model,kalshi:h.cv?.kalshi}))}:null;
   const {rounds,trends}=buildRounds(journal.db);
-  return {updated:Date.now(),rounds,roundTrends:trends,opening,live,next,quant,scalp:byKind('scalp'),dip:byKind('dip'),hourly:byKind('hourly'),...rel,taker:byKind('taker'),maker:byKind('maker'),curve:heavy.curve,breakdown:heavy.breakdown,basis:errors.length?{count:errors.length,mean:mean(errors),histogram:[...hist].map(([bin,count])=>({bin,count}))}:{count:0,mean:null,histogram:[]},outcomes:outcomes.slice(-20).map(o=>({...o,context:undefined})),totalSignals:(journal.db.prepare('SELECT COUNT(*) AS n FROM signals').get() as any).n};
+  return {updated:Date.now(),benchmark:benchmarkScores(journal.db),rounds,roundTrends:trends,opening,live,next,quant,scalp:byKind('scalp'),dip:byKind('dip'),hourly:byKind('hourly'),...rel,taker:byKind('taker'),maker:byKind('maker'),curve:heavy.curve,breakdown:heavy.breakdown,basis:errors.length?{count:errors.length,mean:mean(errors),histogram:[...hist].map(([bin,count])=>({bin,count}))}:{count:0,mean:null,histogram:[]},outcomes:outcomes.slice(-20).map(o=>({...o,context:undefined})),totalSignals:(journal.db.prepare('SELECT COUNT(*) AS n FROM signals').get() as any).n};
 }

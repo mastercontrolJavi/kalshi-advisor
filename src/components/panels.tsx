@@ -166,7 +166,11 @@ export function ForecastPanel({s,fresh,btc}:{s:any;fresh:boolean;btc?:any}){
       :<p className="mt-2 text-sm text-muted">{s?.market&&elapsed!==null&&elapsed<180?(s?.kConfirmed?'Making the call for this window…':'Waiting for Kalshi to publish the opening price (K). The call is made the moment it does.'):'No call this window: Kalshi had not published K within 3 minutes, or the engine was not running at the open.'}</p>}
     </section>
     {btc!==undefined?<SharpLean btc={btc} gate={s?.config?.provenSignalsOnly!==false}/>:null}
-    <p className="text-xs text-faint md:col-span-2 3xl:col-span-1">Calls blend the model with Kalshi, so they are as good as Kalshi&apos;s own price, not better: over ~640 rounds the live call was right 73% / 81% / 87% / 96% at 10 / 5 / 2 / 1 min left and the opening call 57%. Scored on the Calibration page.</p>
+    <section className="border-t border-line pt-4 md:col-span-2 3xl:col-span-1"><Heading icon={<Activity aria-hidden className="size-4 text-faint"/>} title="Official BRTI" aside={<span>{fresh&&s?.benchmark?.available?'receiving':'waiting for index'}</span>}/>
+      <div className="mt-2 flex flex-wrap items-baseline gap-3"><span className="num text-xl">{dollars(fresh?s?.benchmark?.price:null)}</span>{fresh&&s?.benchmark?.available?<span className="text-xs text-muted">{s.benchmark.ageMs} ms old · {s.benchmark.highFrequency?'5 Hz + 1 Hz':'1 Hz'}</span>:null}</div>
+      <p className="mt-1 text-xs text-muted">{fresh&&s?.benchmark?.model?`Index forecast: ${pct(s.benchmark.model.p)} UP · ${s.benchmark.model.lockedCount}/60 settlement observations locked. `:'The index forecast needs two uninterrupted minutes of official observations. '}Forward experiment; entry and exit advice still use the current blend. <a href="/calibration" className="text-info hover:underline">Measured results</a></p>
+      {s?.benchmark?.error?<p className="mt-1 text-xs text-warn">{s.benchmark.error}</p>:null}</section>
+    <p className="text-xs text-faint md:col-span-2 3xl:col-span-1">A direction call is a settlement probability, not a profit forecast. Compare its recorded accuracy with Kalshi at the same time remaining on the Calibration page; entries also need an advantage after price, spread and fees.</p>
   </Card>;
 }
 

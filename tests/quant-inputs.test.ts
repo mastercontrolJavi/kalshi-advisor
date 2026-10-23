@@ -1,6 +1,6 @@
 import {it,expect} from 'vitest';
 import {usableMid} from '../src/engine/quant/quote';
-import {stackSamples} from '../src/engine/quant/samples';
+import {stackSamples,lateSamples} from '../src/engine/quant/samples';
 import {predict,priorFit} from '../src/engine/quant/stack';
 import {Journal} from '../src/engine/journal';
 
@@ -11,6 +11,23 @@ it('a stale, invalid, crossed or wide book cannot affect the quant forecast',()=
     const mid=usableMid(b,2000,5000);expect(mid).toBeNull();
     expect(predict(priorFit(),{modelP:.7,mid,sigma:.001,momentum30s:null,momentum120s:null,imbalance:null,tradeFlow30s:null}).p).toBeCloseTo(.7);
   }
+});
+it('late learning preserves exact missing quotes, validates legacy delay, and keeps settlement availability',()=>{
+  const j=new Journal(':memory:');
+  try{
+    const book={valid:true,updated:1000,yesBid:.5,yesAsk:.52};
+    for(const [ticker,extra] of [
+      ['exact',{stackInputs:{mid:null}}],['lagged',{bookDelay:3000}],['rest',{bookDelay:100,kalshiDelay:20000}],['stale',{book:{...book,updated:-10000}}],['bad',{book:{...book,valid:false}}]
+    ] as const){
+      j.tick({time:1100,ticker,proxy:80000,K:80000,tau:30,sigma:.001,p:.7,mid:.51,regime:'normal',book,features:{momentum30s:.001},engineTime:1100,...extra});
+      j.settle(ticker,'yes',50000,null,null,null,{});
+    }
+    const cache=new Map(),samples=lateSamples(j.db,cache);
+    expect(samples).toHaveLength(5);expect(samples.find(s=>s.ticker==='rest')?.mid).toBeCloseTo(.51);
+    for(const ticker of ['exact','lagged','stale','bad'])expect(samples.find(s=>s.ticker===ticker)?.mid).toBeNull();
+    expect(samples.every(s=>s.time===1100&&s.settledTime===50000)).toBe(true);
+    expect(lateSamples(j.db,cache)).toEqual(samples);
+  }finally{j.db.close();}
 });
 it('training uses the exact live midpoint feature, including explicit null, with legacy fallback',()=>{
   const j=new Journal(':memory:');

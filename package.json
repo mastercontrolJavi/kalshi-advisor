@@ -14,7 +14,9 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check": "npm run test && npm run typecheck",
-    "backtest": "tsx scripts/backtest.ts"
+    "backtest": "tsx scripts/backtest.ts",
+    "quant:research": "tsx scripts/quant-research.ts",
+    "benchmark:study": "tsx scripts/benchmark-study.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.3",

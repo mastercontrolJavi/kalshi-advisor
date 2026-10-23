@@ -1,0 +1,874 @@
+{
+  "generated": "2026-10-23T07:45:48.933Z",
+  "through": "2026-10-23T07:20:00.000Z",
+  "method": {
+    "marketWeight": "Each market has total weight one in aggregate probability metrics; each horizon has one checkpoint per market.",
+    "split": "Earliest 70% of markets train; latest 30% are a fixed outer holdout; exclude training outcomes unavailable 60 seconds before holdout starts.",
+    "uncertainty": "2,000 deterministic bootstrap resamples of complete UTC hour/day blocks, after averaging within market. Intervals are null below eight observed blocks.",
+    "execution": "One hypothetical contract per market, first eligible checkpoint, >=4 cents expected edge after fee, <=6 cents spread, fresh exact-time book, hold to official settlement. 1-cent stress applies to entry and decision. No depth/latency/fill simulation.",
+    "limitations": [
+      "The fixed holdout is retrospective; earlier repository changes may already have inspected these dates. It is not untouched prospective evidence.",
+      "Frozen calls span older software versions. Aggregate metrics are market weighted; horizon metrics should be preferred.",
+      "Minute archive cannot establish subsecond latency, BRTI availability, final-minute precision or executable fills.",
+      "One-hour/day blocks reduce serial-dependence inflation but do not make 17 calendar days equivalent to years of regimes.",
+      "No hyperparameter or edge-threshold search is performed. No source database or production verdict is modified."
+    ]
+  },
+  "coverage": {
+    "live": [
+      {
+        "table": "ticks",
+        "n": 609879,
+        "first": 1791341591000,
+        "last": 1792740000000
+      },
+      {
+        "table": "outcomes",
+        "n": 709,
+        "first": 1791342021388,
+        "last": 1792739710323.5
+      },
+      {
+        "table": "opening_calls",
+        "n": 680,
+        "first": 1791351024000,
+        "last": 1792739702000
+      },
+      {
+        "table": "live_calls",
+        "n": 2683,
+        "first": 1791355200000,
+        "last": 1792740000000
+      },
+      {
+        "table": "next_calls",
+        "n": 1276,
+        "first": 1791393240000,
+        "last": 1792739695000
+      },
+      {
+        "table": "price_forecasts",
+        "n": 17520,
+        "first": 1791849900000,
+        "last": 1792740000000
+      }
+    ],
+    "independentMarketGroups": 699,
+    "invalidInputs": 0,
+    "unusableExactBook": 3150,
+    "archive": {
+      "markets": [
+        {
+          "series": "KXBTC15M",
+          "n": 9946,
+          "first": 1783642500000,
+          "last": 1792707300000,
+          "withCandles": 9940
+        },
+        {
+          "series": "KXBTCD",
+          "n": 70927,
+          "first": 1786233600000,
+          "last": 1792706400000,
+          "withCandles": 34140
+        }
+      ],
+      "spot": {
+        "n": 151325,
+        "first": 1783629000000,
+        "last": 1792708500000
+      }
+    }
+  },
+  "frozen": [
+    {
+      "horizon": "open",
+      "quant": {
+        "rows": 645,
+        "markets": 645,
+        "hourBlocks": 182,
+        "dayBlocks": 16,
+        "brier": 0.2450849032490008,
+        "logloss": 0.6832854578833524,
+        "accuracy": 0.5689922480620155,
+        "baselineBrier": 0.24425286821705383,
+        "brierGain": -0.0008320350319462605,
+        "gainHourCI": [
+          -0.0019096871770820187,
+          0.0002428683602676273
+        ],
+        "gainDayCI": [
+          -0.0020188416602197386,
+          0.00004926388565139249
+        ]
+      },
+      "model": {
+        "rows": 645,
+        "markets": 645,
+        "hourBlocks": 182,
+        "dayBlocks": 16,
+        "brier": 0.24632473882834832,
+        "logloss": 0.6860075021390698,
+        "accuracy": 0.5643410852713179,
+        "baselineBrier": 0.24425286821705383,
+        "brierGain": -0.002071870611293918,
+        "gainHourCI": [
+          -0.004520880993172728,
+          0.0002634366108789579
+        ],
+        "gainDayCI": [
+          -0.003918865282848216,
+          -0.00027538484036567624
+        ]
+      },
+      "market": {
+        "rows": 645,
+        "markets": 645,
+        "hourBlocks": 182,
+        "dayBlocks": 16,
+        "brier": 0.24425286821705383,
+        "logloss": 0.681551698935809,
+        "accuracy": 0.5565891472868217,
+        "baselineBrier": 0.24425286821705383,
+        "brierGain": 0,
+        "gainHourCI": [
+          0,
+          0
+        ],
+        "gainDayCI": [
+          0,
+          0
+        ]
+      },
+      "coin": {
+        "rows": 645,
+        "markets": 645,
+        "hourBlocks": 182,
+        "dayBlocks": 16,
+        "brier": 0.25,
+        "logloss": 0.693147180559947,
+        "accuracy": 0.5,
+        "baselineBrier": 0.24425286821705383,
+        "brierGain": -0.005747131782945738,
+        "gainHourCI": [
+          -0.010727057926829273,
+          -0.0008103773584905696
+        ],
+        "gainDayCI": [
+          -0.013175497702909645,
+          0.0015669278996865172
+        ]
+      }
+    },
+    {
+      "horizon": "600",
+      "quant": {
+        "rows": 664,
+        "markets": 664,
+        "hourBlocks": 181,
+        "dayBlocks": 16,
+        "brier": 0.1850709105393396,
+        "logloss": 0.5480783446627185,
+        "accuracy": 0.7213855421686747,
+        "baselineBrier": 0.18301879706325289,
+        "brierGain": -0.002052113476086777,
+        "gainHourCI": [
+          -0.0037231733850294226,
+          -0.0005133675746351614
+        ],
+        "gainDayCI": [
+          -0.0032637570005801383,
+          -0.0009304318023265921
+        ]
+      },
+      "model": {
+        "rows": 664,
+        "markets": 664,
+        "hourBlocks": 181,
+        "dayBlocks": 16,
+        "brier": 0.18874578056875227,
+        "logloss": 0.5579401560089343,
+        "accuracy": 0.7183734939759037,
+        "baselineBrier": 0.18301879706325289,
+        "brierGain": -0.005726983505499275,
+        "gainHourCI": [
+          -0.008974252995487377,
+          -0.00262549335935641
+        ],
+        "gainDayCI": [
+          -0.007525140711797865,
+          -0.0037531919031729777
+        ]
+      },
+      "market": {
+        "rows": 664,
+        "markets": 664,
+        "hourBlocks": 181,
+        "dayBlocks": 16,
+        "brier": 0.18301879706325289,
+        "logloss": 0.5437048259299039,
+        "accuracy": 0.7198795180722891,
+        "baselineBrier": 0.18301879706325289,
+        "brierGain": 0,
+        "gainHourCI": [
+          0,
+          0
+        ],
+        "gainDayCI": [
+          0,
+          0
+        ]
+      },
+      "coin": {
+        "rows": 664,
+        "markets": 664,
+        "hourBlocks": 181,
+        "dayBlocks": 16,
+        "brier": 0.25,
+        "logloss": 0.693147180559947,
+        "accuracy": 0.5,
+        "baselineBrier": 0.18301879706325289,
+        "brierGain": -0.06698120293674696,
+        "gainHourCI": [
+          -0.07918303240058915,
+          -0.05327002258566977
+        ],
+        "gainDayCI": [
+          -0.08097409842814371,
+          -0.05326439372325249
+        ]
+      }
+    },
+    {
+      "horizon": "300",
+      "quant": {
+        "rows": 669,
+        "markets": 669,
+        "hourBlocks": 182,
+        "dayBlocks": 16,
+        "brier": 0.13671906847144108,
+        "logloss": 0.4201694211635252,
+        "accuracy": 0.8101644245142003,
+        "baselineBrier": 0.13506645067264567,
+        "brierGain": -0.0016526177987954335,
+        "gainHourCI": [
+          -0.0037066634242304978,
+          0.0001863968125221991
+        ],
+        "gainDayCI": [
+          -0.003321976880646538,
+          -0.00018388374375197583
+        ]
+      },
+      "model": {
+        "rows": 669,
+        "markets": 669,
+        "hourBlocks": 182,
+        "dayBlocks": 16,
+        "brier": 0.1418677180316694,
+        "logloss": 0.4406007617948951,
+        "accuracy": 0.7997010463378177,
+        "baselineBrier": 0.13506645067264567,
+        "brierGain": -0.00680126735902345,
+        "gainHourCI": [
+          -0.011174628244343019,
+          -0.002679130896946585
+        ],
+        "gainDayCI": [
+          -0.011781508339603798,
+          -0.0021546641998137824
+        ]
+      },
+      "market": {
+        "rows": 669,
+        "markets": 669,
+        "hourBlocks": 182,
+        "dayBlocks": 16,
+        "brier": 0.13506645067264567,
+        "logloss": 0.4146096172983202,
+        "accuracy": 0.8101644245142003,
+        "baselineBrier": 0.13506645067264567,
+        "brierGain": 0,
+        "gainHourCI": [
+          0,
+          0
+        ],
+        "gainDayCI": [
+          0,
+          0
+        ]
+      },
+      "coin": {
+        "rows": 669,
+        "markets": 669,
+        "hourBlocks": 182,
+        "dayBlocks": 16,
+        "brier": 0.25,
+        "logloss": 0.693147180559947,
+        "accuracy": 0.5,
+        "baselineBrier": 0.13506645067264567,
+        "brierGain": -0.11493354932735418,
+        "gainHourCI": [
+          -0.13053735623123133,
+          -0.09882652492559517
+        ],
+        "gainDayCI": [
+          -0.12844587857142856,
+          -0.10273217198838897
+        ]
+      }
+    },
+    {
+      "horizon": "120",
+      "quant": {
+        "rows": 641,
+        "markets": 641,
+        "hourBlocks": 183,
+        "dayBlocks": 16,
+        "brier": 0.08486475998356245,
+        "logloss": 0.26764837389356,
+        "accuracy": 0.8720748829953198,
+        "baselineBrier": 0.08328312012480509,
+        "brierGain": -0.0015816398587571202,
+        "gainHourCI": [
+          -0.0049110795162857915,
+          0.001496845957771195
+        ],
+        "gainDayCI": [
+          -0.0035425554376036653,
+          0.0005371456690244164
+        ]
+      },
+      "model": {
+        "rows": 641,
+        "markets": 641,
+        "hourBlocks": 183,
+        "dayBlocks": 16,
+        "brier": 0.09266710502940513,
+        "logloss": 0.30033387584540855,
+        "accuracy": 0.859594383775351,
+        "baselineBrier": 0.08328312012480509,
+        "brierGain": -0.00938398490459957,
+        "gainHourCI": [
+          -0.016333662667616666,
+          -0.0032682777911617177
+        ],
+        "gainDayCI": [
+          -0.014849183187380852,
+          -0.004231329204471342
+        ]
+      },
+      "market": {
+        "rows": 641,
+        "markets": 641,
+        "hourBlocks": 183,
+        "dayBlocks": 16,
+        "brier": 0.08328312012480509,
+        "logloss": 0.26173593942082357,
+        "accuracy": 0.8767550702028081,
+        "baselineBrier": 0.08328312012480509,
+        "brierGain": 0,
+        "gainHourCI": [
+          0,
+          0
+        ],
+        "gainDayCI": [
+          0,
+          0
+        ]
+      },
+      "coin": {
+        "rows": 641,
+        "markets": 641,
+        "hourBlocks": 183,
+        "dayBlocks": 16,
+        "brier": 0.25,
+        "logloss": 0.693147180559947,
+        "accuracy": 0.5,
+        "baselineBrier": 0.08328312012480509,
+        "brierGain": -0.16671687987519526,
+        "gainHourCI": [
+          -0.17982139526484744,
+          -0.15190458690658498
+        ],
+        "gainDayCI": [
+          -0.17735701441441443,
+          -0.15670198595505622
+        ]
+      }
+    },
+    {
+      "horizon": "60",
+      "quant": {
+        "rows": 428,
+        "markets": 428,
+        "hourBlocks": 170,
+        "dayBlocks": 16,
+        "brier": 0.05188225566199935,
+        "logloss": 0.18139205872027253,
+        "accuracy": 0.9392523364485982,
+        "baselineBrier": 0.05226939836448597,
+        "brierGain": 0.0003871427024865838,
+        "gainHourCI": [
+          -0.003580199448330044,
+          0.003914801516468711
+        ],
+        "gainDayCI": [
+          -0.0026791309139079186,
+          0.0041685894004843335
+        ]
+      },
+      "model": {
+        "rows": 428,
+        "markets": 428,
+        "hourBlocks": 170,
+        "dayBlocks": 16,
+        "brier": 0.057699951641976416,
+        "logloss": 0.2038030213106848,
+        "accuracy": 0.9345794392523364,
+        "baselineBrier": 0.05226939836448597,
+        "brierGain": -0.005430553277490549,
+        "gainHourCI": [
+          -0.01600470697175094,
+          0.004098293846098926
+        ],
+        "gainDayCI": [
+          -0.0136313359375211,
+          0.004849472296246849
+        ]
+      },
+      "market": {
+        "rows": 428,
+        "markets": 428,
+        "hourBlocks": 170,
+        "dayBlocks": 16,
+        "brier": 0.05226939836448597,
+        "logloss": 0.18264824575310346,
+        "accuracy": 0.9369158878504673,
+        "baselineBrier": 0.05226939836448597,
+        "brierGain": 0,
+        "gainHourCI": [
+          0,
+          0
+        ],
+        "gainDayCI": [
+          0,
+          0
+        ]
+      },
+      "coin": {
+        "rows": 428,
+        "markets": 428,
+        "hourBlocks": 170,
+        "dayBlocks": 16,
+        "brier": 0.25,
+        "logloss": 0.6931471805599467,
+        "accuracy": 0.5,
+        "baselineBrier": 0.05226939836448597,
+        "brierGain": -0.19773060163551406,
+        "gainHourCI": [
+          -0.2118924595410627,
+          -0.18139795755813945
+        ],
+        "gainDayCI": [
+          -0.21425967115768466,
+          -0.17669490058823528
+        ]
+      }
+    }
+  ],
+  "split": {
+    "trainMarkets": 488,
+    "trainRows": 2336,
+    "testMarkets": 210,
+    "testPairedRows": 925,
+    "testFrom": "2026-10-16T20:15:02.000Z",
+    "trainLastOutcome": "2026-10-16T20:00:06.735Z"
+  },
+  "fit": {
+    "weights": [
+      0,
+      1,
+      0.9,
+      0,
+      0,
+      0,
+      0
+    ],
+    "fittedWeights": [
+      0.000003494731212538952,
+      1.0452961889548495,
+      0.9784285171769487,
+      -0.036588795401473515,
+      0.0803340640742626,
+      0.025483804452312745,
+      -0.021162551539785735
+    ],
+    "active": "prior",
+    "n": 2336,
+    "markets": 488,
+    "cv": {
+      "method": "purged-walk-forward",
+      "stack": 0.1285595217853466,
+      "prior": 0.12825338576071008,
+      "model": 0.1312352831594859,
+      "kalshi": 0.13518385618600684,
+      "markets": 293,
+      "baseline": 0.1283938146218355,
+      "gain": -0.00030613602463641887,
+      "gainLow": -0.000807623797202453,
+      "gainHigh": 0.00012634834375590756,
+      "marketGain": -0.0001657071635109456,
+      "marketGainLow": -0.000647240155697929,
+      "marketGainHigh": 0.00024768411583754303,
+      "blocks": 79,
+      "logLoss": 0.3875356512377383,
+      "baselineLogLoss": 0.3862984664244631,
+      "priorLogLoss": 0.3866241995491132,
+      "folds": [
+        {
+          "trainMarkets": 194,
+          "testMarkets": 73,
+          "trainThrough": 1791657916333,
+          "testFrom": 1791658802000,
+          "testThrough": 1791770408095,
+          "gain": -0.0007689466551451841,
+          "marketGain": 0.0003651780231336757
+        },
+        {
+          "trainMarkets": 267,
+          "testMarkets": 73,
+          "trainThrough": 1791769507533,
+          "testFrom": 1791770401000,
+          "testThrough": 1791940512945,
+          "gain": -0.0002462296293156663,
+          "marketGain": -0.0005590531340309758
+        },
+        {
+          "trainMarkets": 340,
+          "testMarkets": 73,
+          "trainThrough": 1791939612651,
+          "testFrom": 1791940502000,
+          "testThrough": 1792036810548.5,
+          "gain": -0.00041566746000612053,
+          "marketGain": -0.0007087735552453341
+        },
+        {
+          "trainMarkets": 413,
+          "testMarkets": 74,
+          "trainThrough": 1792035910315.5,
+          "testFrom": 1792036802000,
+          "testThrough": 1792180806735.5,
+          "gain": 0.00019937483956240806,
+          "marketGain": 0.00023433991513115173
+        }
+      ]
+    },
+    "fitted": 1792181642000,
+    "reason": "Advantage is not stable across later time periods"
+  },
+  "holdout": [
+    {
+      "name": "Frozen live forecast",
+      "score": {
+        "rows": 925,
+        "markets": 210,
+        "hourBlocks": 56,
+        "dayBlocks": 7,
+        "brier": 0.14617587691215406,
+        "logloss": 0.433442401888717,
+        "accuracy": 0.7780158730158732,
+        "baselineBrier": 0.14600021015873021,
+        "brierGain": -0.00017566675342386547,
+        "gainHourCI": [
+          -0.0009325382597081135,
+          0.0006404335420233035
+        ],
+        "gainDayCI": null
+      },
+      "execution": {
+        "n": 0,
+        "mean": null,
+        "total": 0,
+        "cost": 0,
+        "roi": null,
+        "hourCI": null,
+        "dayCI": null
+      },
+      "slippageOneCent": {
+        "n": 0,
+        "mean": null,
+        "total": 0,
+        "cost": 0,
+        "roi": null,
+        "hourCI": null,
+        "dayCI": null
+      }
+    },
+    {
+      "name": "Raw diffusion",
+      "score": {
+        "rows": 925,
+        "markets": 210,
+        "hourBlocks": 56,
+        "dayBlocks": 7,
+        "brier": 0.15283008055632788,
+        "logloss": 0.4573182138677747,
+        "accuracy": 0.7794444444444446,
+        "baselineBrier": 0.14600021015873021,
+        "brierGain": -0.006829870397597764,
+        "gainHourCI": [
+          -0.013372828303595938,
+          -0.0005631799458759615
+        ],
+        "gainDayCI": null
+      },
+      "execution": {
+        "n": 22,
+        "mean": -0.022945454545454533,
+        "total": -0.5047999999999997,
+        "cost": 12.5048,
+        "roi": -0.04036849849657729,
+        "hourCI": [
+          -0.15026521739130436,
+          0.10373000000000002
+        ],
+        "dayCI": null
+      },
+      "slippageOneCent": {
+        "n": 15,
+        "mean": -0.09018,
+        "total": -1.3527,
+        "cost": 7.3527000000000005,
+        "roi": -0.18397323432208576,
+        "hourCI": [
+          -0.2486705882352942,
+          0.11412142857142855
+        ],
+        "dayCI": null
+      }
+    },
+    {
+      "name": "Kalshi midpoint",
+      "score": {
+        "rows": 925,
+        "markets": 210,
+        "hourBlocks": 56,
+        "dayBlocks": 7,
+        "brier": 0.14600021015873021,
+        "logloss": 0.4320552267202382,
+        "accuracy": 0.7789682539682542,
+        "baselineBrier": 0.14600021015873021,
+        "brierGain": 0,
+        "gainHourCI": [
+          0,
+          0
+        ],
+        "gainDayCI": null
+      },
+      "execution": {
+        "n": 0,
+        "mean": null,
+        "total": 0,
+        "cost": 0,
+        "roi": null,
+        "hourCI": null,
+        "dayCI": null
+      },
+      "slippageOneCent": {
+        "n": 0,
+        "mean": null,
+        "total": 0,
+        "cost": 0,
+        "roi": null,
+        "hourCI": null,
+        "dayCI": null
+      }
+    },
+    {
+      "name": "Default blend",
+      "score": {
+        "rows": 925,
+        "markets": 210,
+        "hourBlocks": 56,
+        "dayBlocks": 7,
+        "brier": 0.14617587691215406,
+        "logloss": 0.433442401888717,
+        "accuracy": 0.7780158730158732,
+        "baselineBrier": 0.14600021015873021,
+        "brierGain": -0.00017566675342386547,
+        "gainHourCI": [
+          -0.0009325382597081135,
+          0.0006404335420233035
+        ],
+        "gainDayCI": null
+      },
+      "execution": {
+        "n": 0,
+        "mean": null,
+        "total": 0,
+        "cost": 0,
+        "roi": null,
+        "hourCI": null,
+        "dayCI": null
+      },
+      "slippageOneCent": {
+        "n": 0,
+        "mean": null,
+        "total": 0,
+        "cost": 0,
+        "roi": null,
+        "hourCI": null,
+        "dayCI": null
+      }
+    },
+    {
+      "name": "Validated engine",
+      "score": {
+        "rows": 925,
+        "markets": 210,
+        "hourBlocks": 56,
+        "dayBlocks": 7,
+        "brier": 0.14617587691215406,
+        "logloss": 0.433442401888717,
+        "accuracy": 0.7780158730158732,
+        "baselineBrier": 0.14600021015873021,
+        "brierGain": -0.00017566675342386547,
+        "gainHourCI": [
+          -0.0009325382597081135,
+          0.0006404335420233035
+        ],
+        "gainDayCI": null
+      },
+      "execution": {
+        "n": 0,
+        "mean": null,
+        "total": 0,
+        "cost": 0,
+        "roi": null,
+        "hourCI": null,
+        "dayCI": null
+      },
+      "slippageOneCent": {
+        "n": 0,
+        "mean": null,
+        "total": 0,
+        "cost": 0,
+        "roi": null,
+        "hourCI": null,
+        "dayCI": null
+      }
+    },
+    {
+      "name": "Fitted challenger (shadow)",
+      "score": {
+        "rows": 925,
+        "markets": 210,
+        "hourBlocks": 56,
+        "dayBlocks": 7,
+        "brier": 0.145682012275782,
+        "logloss": 0.4320270841931723,
+        "accuracy": 0.7718253968253972,
+        "baselineBrier": 0.14600021015873021,
+        "brierGain": 0.000318197882948129,
+        "gainHourCI": [
+          -0.00040075016279287354,
+          0.0010109351205403573
+        ],
+        "gainDayCI": null
+      },
+      "execution": {
+        "n": 0,
+        "mean": null,
+        "total": 0,
+        "cost": 0,
+        "roi": null,
+        "hourCI": null,
+        "dayCI": null
+      },
+      "slippageOneCent": {
+        "n": 0,
+        "mean": null,
+        "total": 0,
+        "cost": 0,
+        "roi": null,
+        "hourCI": null,
+        "dayCI": null
+      }
+    },
+    {
+      "name": "Coin flip",
+      "score": {
+        "rows": 925,
+        "markets": 210,
+        "hourBlocks": 56,
+        "dayBlocks": 7,
+        "brier": 0.25,
+        "logloss": 0.6931471805599465,
+        "accuracy": 0.5,
+        "baselineBrier": 0.14600021015873021,
+        "brierGain": -0.1039997898412698,
+        "gainHourCI": [
+          -0.11905678119103776,
+          -0.08768174240069083
+        ],
+        "gainDayCI": null
+      },
+      "execution": {
+        "n": 45,
+        "mean": -0.08826444444444448,
+        "total": -3.9719000000000015,
+        "cost": 13.971900000000002,
+        "roi": -0.28427772887008934,
+        "hourCI": [
+          -0.19334150943396228,
+          0.010070833333333315
+        ],
+        "dayCI": null
+      },
+      "slippageOneCent": {
+        "n": 44,
+        "mean": -0.1004886363636364,
+        "total": -4.421500000000002,
+        "cost": 14.421500000000002,
+        "roi": -0.30659085393336344,
+        "hourCI": [
+          -0.20894000000000004,
+          0.0003162790697673993
+        ],
+        "dayCI": null
+      }
+    }
+  ],
+  "basis": {
+    "n": 663,
+    "mean": 0.22355483283086763,
+    "rms": 3.628121372213712,
+    "p05": -5.45929166660062,
+    "median": 0.18927083331800532,
+    "p95": 5.930083333310904,
+    "proxyOfficialDisagreements": 8,
+    "pairedOutcomes": 663
+  },
+  "existingArchiveVerdict": {
+    "generated": "2026-10-22T22:36:51.602Z",
+    "rounds": 9935,
+    "buy15Model": {
+      "n": 7861,
+      "mean": -0.013363910443963851,
+      "ci": [
+        -0.022555845312301346,
+        -0.003868286477547348
+      ],
+      "early": -0.014611786326880595,
+      "late": -0.012016666666666622
+    },
+    "kalshiBetter": {
+      "fifteen": 14,
+      "fifteenOf": 14,
+      "hourly": 7,
+      "hourlyOf": 7
+    },
+    "profitable": []
+  }
+}

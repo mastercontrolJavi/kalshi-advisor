@@ -7,7 +7,8 @@ import {fee,type FeeSchedule} from './model/fees';
 import type {RealEvent} from './guardrails';
 import type {OpeningCall} from './model/opening';
 import {PRICE_FORECAST_SCHEMA} from './quant/price-journal';
-export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances','hourly_calls','hourly_outcomes','price_forecasts','sim_accounts','sim_fills'] as const;
+import {BENCHMARK_SCHEMA} from './quant/benchmark-journal';
+export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances','hourly_calls','hourly_outcomes','price_forecasts','benchmark_ticks','benchmark_forecasts','sim_accounts','sim_fills'] as const;
 export class Journal {
   db:Database.Database;
   // ADVISOR_DB lets a verification instance run against a copy of the journal without touching the live one.
@@ -30,6 +31,7 @@ export class Journal {
       CREATE TABLE IF NOT EXISTS account_raw(id TEXT PRIMARY KEY,type TEXT NOT NULL,time INTEGER NOT NULL,context TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS paper_status ON paper_trades(status,ticker);CREATE INDEX IF NOT EXISTS signals_cover ON signals(id,tau,regime,edge);`);
     this.db.exec(PRICE_FORECAST_SCHEMA);
+    this.db.exec(BENCHMARK_SCHEMA);
   }
   log(event:string,context:unknown){this.db.prepare('INSERT INTO events(time,event,context) VALUES(?,?,?)').run(Date.now(),event,JSON.stringify(context));}
   get<T>(key:string,fallback:T):T{const row=this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as {value:string}|undefined;return row?JSON.parse(row.value):fallback;}
@@ -98,7 +100,7 @@ export class Journal {
   /** Ticks older than 30 days are deleted, except the final minute (tau < 60): that is the one window the 1-minute
    *  history cannot test, so it is kept for good (~25 MB/day) for the final-minute study and the late-round forecast. */
   // Ticks with ≤ 90 s left are kept forever: the final-minute entry study and the final-90-second sell study (DECISIONS 50).
-  prune(now=Date.now()){this.db.prepare('DELETE FROM ticks WHERE time<? AND (tau IS NULL OR tau>=90)').run(now-30*86400000);}
+  prune(now=Date.now()){this.db.prepare('DELETE FROM ticks WHERE time<? AND (tau IS NULL OR tau>=90)').run(now-30*86400000);this.db.prepare("DELETE FROM benchmark_ticks WHERE channel=? AND source_time<?").run('cfbenchmarks_value_5hz',now-7*86400000);this.db.prepare("DELETE FROM benchmark_ticks WHERE channel=? AND source_time<?").run('cfbenchmarks_value',now-30*86400000);}
   expire(now:number){this.db.prepare("UPDATE paper_trades SET status='expired',settled_time=? WHERE status='resting' AND json_extract(context,'$.close')<=?").run(now,now);}
   export(table:string){if(!tables.includes(table as any))throw new Error('Unknown journal table');const rows=this.db.prepare(`SELECT * FROM ${table}`).all() as Record<string,unknown>[];
     const columns=(this.db.prepare(`PRAGMA table_info(${table})`).all() as {name:string}[]).map(r=>r.name);

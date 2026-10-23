@@ -8,19 +8,55 @@ export function normalCDF(x:number):number {
 }
 /** Exact conditional Brownian arithmetic-average moments, with diffusion coefficient S*sigma. */
 export function averageMoments(spot:number,sigma:number,tau:number,locked:number[]=[]){
-  if(![spot,sigma,tau,...locked].every(Number.isFinite)||spot<=0||sigma<0||tau<0)throw new Error('Invalid model inputs');
+  if(![spot,sigma,tau,...locked].every(Number.isFinite)||spot<=0||sigma<0||tau<0||locked.some(p=>p<=0))throw new Error('Invalid model inputs');
   if(tau>60) return {expected:spot,variance:(spot*sigma)**2*(tau-60+60/3),lockedCount:0};
   const elapsed=60-tau;
   if(locked.length!==Math.round(elapsed))throw new Error('Incomplete locked average');
   return {expected:(locked.reduce((s,x)=>s+x,0)+tau*spot)/60,variance:(spot*sigma)**2*tau**3/(3*60**2),lockedCount:locked.length};
 }
-export function probability(spot:number,strike:number,sigma:number,tau:number,locked:number[]=[],basis=0){
+/**
+ * A proxy-to-settlement residual is uncertainty in dollars of the FINAL average, not per-second volatility.
+ * Adding its variance independently keeps this uncertainty present as diffusion variance vanishes near expiry.
+ * The default is zero for compatibility; callers must estimate the residual using earlier settled rounds only.
+ */
+export function probability(spot:number,strike:number,sigma:number,tau:number,locked:number[]=[],basis=0,settlementErrorSd=0){
   const m=averageMoments(spot,sigma,tau,locked),expected=m.expected+basis;
-  if(strike<=0||expected<=0)throw new Error('Invalid strike or corrected average');
-  const logSD=Math.sqrt(Math.log1p(m.variance/expected**2));
+  validateDistribution(strike,expected,basis,settlementErrorSd);
+  const variance=m.variance+settlementErrorSd**2,logSD=Math.sqrt(Math.log1p(variance/expected**2));
   // Median-centered approximation preserves S=K symmetry; arithmetic moments above remain exact for diffusion.
   const z=logSD>0?Math.log(expected/strike)/logSD:(expected===strike?0:expected>strike?Infinity:-Infinity);
-  return {...m,expected,sd:Math.sqrt(m.variance),z,p:Math.min(.99,Math.max(.01,normalCDF(z)))};
+  return {...m,expected,diffusionVariance:m.variance,settlementErrorSd,variance,sd:Math.sqrt(variance),z,p:Math.min(.99,Math.max(.01,normalCDF(z)))};
+}
+function validateDistribution(strike:number,expected:number,basis:number,settlementErrorSd:number){
+  if(![strike,expected,basis,settlementErrorSd].every(Number.isFinite)||strike<=0||expected<=0||settlementErrorSd<0)throw new Error('Invalid strike or settlement uncertainty');
+}
+/**
+ * Exact conditional arithmetic-Brownian moments for 60 discrete, equally weighted benchmark observations.
+ * `futureOffsetsSeconds` specifies each remaining publication's time relative to the latest observed spot.
+ * Callers own the benchmark's endpoint convention and must supply every observed or future settlement slot.
+ * In particular, a missing historical observation cannot be replaced with a future offset or a 5 Hz tick.
+ *
+ * Cov(S_ti,S_tj)=(S*sigma)^2 min(ti,tj). For ascending offsets the double sum is
+ * sum_i (2*(N-i)-1)*ti; this preserves all shared-path covariance, including the last few seconds.
+ */
+export function discreteAverageMoments(spot:number,sigma:number,locked:number[],futureOffsetsSeconds:number[]){
+  if(![spot,sigma,...locked,...futureOffsetsSeconds].every(Number.isFinite)||spot<=0||sigma<0||locked.some(p=>p<=0)||futureOffsetsSeconds.some(t=>t<0))throw new Error('Invalid discrete model inputs');
+  if(locked.length+futureOffsetsSeconds.length!==60)throw new Error('Incomplete discrete settlement average');
+  const times=[...futureOffsetsSeconds].sort((a,b)=>a-b),n=times.length;
+  const covariance=times.reduce((sum,t,i)=>sum+(2*(n-i)-1)*t,0);
+  return {expected:(locked.reduce((sum,p)=>sum+p,0)+n*spot)/60,variance:(spot*sigma)**2*covariance/3600,lockedCount:locked.length};
+}
+/**
+ * Gaussian exceedance probability of the discrete arithmetic average, exact under the stated zero-drift
+ * Brownian approximation. This is a separate benchmark challenger; it does not silently change the legacy
+ * proxy model's median-centered lognormal approximation. Risk-neutral option trees supply no directional alpha.
+ */
+export function discreteAverageProbability(spot:number,strike:number,sigma:number,locked:number[],futureOffsetsSeconds:number[],basis=0,settlementErrorSd=0){
+  const m=discreteAverageMoments(spot,sigma,locked,futureOffsetsSeconds),expected=m.expected+basis;
+  validateDistribution(strike,expected,basis,settlementErrorSd);
+  const variance=m.variance+settlementErrorSd**2,sd=Math.sqrt(variance);
+  const z=sd>0?(expected-strike)/sd:expected===strike?0:expected>strike?Infinity:-Infinity;
+  return {...m,expected,diffusionVariance:m.variance,settlementErrorSd,variance,sd,z,p:Math.min(.99,Math.max(.01,normalCDF(z)))};
 }
 /**
  * Multi-scale variance correction. The 4-venue median proxy is smoother second-to-second than BTC really is, and

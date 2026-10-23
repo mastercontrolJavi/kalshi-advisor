@@ -26,7 +26,7 @@ parentPort!.on('message',()=>{
       const entry={time:Date.now(),n:stack.n,markets:stack.markets,active:stack.active,cv:stack.cv,weights:describe(stack),basis:basis.correction};
       logs.push(['quant-fit',entry]);journal.set('quantHistory',[...journal.get<any[]>('quantHistory',[]),entry].slice(-200));}
     // Rebuild the report only when its inputs change (a settlement, a new call or paper result, a real trade, a refit).
-    const inputs=JSON.stringify(journal.db.prepare("SELECT (SELECT count(*) FROM outcomes) o,(SELECT count(*) FROM paper_trades INDEXED BY paper_status WHERE status='settled') p,(SELECT count(*) FROM opening_calls) oc,(SELECT count(*) FROM live_calls) lc,(SELECT count(*) FROM next_calls) nc,(SELECT count(*) FROM hourly_outcomes) ho,(SELECT count(*) FROM real_trades) rt").get())+':'+stack?.fitted;
+    const inputs=JSON.stringify(journal.db.prepare("SELECT (SELECT count(*) FROM outcomes) o,(SELECT count(*) FROM benchmark_forecasts) bf,(SELECT count(*) FROM paper_trades INDEXED BY paper_status WHERE status='settled') p,(SELECT count(*) FROM opening_calls) oc,(SELECT count(*) FROM live_calls) lc,(SELECT count(*) FROM next_calls) nc,(SELECT count(*) FROM hourly_outcomes) ho,(SELECT count(*) FROM real_trades) rt").get())+':'+stack?.fitted;
     const calibration=inputs!==key&&stack?buildCalibration(journal,stack,basis):null;if(calibration)key=inputs;
     parentPort!.postMessage({stack:changed?stack:null,lateStack:late,basis,calibration,logs});
   }catch(e){parentPort!.postMessage({error:(e as Error).message,logs});}
