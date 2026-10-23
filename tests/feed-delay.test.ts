@@ -2,6 +2,7 @@ import {it,expect} from 'vitest';
 import {Orderbook,FeedDelay,MAX_BOOK_DELAY_MS,MAX_LOOP_LAG_MS,delaySide} from '../src/engine/feeds/orderbook';
 import {ProxyFeed,type Venue} from '../src/engine/feeds/proxy';
 import {LoopLag} from '../src/engine/loop-lag';
+import {RestProbe,compareRest} from '../src/engine/rest-probe';
 import {delayCause} from '../src/components/delay-cause';
 import {KalshiFeed,KalshiClient} from '../src/engine/feeds/kalshi';
 import {evaluate} from '../src/engine/signals';
@@ -67,4 +68,20 @@ it('keeps the worst event-loop stall of the last 10 s',()=>{
   const l=new LoopLag(),t0=1_000_000;
   l.sample(t0,10_000,20);l.sample(t0+1000,10_000,2500);l.sample(t0+2000,10_000,30);expect(l.ms).toBe(2500);
   l.sample(t0+11_500,10_000,25);expect(l.ms).toBe(30);
+});
+it('compares Kalshi REST with the stream: a REST trade newer by the delay means the stream is the hold-up',()=>{
+  const now=1_792_000_000_000,q={yesBid:.41,yesAsk:.43};
+  expect(compareRest(now,now-21_000,now-500,{yesBid:.88,yesAsk:.9},q)).toMatchObject({restLeadMs:20_500,restTradeAgeMs:500,wsTradeAgeMs:21_000,sameQuote:false});
+  expect(compareRest(now,null,null,q,q)).toMatchObject({restLeadMs:null,restTradeAgeMs:null,sameQuote:true});
+  const p=new RestProbe(new KalshiClient('',''),()=>{});expect(p.due(now,false)).toBe(true);
+});
+it('probes REST once and logs the comparison, without touching trading',async()=>{
+  const logs:any[]=[],client=new KalshiClient('','');const t=new Date(Date.now()-300).toISOString();
+  client.get=(async(path:string)=>path.startsWith('/markets/trades')?{trades:[{created_time:t}]}:{orderbook_fp:{yes_dollars:[['0.88','10']],no_dollars:[['0.10','5']]}}) as any;
+  const p=new RestProbe(client,(e,d)=>logs.push([e,d])),now=Date.now();
+  await p.run('A',21_000,now-21_000,{yesBid:.41,yesAsk:.43},now);
+  expect(logs[0][0]).toBe('rest-probe');expect(logs[0][1]).toMatchObject({ticker:'A',delayed:true,rest:{yesBid:.88,yesAsk:.9},sameQuote:false});
+  expect(logs[0][1].restLeadMs).toBeGreaterThan(19_000);
+  // Every 2 s while delayed, once a minute otherwise.
+  expect(p.due(now+1000,true)).toBe(false);expect(p.due(now+2000,true)).toBe(true);expect(p.due(now+30_000,false)).toBe(false);
 });

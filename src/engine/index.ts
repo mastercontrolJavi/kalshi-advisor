@@ -9,6 +9,7 @@ import {ProxyFeed,healthy} from './feeds/proxy';
 import {KalshiClient,KalshiFeed,type Market} from './feeds/kalshi';
 import {delaySide,type DelaySide} from './feeds/orderbook';
 import {LoopLag} from './loop-lag';
+import {RestProbe} from './rest-probe';
 import {Account} from './account';
 import {dayKey,guardrails} from './guardrails';
 import {filledSeconds,mean,probability,volatility,warmVolatility} from './model/math';
@@ -76,7 +77,7 @@ let stack:StackFit=fitStack(stackSamples(journal.db)),basisState=autoBasis(basis
 let calibration=buildCalibration(journal,stack,basisState);
 const log=(event:string,data:unknown)=>{journal.log(event,data);console.log(JSON.stringify({time:new Date().toISOString(),event,data}));};
 const proxy=new ProxyFeed(log);proxy.history=journal.restoreHistory();const loopLag=new LoopLag();loopLag.start();let lastDelaySide:DelaySide|null=null;
-const client=new KalshiClient(),account=new Account(client,journal);
+const client=new KalshiClient(),account=new Account(client,journal),restProbe=new RestProbe(client,log);
 const kalshi=new KalshiFeed(client,log,t=>journal.throughTrade(t),()=>void account.onFill());
 const known=new Map<string,Market>();let state:any={status:'Starting',config,engineTime:Date.now(),evaluation:{action:'NO TRADE',reason:'Warming feeds',makers:[]}};
 const seriesHistory:{time:number;model:number|null;market:number|null;quant:number|null}[]=[];
@@ -349,6 +350,9 @@ const loop=setInterval(()=>{
       // A delayed book (FeedDelay: still updating but seconds behind Kalshi) is not a forecast: the 2026-10-21 loss round
       // showed YES at 11¢ while Kalshi traded at 90¢, and the 90% Kalshi weight pinned the quant to it.
       const delayMs=kalshi.delay.ms,delayed=kalshi.delay.delayed,kalshiP=delayed?null:usableMid(bv,now,config.bookStaleMs);
+      // Log-only: is Kalshi's REST API current while the stream is behind? (rest-probe.ts)
+      if(restProbe.due(now,delayed)){let wsTrade:number|null=null;for(let i=kalshi.trades.length-1;i>=0;i--)if(kalshi.trades[i].ticker===market.ticker){wsTrade=kalshi.trades[i].time;break;}
+        void restProbe.run(market.ticker,delayMs,wsTrade,{yesBid:bv.yesBid,yesAsk:bv.yesAsk},now);}
       const stackInputs=model?{modelP:model.p,mid:kalshiP,sigma:vol.sigma,momentum30s:features.momentum30s,momentum120s:features.momentum120s,imbalance:features.imbalance,tradeFlow30s:features.tradeFlow30s,tradeVolume30s:features.tradeVolume30s}:null;
       const forecast=tau<60&&lateStack.active==='fitted'?lateStack:stack;
       const q=stackInputs?predict(forecast,stackInputs).p:null,pSignal=config.useQuantForSignals&&q!==null?q:model?.p??.5;
