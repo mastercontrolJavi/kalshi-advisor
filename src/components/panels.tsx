@@ -8,6 +8,7 @@ import {dollars,signedDollars,cents,signedCents,pct,qty,mmss,ago,opensAt,mainten
 import {ruleVerdict,exitVerdict,finalMinuteEvidence,sellEvidence} from '@/backtest/verdict';
 import {describeSetup} from '@/backtest/setups';
 import {useFlash} from './motion';
+import {delayCause} from './delay-cause';
 
 export type Tone='yes'|'no'|'warn'|'neutral';
 export const toneText:Record<Tone,string>={yes:'text-yes',no:'text-no',warn:'text-warn',neutral:'text-fg'};
@@ -62,7 +63,8 @@ export function BacktestNote({s,which}:{s:any;which:'15m'|'hourly'}){
 /** Shown while the Kalshi stream runs behind Kalshi (engine FeedDelay): the book on screen is out of date. */
 export function DelayNote({s,children}:{s:any;children:ReactNode}){
   if(!s?.kalshi?.delayed)return null;
-  return <div role="alert" className="mt-3 flex items-start gap-2 rounded-xl border border-warn/40 bg-warn-dim/30 px-3 py-2 text-sm"><TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warn"/><span><span className="font-medium text-warn">Kalshi prices here are {Math.max(1,Math.round((s.kalshi.delay??0)/1000))} s behind Kalshi.</span> {children}</span></div>;
+  const cause=delayCause(s.kalshi);
+  return <div role="alert" className="mt-3 flex items-start gap-2 rounded-xl border border-warn/40 bg-warn-dim/30 px-3 py-2 text-sm"><TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warn"/><span><span className="font-medium text-warn">Kalshi prices here are {Math.max(1,Math.round((s.kalshi.delay??0)/1000))} s behind Kalshi.</span> {cause?<>{cause} </>:null}{children}</span></div>;
 }
 
 /** The chart setup on screen (coin flip / trend / strong trend / dip), how the same setup paid on past rounds, and your own rounds in it. */
@@ -262,7 +264,7 @@ export function Feeds({s}:{s:any}){
   const age=s?Date.now()-s.engineTime:null;
   return <div className="space-y-3">
     <ul className="space-y-2">{s?.venues?.map((v:any)=><li key={v.name} className="flex items-center justify-between gap-3 text-sm"><span className="flex items-center gap-2"><span className={cn('size-2 rounded-full',v.healthy?'bg-yes':'bg-warn')}/>{v.name}<span className="sr-only">{v.healthy?'live':'stale'}</span></span><span className="num">{dollars(v.mid)}</span><span className="w-28 text-right text-xs text-muted">quote {ago(v.age)}</span></li>)}</ul>
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-line pt-3 text-xs"><dt className="text-muted">Kalshi stream</dt><dd className="num text-right">{s?.kalshi?.status??'—'} · {s?.kalshi?.lag==null?'n/a':`${Math.round(s.kalshi.lag)}ms`}{s?.kalshi?.delay>=1000?<span className={s.kalshi.delayed?'text-warn':''}> · {(s.kalshi.delay/1000).toFixed(1)} s behind</span>:null}</dd><dt className="text-muted">Engine loop</dt><dd className="num text-right">{s?.loopMs?.toFixed(1)??'—'}ms</dd><dt className="text-muted">Data age on screen</dt><dd className="num text-right">{age==null?'—':ago(Math.max(0,age))}</dd><dt className="text-muted">Server clock offset</dt><dd className="num text-right">{s?.kalshi?.clockOffset?.toFixed(0)??'—'}ms</dd><dt className="text-muted">σ per √s (horizon-scaled)</dt><dd className="num text-right">{s?.sigma?(s.sigma*100).toFixed(5)+'%':'—'}</dd><dt className="text-muted">Variance ratio</dt><dd className="num text-right">×{s?.vol?.varianceRatio?.toFixed(2)??'—'}{s?.vol?.varianceRatioLive!=null?` (last hour ${s.vol.varianceRatioLive.toFixed(2)})`:''}</dd></dl>
+    <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-line pt-3 text-xs"><dt className="text-muted">Kalshi stream</dt><dd className="num text-right">{s?.kalshi?.status??'—'} · {s?.kalshi?.lag==null?'n/a':`${Math.round(s.kalshi.lag)}ms`}{s?.kalshi?.delay>=1000?<span className={s.kalshi.delayed?'text-warn':''}> · {(s.kalshi.delay/1000).toFixed(1)} s behind</span>:null}</dd><dt className="text-muted">Exchange feeds</dt><dd className="num text-right">{s?.kalshi?.exchangeDelay==null?'—':`${(s.kalshi.exchangeDelay/1000).toFixed(1)} s behind`}{s?.kalshi?.coinbaseDelay!=null?` · Coinbase ${(s.kalshi.coinbaseDelay/1000).toFixed(1)} s`:''}</dd><dt className="text-muted">Engine loop</dt><dd className="num text-right">{s?.loopMs?.toFixed(1)??'—'}ms{s?.kalshi?.loopLag!=null?<span className={s.kalshi.loopLag>1000?'text-warn':''}> · worst stall {s.kalshi.loopLag}ms</span>:null}</dd><dt className="text-muted">Data age on screen</dt><dd className="num text-right">{age==null?'—':ago(Math.max(0,age))}</dd><dt className="text-muted">Server clock offset</dt><dd className="num text-right">{s?.kalshi?.clockOffset?.toFixed(0)??'—'}ms</dd><dt className="text-muted">σ per √s (horizon-scaled)</dt><dd className="num text-right">{s?.sigma?(s.sigma*100).toFixed(5)+'%':'—'}</dd><dt className="text-muted">Variance ratio</dt><dd className="num text-right">×{s?.vol?.varianceRatio?.toFixed(2)??'—'}{s?.vol?.varianceRatioLive!=null?` (last hour ${s.vol.varianceRatioLive.toFixed(2)})`:''}</dd></dl>
     <p className="text-xs text-faint">A venue is live while its link answers within {s?.config?.staleMs??2000}ms (pinged every second) and its last quote is under 15 s old. Venues only send quotes when prices change.</p>
     {s?.account?.error?<p className="text-xs text-warn">{s.account.error}</p>:null}</div>;
 }

@@ -23,6 +23,21 @@ export class FeedDelay {
   get delayed(){return this.ms>MAX_BOOK_DELAY_MS;}
   reset(){this.floor=[];this.ms=0;}
 }
+/** An event-loop stall longer than this means this computer, not the network, is holding the feeds back. */
+export const MAX_LOOP_LAG_MS=1000;
+export type DelaySide='engine'|'network'|'kalshi'|'unknown';
+/**
+ * Which side a Kalshi delay comes from. A stalled event loop delays every feed, so it is checked first; then the
+ * exchange feeds (Coinbase, Kraken, …) arrive over the same connection, so if they are late too the connection is slow.
+ * If only Kalshi is late, the hold-up is most likely on Kalshi's end (or its one stream: it is ~100x the exchange
+ * traffic, so a lossy link can starve it first). Null when the Kalshi book is on time.
+ */
+export function delaySide(kalshiMs:number,exchangeMs:number|null,loopLagMs:number):DelaySide|null{
+  if(kalshiMs<=MAX_BOOK_DELAY_MS)return null;
+  if(loopLagMs>MAX_LOOP_LAG_MS)return 'engine';
+  if(exchangeMs===null)return 'unknown';
+  return exchangeMs>MAX_BOOK_DELAY_MS?'network':'kalshi';
+}
 export class Orderbook {
   yes=new Map<number,number>();no=new Map<number,number>();valid=false;updated=0;source='none';
   snapshot(yes:unknown[][]=[],no:unknown[][]=[],source='ws'){
