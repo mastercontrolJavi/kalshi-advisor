@@ -10,6 +10,9 @@ import {KalshiClient,KalshiFeed,type Market} from './feeds/kalshi';
 import {BenchmarkFeed} from './feeds/benchmark';
 import {benchmarkForecast} from './quant/benchmark';
 import {BenchmarkJournal} from './quant/benchmark-journal';
+import {CoinbaseMicrostructureFeed} from './feeds/microstructure';
+import {ResearchJournal} from './quant/research-journal';
+import {fitBenchmarkCalibration,predictBenchmarkCalibration} from './quant/benchmark-calibration';
 import {delaySide,type DelaySide} from './feeds/orderbook';
 import {LoopLag} from './loop-lag';
 import {RestProbe} from './rest-probe';
@@ -77,11 +80,17 @@ const realCopy=new RealCopy();
 // Quant state: the stacked forecaster and the proxy→BRTI basis are refit from settled windows (calibration-worker.ts).
 const basisErrors=()=>(journal.db.prepare('SELECT basis_error FROM outcomes WHERE basis_error IS NOT NULL ORDER BY time').all() as {basis_error:number}[]).map(r=>r.basis_error);
 let stack:StackFit=fitStack(stackSamples(journal.db)),basisState=autoBasis(basisErrors());
+let benchmarkCalibration=fitBenchmarkCalibration([],Date.now());
 let calibration=buildCalibration(journal,stack,basisState);
 const log=(event:string,data:unknown)=>{journal.log(event,data);console.log(JSON.stringify({time:new Date().toISOString(),event,data}));};
 const proxy=new ProxyFeed(log);proxy.history=journal.restoreHistory();const loopLag=new LoopLag();loopLag.start();let lastDelaySide:DelaySide|null=null;
 const client=new KalshiClient(),account=new Account(client,journal),restProbe=new RestProbe(client,log);
 const benchmarkJournal=new BenchmarkJournal(journal.db),benchmark=new BenchmarkFeed(client,log,t=>benchmarkJournal.tick(t));
+const researchJournal=new ResearchJournal(journal.db);
+const microstructure=new CoinbaseMicrostructureFeed({onEvent:e=>researchJournal.enqueue(e),onStatus:status=>log('microstructure-status',{status})});
+let flowState=microstructure.snapshot(),researchFailure:{at:number;message:string}|null=null;
+// A research recorder failure must not change the production forecast or interrupt the trading loop.
+function recordResearch(fn:()=>void){try{fn();}catch(e){const message=(e as Error).message;if(!researchFailure||Date.now()-researchFailure.at>60000)log('research-recording-error',{message});researchFailure={at:Date.now(),message};}}
 const kalshi=new KalshiFeed(client,log,t=>journal.throughTrade(t),()=>void account.onFill());
 const known=new Map<string,Market>();let state:any={status:'Starting',config,engineTime:Date.now(),evaluation:{action:'NO TRADE',reason:'Warming feeds',makers:[]}};
 const seriesHistory:{time:number;model:number|null;market:number|null;quant:number|null}[]=[];
@@ -212,7 +221,7 @@ const server=createServer(async(req,res)=>{
 const wss=new WebSocketServer({noServer:true});
 server.on('upgrade',(req,socket,head)=>{if(req.url!=='/ws'||!authorized(req.headers.authorization,req)){socket.write('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="Kalshi Advisor"\r\n\r\n');socket.destroy();return;}wss.handleUpgrade(req,socket,head,ws=>{wss.emit('connection',ws,req);ws.send(JSON.stringify(state));});});
 server.listen(Number(process.env.ENGINE_PORT??3001),'127.0.0.1',()=>log('engine-listening',{port:Number(process.env.ENGINE_PORT??3001),authenticated:client.authenticated}));
-proxy.start();safe('initial-refresh-error',async()=>{await refresh();benchmark.start();await account.sync();});
+proxy.start();microstructure.start();safe('initial-refresh-error',async()=>{await refresh();benchmark.start();await account.sync();});
 const refreshTimer=setInterval(()=>safe('market-refresh-error',refresh),5000);
 const fallbackTimer=setInterval(()=>safe('book-fallback-error',()=>kalshi.fallback()),2000);
 const backupTimer=setInterval(()=>safe('book-backup-error',()=>kalshi.pollBackup()),500);
@@ -277,9 +286,9 @@ let lateStack:StackFit=fitStack(lateSamples(journal.db,new Map<string,StackSampl
 const calWorker=new Worker(new URL('./calibration-worker.ts',import.meta.url),{workerData:{path:process.env.ADVISOR_DB??'./data/advisor.db'}});
 let calBusy=false;
 calWorker.on('message',(m:any)=>{calBusy=false;for(const [e,d] of m.logs??[])log(e,d);if(m.error){log('calibration-error',{message:m.error});return;}
-  if(m.stack)stack=m.stack;if(m.lateStack)lateStack=m.lateStack;if(m.basis)basisState=m.basis;if(m.calibration)calibration=m.calibration;});
+  if(m.stack)stack=m.stack;if(m.lateStack)lateStack=m.lateStack;if(m.basis)basisState=m.basis;if(m.calibration)calibration=m.calibration;if(m.benchmarkCalibration)benchmarkCalibration=m.benchmarkCalibration;});
 calWorker.on('error',e=>{calBusy=false;log('calibration-worker-error',{message:e.message});});
-const calibrationTimer=setInterval(()=>{loadVerdict();if(!calBusy){calBusy=true;calWorker.postMessage('tick');}},30000);
+const calibrationTimer=setInterval(()=>{loadVerdict();if(!calBusy){calBusy=true;calWorker.postMessage({kind:'tick',clockOffset:client.clockOffset});}},30000);
 let priceFits:PriceFit[]=PRICE_HORIZONS.map(h=>emptyPriceFit(h)),priceScores:ReturnType<PriceForecastJournal['scores']>={},priceState:any=null;
 const savedPriceFits=journal.get<PriceFit[]>('shortTermFit:v1',[]);
 for(const saved of savedPriceFits)if(saved.version===PRICE_VERSION&&PRICE_HORIZONS.includes(saved.horizon as 30|60|180)&&saved.weights?.length===8&&saved.weights.every(Number.isFinite)&&Number.isFinite(saved.noise))priceFits=priceFits.map(f=>f.horizon===saved.horizon?saved:f);
@@ -299,12 +308,13 @@ const loop=setInterval(()=>{
   const started=performance.now(),now=Date.now(),time=Math.floor((now+client.clockOffset)/1000)*1000;
   // Only a long gap means sleep/wake; a busy-machine stall of a few seconds leaves sockets intact, and restarting
   // every feed then caused the very outage it meant to repair.
-  if(now-lastLoop>15000||now<lastLoop){log('wake-or-clock-jump',{gap:now-lastLoop});proxy.restart();kalshi.recover();benchmark.restart();client.clockSynced=false;safe('wake-refresh-error',async()=>{await refresh();await account.sync();});}
+  if(now-lastLoop>15000||now<lastLoop){log('wake-or-clock-jump',{gap:now-lastLoop});proxy.restart();kalshi.recover();benchmark.restart();microstructure.restart();client.clockSynced=false;safe('wake-refresh-error',async()=>{await refresh();await account.sync();});}
   else if(now-lastLoop>1500)log('loop-stall',{gap:now-lastLoop});
   // Evaluate and publish 4×/second on live quotes; journal ticks/signals once per second.
   lastLoop=now;if(now-lastPublish<250)return;lastPublish=now;const newSecond=time!==lastSecond;lastSecond=time;
   try{
     if(newSecond){journal.expire(time);loopLag.sample(now);}
+    if(newSecond){flowState=microstructure.snapshot(now);recordResearch(()=>{researchJournal.flush(now);researchJournal.features(now,flowState);researchFailure=null;});}
     // Which side a Kalshi delay comes from: this computer (loop stalls), the connection (exchange feeds late too) or Kalshi.
     const exchanges=proxy.delay(now),side=delaySide(kalshi.delay.ms,exchanges.median,loopLag.ms);
     const feedCheck={side,exchangeDelay:exchanges.median===null?null:Math.round(exchanges.median),coinbaseDelay:exchanges.coinbase===null?null:Math.round(exchanges.coinbase),loopLag:Math.round(loopLag.ms)};
@@ -365,7 +375,16 @@ const loop=setInterval(()=>{
       const forecast=tau<60&&lateStack.active==='fitted'?lateStack:stack;
       const q=stackInputs?predict(forecast,stackInputs).p:null,pSignal=config.useQuantForSignals&&q!==null?q:model?.p??.5;
       const benchmarkState=benchmark.snapshot(now),benchmarkModel=confirmed&&benchmarkState.available&&client.clockSynced?benchmarkForecast(benchmark.history.filter(p=>p.time<=benchmarkState.secondTime!),K!,close,now+client.clockOffset):null;
-      if(newSecond&&benchmarkModel)benchmarkJournal.capture(market.ticker,time,tau,benchmarkModel,model?.p??null,q,kalshiP,{model:benchmarkModel,book:{yesBid:bv.yesBid,yesAsk:bv.yesAsk},schedule});
+      const actualTau=(close-now-client.clockOffset)/1000;
+      const calibrationInput=benchmarkModel?{brtiP:benchmarkModel.p,marketP:kalshiP,quantP:q,tau:actualTau,sigma:benchmarkModel.sigma}:null;
+      const calibratedBenchmark=calibrationInput&&actualTau<=60?predictBenchmarkCalibration(benchmarkCalibration,calibrationInput,now+client.clockOffset):null;
+      if(newSecond&&benchmarkModel)benchmarkJournal.capture(market.ticker,time,tau,benchmarkModel,model?.p??null,q,kalshiP,{tau:actualTau,model:benchmarkModel,book:{yesBid:bv.yesBid,yesAsk:bv.yesAsk},schedule});
+      const executionBook={ticker:market.ticker,time:now,bookUpdated:bv.updated,valid:bv.valid,delayMs,yes:bv.yes.slice(0,20),no:bv.no.slice(0,20)};
+      if(newSecond||actualTau<=60)recordResearch(()=>researchJournal.book(executionBook,{source:roundBook!.source,clockOffset:client.clockOffset,depthLimit:20}));
+      if(newSecond&&benchmarkModel&&calibrationInput&&calibratedBenchmark)recordResearch(()=>{researchJournal.capture(market.ticker,now,{
+        ...calibrationInput,calibratedP:calibratedBenchmark.p,candidateP:calibratedBenchmark.rawP,sourceTime:benchmarkModel.sourceTime,
+        exchangeTime:now+client.clockOffset,clockOffset:client.clockOffset,closeTime:close-client.clockOffset,fees:schedule,book:executionBook,
+        input:calibrationInput,calibration:calibratedBenchmark,flow:flowState});});
       const rawEvaluation=evaluate(pSignal,tau,book,market,account.balance,config,schedule,{feedsHealthy:venueStates.every(v=>v.healthy),healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kConfirmed:confirmed,lock:guards.reason,modelReady:!!model,bookDelayMs:delayMs,accountReady:account.ready&&now-account.updated<config.accountStaleMs,now});
       // Hard gates end a shown BUY at once; spread and depth blips do not (they are what made signals flash).
       if(latchTicker!==market.ticker){latch=emptyLatch(latch.id);latchTicker=market.ticker;}
@@ -407,7 +426,7 @@ const loop=setInterval(()=>{
       // dashboard can show how the same setup paid on past rounds (verdict.setups).
       let prior60:number|null=null;for(let i=proxy.history.length-1;i>=0&&proxy.history[i].time>=time-60000;i--)if(proxy.history[i].time===time-60000){prior60=proxy.history[i].price;break;}
       const setup=spot!==null&&K!==null&&vol.sigma>0?classifySetup({tau,spot:spot+basis,k:K,sigma:vol.sigma,spot60:prior60!==null?prior60+basis:null}):null;
-      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,setup,kalshiDelay:Math.round(kalshi.delay.ms),bookSource:roundBook!.source,bookDelay:Math.round(delayMs),coinbaseDelay:feedCheck.coinbaseDelay,exchangeDelay:feedCheck.exchangeDelay,loopLag:feedCheck.loopLag,delaySide:side,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,stackInputs,engineTime:now,bookStaleMs:config.bookStaleMs,benchmark:{...benchmarkState,model:benchmarkModel},close,evaluation,rawAction:rawEvaluation.action};
+      const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,setup,kalshiDelay:Math.round(kalshi.delay.ms),bookSource:roundBook!.source,bookDelay:Math.round(delayMs),coinbaseDelay:feedCheck.coinbaseDelay,exchangeDelay:feedCheck.exchangeDelay,loopLag:feedCheck.loopLag,delaySide:side,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,stackInputs,engineTime:now,bookStaleMs:config.bookStaleMs,benchmark:{...benchmarkState,model:benchmarkModel,calibration:calibratedBenchmark},close,evaluation,rawAction:rawEvaluation.action};
       // The taker signal is journaled (and paper-traded) once, at the price shown when it confirmed, not every second it stands.
       const newFirm=evaluation.idea&&evaluation.firm&&evaluation.firm.id!==journaledLatch?[evaluation.idea]:[];
       if(newSecond){journal.tick(tick);if(newFirm.length)journaledLatch=evaluation.firm!.id;for(const idea of [...newFirm,...evaluation.makers,...tacticIdeas.map(t=>({...t,queue:0}))])journal.signal(market.ticker,time,idea as any,tick,schedule);
@@ -440,6 +459,7 @@ const loop=setInterval(()=>{
     if(newSecond){try{hourlyState=computeHourly(time,now,spot,vol,venueStates,guards);}catch(e){log('hourly-error',{message:(e as Error).message});}}
     state.hourly=hourlyState;
     state.shortTerm=priceState;
+    state.research={flow:flowState,recorder:{...researchJournal.stats,error:researchFailure?.message??null},calibration:{state:benchmarkCalibration.state,markets:benchmarkCalibration.markets,reason:benchmarkCalibration.reason}};
     // The paper account marked at the live bids (the hold value uses the quant forecast on the current round).
     state.sim=desk.summary((ticker,side)=>{const live=kalshi.books.get(ticker);
       if(!live){const f=paperMarks.get(ticker);return {bid:f?(side==='yes'?f.yesBid:f.noBid):null,fair:null};}
@@ -454,5 +474,5 @@ const loop=setInterval(()=>{
     const message=JSON.stringify({...state,...slow,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
-const shutdown=()=>{refresher.stop();loopLag.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
+const shutdown=()=>{refresher.stop();loopLag.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();microstructure.stop();recordResearch(()=>researchJournal.flush());kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
