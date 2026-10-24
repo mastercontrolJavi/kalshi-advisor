@@ -10,7 +10,7 @@ Money flow may contain short-term directional information. Volatility describes 
 
 ## Public order flow
 
-`src/engine/feeds/microstructure.ts` opens an independent public Coinbase BTC-USD connection for `level2_batch`, `matches` and `heartbeat`.
+`src/engine/feeds/microstructure.ts` can open an independent public Coinbase BTC-USD connection for `level2_batch`, `matches` and `heartbeat`. The recorder is **off by default** after the local performance audit (DECISIONS 65); `RECORD_ORDER_FLOW=on` enables it. Kalshi depth, frozen forecasts and execution replay continue while it is off. The dashboard distinguishes a disabled recorder from a warming feed.
 
 - Stores source timestamps separately from local receive timestamps, plus session and ordinal. Initial snapshots have no source time; the code waits for a timestamped update instead of inventing one.
 - Maintains absolute L2 sizes, spread, top-ten depth imbalance, microprice and a 30-second best-quote order-flow imbalance (OFI).
@@ -37,7 +37,7 @@ Raw candidate predictions and the market fallback are distinct fields. A missing
 
 The versioned protocol fixes the first qualifying 60/30/10-second decision per market and method, minimum after-fee edge of 4 cents, maximum spread of 6 cents, and caps of five contracts/$5. Methods are BRTI, market, current quant and the raw calibrated candidate. The submitted limit includes the captured fee schedule and is frozen before future depth or outcomes are examined.
 
-Scenarios use 250/1,000/3,000 milliseconds of assumed delay, plus a 1,000-millisecond scenario with one cent of additional cost per contract. Each uses the first captured book after arrival, within a bounded wait. Invalid, stale, delayed or absent books are excluded; later favorable snapshots cannot rescue them. Replay consumes recorded depth, allows partial IOC fills and rounds fees per assumed one-contract fill. Stress costs reduce proceeds on otherwise valid fills; they cannot retroactively erase a fill because its edge deteriorated.
+Scenarios use 250/1,000/3,000 milliseconds of assumed delay, plus a 1,000-millisecond scenario with one cent of additional cost per contract. Each uses the first captured book after arrival, within a bounded wait. Invalid, stale, delayed or absent books are excluded; later favorable snapshots cannot rescue them. Replay consumes recorded depth, allows partial IOC fills and rounds fees per assumed one-contract fill. Stress costs reduce returns on otherwise valid fills; they cannot retroactively erase a fill because its edge deteriorated.
 
 The reports disclose exclusions, pending exposure, same-decision execution comparisons, fee totals, descriptive hourly bootstrap intervals after at least 20 blocks, and drawdown across settled markets in decision order. Different models select different opportunities; their total P&L is not a paired probability comparison. Displayed liquidity is not a guaranteed fill, aggregated levels hide individual order fragmentation, and this does not model maker queue position, intratrade drawdown or full portfolio allocation.
 
@@ -48,6 +48,12 @@ Public events are queued with count and byte limits and written in batches. Over
 ## News and other next experiments
 
 News is **not integrated as a live predictor in this version**. The next useful news experiment is a timestamped catalyst dataset, starting with official scheduled releases and distinguishing scheduled time, original publication time, local arrival time and later revisions. Candidate features could include proximity to a known release and the subsequent change in volatility or order flow. An LLM may classify text, but a retrospective summary of already-known events must never be treated as a historical live signal. Funding, open interest and liquidations are separate derivatives datasets, not substitutes for the spot flow recorded here.
+
+## Stream recovery verification
+
+The feed measures delay on book messages, so a fresh trade or subscription acknowledgement cannot clear an old book. After five seconds of sustained delay it reconnects, at most once per 30 seconds, retaining its delay baseline and fresh REST backup until timestamped book data catches up. An expired backup stays blocked. A wake or clock jump explicitly resets the clock baseline. Paper-fill SQL statements are prepared once, with current rows still read on every trade.
+
+The recorded live check in `output/stream-recovery-verification.json` observed a 6,414-ms backlog, automatic resynchronization, and a current book 643 ms later (26 ms excess transport delay). All 45 state requests succeeded, with no recorder drops or errors. This verifies recovery in that episode, not elimination of every future transport delay. The separate speed audit in DECISIONS 65 also addresses Windows power throttling and engine load.
 
 ## Sources
 
