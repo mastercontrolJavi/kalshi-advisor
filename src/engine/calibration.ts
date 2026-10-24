@@ -1,4 +1,7 @@
 import {benchmarkScores} from './quant/benchmark-journal';
+import {researchScores} from './quant/research-journal';
+import type {BenchmarkCalibrationFit} from './quant/benchmark-calibration';
+import type {executionStudySummary} from './quant/execution-study';
 import type {Journal} from './journal';
 import {mean} from './model/math';
 import {wilson} from './model/opening';
@@ -32,7 +35,7 @@ export function openingScore(rows:{ticker:string;direction:string;p:number;base_
     recent:rows.slice(-10).reverse().map(r=>({ticker:r.ticker,direction:r.direction,p:r.p,result:r.result}))};
 }
 const paperCache=new WeakMap<Journal,{key:string;kinds:Record<string,any>;curve:any[];breakdown:any[]}>();
-export function buildCalibration(journal:Journal,stack?:StackFit,basis?:{correction:number;n:number}){
+export function buildCalibration(journal:Journal,stack?:StackFit,basis?:{correction:number;n:number},benchmarkCalibration?:BenchmarkCalibrationFit,execution:ReturnType<typeof executionStudySummary>|null=null){
   // Fixed-horizon sampling: one paired prediction per settled market, nearest 180s within ±30s.
   const chosen=new Map<string,any>();
   const saved=journal.db.prepare('SELECT ticker,result,context FROM outcomes').all() as any[];
@@ -66,5 +69,5 @@ export function buildCalibration(journal:Journal,stack?:StackFit,basis?:{correct
   const next=NEXT_HORIZONS.map(h=>({horizon:h,...openingScore(nextRows.filter(r=>r.horizon===h))}));
   const quant=stack?{active:stack.active,reason:stack.reason,n:stack.n,markets:stack.markets,cv:stack.cv,weights:describe(stack),effective:effectiveWeights(stack),fittedEffective:effectiveWeights(stack,'fittedWeights'),basis,history:journal.get<any[]>('quantHistory',[]).map(h=>({time:h.time,markets:h.markets,method:h.cv?.method??'legacy mixed-time validation',stack:h.cv?.stack,prior:h.cv?.prior,model:h.cv?.model,kalshi:h.cv?.kalshi}))}:null;
   const {rounds,trends}=buildRounds(journal.db);
-  return {updated:Date.now(),benchmark:benchmarkScores(journal.db),rounds,roundTrends:trends,opening,live,next,quant,scalp:byKind('scalp'),dip:byKind('dip'),hourly:byKind('hourly'),...rel,taker:byKind('taker'),maker:byKind('maker'),curve:heavy.curve,breakdown:heavy.breakdown,basis:errors.length?{count:errors.length,mean:mean(errors),histogram:[...hist].map(([bin,count])=>({bin,count}))}:{count:0,mean:null,histogram:[]},outcomes:outcomes.slice(-20).map(o=>({...o,context:undefined})),totalSignals:(journal.db.prepare('SELECT COUNT(*) AS n FROM signals').get() as any).n};
+  return {updated:Date.now(),benchmark:benchmarkScores(journal.db),research:{scores:researchScores(journal.db),fit:benchmarkCalibration??null,execution},rounds,roundTrends:trends,opening,live,next,quant,scalp:byKind('scalp'),dip:byKind('dip'),hourly:byKind('hourly'),...rel,taker:byKind('taker'),maker:byKind('maker'),curve:heavy.curve,breakdown:heavy.breakdown,basis:errors.length?{count:errors.length,mean:mean(errors),histogram:[...hist].map(([bin,count])=>({bin,count}))}:{count:0,mean:null,histogram:[]},outcomes:outcomes.slice(-20).map(o=>({...o,context:undefined})),totalSignals:(journal.db.prepare('SELECT COUNT(*) AS n FROM signals').get() as any).n};
 }

@@ -3,6 +3,13 @@ import {ReconnectingSocket} from './socket';
 
 export const COINBASE_MICROSTRUCTURE_URL='wss://ws-feed.exchange.coinbase.com';
 export const MICROSTRUCTURE_WINDOW_MS=30000;
+/**
+ * The recorder is research only and off unless RECORD_ORDER_FLOW=on. Live on 2026-10-23 it fell into reconnect storms
+ * (832 gap/reconnects in 5 minutes): a busy engine read Coinbase late, every late frame dropped the book, and each
+ * reconnect pulled a ~1 MB, 40,000-level snapshot through the engine thread and into the journal. Those minutes are
+ * when the Kalshi book ran 10–45 s behind.
+ */
+export const orderFlowEnabled=(env:Record<string,string|undefined>=process.env)=>env.RECORD_ORDER_FLOW==='on';
 export type MicrostructureLevel=[price:number,size:number];
 export type MicrostructureChange=[side:'buy'|'sell',price:number,size:number];
 interface EventBase {version:1;venue:'coinbase';product:'BTC-USD';sessionId:string;ordinal:number;receivedAt:number;sourceTime:number|null}
@@ -107,6 +114,9 @@ export class CoinbaseMicrostructureFeed {
   /** Direct calls support deterministic fixtures/replay; normal live use is start/stop. Unknown channels are ignored. */
   handle(message:unknown,receivedAt=this.now()){
     if(!finite(receivedAt)||receivedAt<0||this.status==='stopped'||message===null||typeof message!=='object')return;
+    // After a failed book, the terminating socket can still deliver buffered frames. Wait for a new connection
+    // and snapshot instead of counting each old frame as another gap or warming features on the failed stream.
+    if(this.running&&this.status!=='connected')return;
     if(this.status==='idle')this.begin('replaying',receivedAt);
     const m=message as Record<string,unknown>;if(m.type==='error'){this.rejected++;this.gap('book','subscription error',receivedAt);return;}
     if(m.product_id!=='BTC-USD'||!['snapshot','l2update','match','last_match','heartbeat'].includes(String(m.type)))return;

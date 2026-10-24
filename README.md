@@ -1,5 +1,15 @@
 # Kalshi Bitcoin 15-minute advisor
 
+## Speed audit · October 23, 2026
+
+On battery, Windows ran the engine 3.5–7× slower than normal and the Kalshi book fell seconds behind in busy minutes (independent connections on the same PC stayed current). The engine, web server and markets process now opt out of Windows power throttling at startup, the guardrails no longer re-date every past trade 4× a second, and the Coinbase order-flow recorder is off by default. Feeds & latency shows how busy the engine loop is; a busy engine is named as the cause of a delay. See DECISIONS 65.
+
+## Order flow and execution research · October 23, 2026
+
+An independent Coinbase BTC-USD recorder (off by default since the speed audit below; set RECORD_ORDER_FLOW=on in .env.local) captures public trades, batched L2 updates, heartbeats, source/arrival timestamps, depth imbalance, microprice and 30-second order flow. New final-minute checkpoints freeze a small BRTI calibration challenger alongside the current quant and market probabilities. These research features and forecasts do not change trading advice or place orders.
+
+Calibration shows prospective paired probability scores and automatic depth-based execution replay. `npm run execution:study` writes the full read-only report to `output/EXECUTION-STUDY.md` and `.json`; add `-- --through <ISO-time>` for a fixed cutoff. Replay uses frozen fee-aware limits, latency scenarios, partial fills and actual recorded depth, and explicitly excludes missing or stale data. See [the research protocol, formulas, limitations and news-data plan](docs/RESEARCH-ENGINE-2026-10-23.md).
+
 ## Quantitative engine update · October 23, 2026
 
 The main learner now uses expanding chronological validation: a training outcome must have been observed before the test block, with an additional 60-second embargo. Each settled market contributes one unit of training weight, regardless of its snapshot count. Adoption requires at least 60 later markets, 20 hourly blocks, stable gains across periods, positive block confidence bounds versus both the default blend and usable market odds, and no worse log loss. Legacy mixed-time scores are labelled separately on Calibration.

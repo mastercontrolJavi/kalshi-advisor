@@ -1,17 +1,23 @@
 import type {Config} from './config';
 export interface RealEvent {id:string;time:number;ticker:string;type:'fill'|'settlement';pnl:number;outcomePnl?:number;closedContracts?:number;contracts:number;orderId?:string;side?:string;price?:number;action?:string;warnings?:string[]}
 // Constructing Intl.DateTimeFormat costs ~0.3 ms; per-event construction made guardrails ~190 ms per loop.
-const formatters=new Map<string,Intl.DateTimeFormat>();
-export function dayKey(time:number,zone=process.env.SESSION_TIMEZONE??'America/Los_Angeles'){
+const formatters=new Map<string,Intl.DateTimeFormat>(),days=new Map<string,string>(),SESSION_ZONE=process.env.SESSION_TIMEZONE??'America/Los_Angeles';
+/**
+ * Calendar day in the session zone. guardrails asks for every past trade 4×/s, so answers are kept per 15-minute
+ * bucket: every zone offset and DST change falls on a 15-minute boundary, so a bucket never spans two days.
+ */
+export function dayKey(time:number,zone=SESSION_ZONE){
+  const key=zone+':'+Math.floor(time/900000),hit=days.get(key);if(hit!==undefined)return hit;
   let f=formatters.get(zone);if(!f){f=new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'});formatters.set(zone,f);}
-  return f.format(time);
+  if(days.size>=50000)days.clear();const day=f.format(time);days.set(key,day);return day;
 }
 export function guardrails(events:RealEvent[],startBalance:number,config:Config,now:number,overrideDay:string|null=null){
   const today=dayKey(now),todayEvents=events.filter(e=>dayKey(e.time)===today);
   const pnl=todayEvents.reduce((s,e)=>s+e.pnl,0);
   const closedOrders=new Map<string,{time:number;pnl:number}>();
   for(const e of events.filter(e=>e.type==='fill'&&(e.closedContracts??0)>0)){const id=e.orderId??e.id,prior=closedOrders.get(id);closedOrders.set(id,{time:Math.max(e.time,prior?.time??0),pnl:e.pnl+(prior?.pnl??0)});}
-  const settled=[...events.filter(e=>e.type==='settlement'&&(e.contracts>0||!events.some(f=>f.type==='fill'&&f.ticker===e.ticker))),...[...closedOrders.values()]].sort((a,b)=>a.time-b.time);
+  const filled=new Set(events.filter(e=>e.type==='fill').map(e=>e.ticker));
+  const settled=[...events.filter(e=>e.type==='settlement'&&(e.contracts>0||!filled.has(e.ticker))),...[...closedOrders.values()]].sort((a,b)=>a.time-b.time);
   let streak=0,lastLoss=0;
   for(const e of settled){const p=e.pnl;if(p<0){streak=streak<0?streak-1:-1;lastLoss=e.time;}else if(p>0)streak=streak>0?streak+1:1;else streak=0;}
   const hourly=new Set(events.filter(e=>e.type==='fill'&&e.time>now-3600000).map(e=>e.orderId??e.id)).size;

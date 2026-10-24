@@ -102,6 +102,9 @@ it('subscribes without authentication and fences callbacks when restarting a rea
   const until=async(test:()=>boolean)=>{const end=Date.now()+3000;while(!test()){if(Date.now()>end)throw Error('local fixture timeout');await new Promise(r=>setTimeout(r,10));}};
   try{feed.start();feed.start();await until(()=>feed.snapshot().bookHealthy);const first=feed.snapshot().sessionId;feed.restart();await until(()=>feed.snapshot().bookHealthy&&feed.snapshot().sessionId!==first);await new Promise(r=>setTimeout(r,700));
     expect(connections).toBe(2);expect(feed.snapshot().bookHealthy).toBe(true);expect(subscriptions).toEqual(Array(2).fill({type:'subscribe',product_ids:['BTC-USD'],channels:['level2_batch','matches','heartbeat']}));
+    const before=feed.snapshot().gapCount,now=Date.now();feed.handle(update(now-10000),now);
+    for(let i=0;i<10;i++)feed.handle(update(now-10000),now);
+    expect(feed.snapshot().gapCount).toBe(before+1);await until(()=>feed.snapshot().bookHealthy);
     feed.stop();expect(feed.snapshot()).toMatchObject({status:'stopped',bookHealthy:false,flowHealthy:false});
   }finally{feed.stop();for(const client of server.clients)client.terminate();await new Promise<void>(resolve=>server.close(()=>resolve()));}
 },10000);

@@ -23,18 +23,22 @@ export class FeedDelay {
   get delayed(){return this.ms>MAX_BOOK_DELAY_MS;}
   reset(){this.floor=[];this.ms=0;}
 }
-/** An event-loop stall longer than this means this computer, not the network, is holding the feeds back. */
+/** An event-loop stall longer than this is evidence of a local contribution to delayed feeds. */
 export const MAX_LOOP_LAG_MS=1000;
+/** A loop busy this share of the last 5 s cannot keep up with Kalshi's ~1,000 messages/s either (LoopLag.busy). */
+export const MAX_LOOP_BUSY=.8;
 export type DelaySide='engine'|'network'|'kalshi'|'unknown';
 /**
- * Which side a Kalshi delay comes from. A stalled event loop delays every feed, so it is checked first; then the
- * exchange feeds (Coinbase, Kraken, …) arrive over the same connection, so if they are late too the connection is slow.
- * If only Kalshi is late, the hold-up is most likely on Kalshi's end (or its one stream: it is ~100x the exchange
- * traffic, so a lossy link can starve it first). Null when the Kalshi book is on time.
+ * Observed delay pattern. A stalled event loop can delay every feed, so it is checked first. Concurrent exchange
+ * delays suggest a shared transport problem; Kalshi-only delay isolates the stream, not the responsible party.
+ * A high-volume stream can be affected by a lossy route or server queue while other feeds remain current.
+ * These labels are diagnostics, not proof of causation. Null when the Kalshi book is on time. A saturated loop (busy, the
+ * LoopLag share) counts as a stall: on 2026-10-23 an independent connection on the same machine kept up with Kalshi
+ * while the engine, busy without any 1-s stall, ran seconds behind and was labelled 'kalshi'.
  */
-export function delaySide(kalshiMs:number,exchangeMs:number|null,loopLagMs:number):DelaySide|null{
+export function delaySide(kalshiMs:number,exchangeMs:number|null,loopLagMs:number,busy=0):DelaySide|null{
   if(kalshiMs<=MAX_BOOK_DELAY_MS)return null;
-  if(loopLagMs>MAX_LOOP_LAG_MS)return 'engine';
+  if(loopLagMs>MAX_LOOP_LAG_MS||busy>=MAX_LOOP_BUSY)return 'engine';
   if(exchangeMs===null)return 'unknown';
   return exchangeMs>MAX_BOOK_DELAY_MS?'network':'kalshi';
 }

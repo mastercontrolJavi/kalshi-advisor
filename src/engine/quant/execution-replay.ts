@@ -37,6 +37,7 @@ export interface ExecutionSummary {
   decisions:number;eligible:number;filled:number;partial:number;unfilled:number;excluded:number;pending:number;settled:number;
   contracts:number;cost:number;fees:number;extraCost:number;settledCost:number;pnl:number;returnOnSettledCost:number|null;
   reasons:Partial<Record<ReplayReason,number>>;
+  evidence:ReturnType<typeof executionEvidence>;
 }
 export interface ExecutionScenarioResult {scenario:ExecutionScenario;attempts:ExecutionAttempt[];summary:ExecutionSummary}
 export interface ExecutionComparison {scenario:string;baseline:string;paired:number;baselinePnl:number;scenarioPnl:number;difference:number;unpaired:number}
@@ -52,6 +53,13 @@ function validDecision(d:ExecutionDecision){
   return !!d.id&&!!d.ticker&&(d.side==='yes'||d.side==='no')&&[d.time,d.probabilityTime,d.closeTime,d.probability,d.limitPrice,d.contracts,d.maxCost,d.minEdge].every(finite)&&d.closeTime>d.time&&d.probability>=0&&d.probability<=1&&d.limitPrice>0&&d.limitPrice<1&&d.contracts>0&&d.maxCost>0&&d.minEdge>=0;
 }
 function validFees(s:FeeSchedule){return s?.verified===true&&finite(s.takerMultiplier)&&s.takerMultiplier>=0&&finite(s.precision)&&s.precision>0&&s.precision<=.01;}
+/** Freeze the submitted limit at decision time, including the per-contract fee assumption. */
+export function executionLimitPrice(probability:number,side:'yes'|'no',minEdge:number,fees:FeeSchedule):number|null{
+  if(!finite(probability)||probability<0||probability>1||!finite(minEdge)||minEdge<0||!validFees(fees))return null;
+  const fair=side==='yes'?probability:1-probability;let low=0,high=9999;
+  while(low<high){const tick=Math.ceil((low+high)/2),p=tick/10000;if(p+fee(p,1,'taker',fees)<=fair-minEdge+1e-9)low=tick;else high=tick-1;}
+  return low>0?low/10000:null;
+}
 function validLevels(levels:Level[]){
   if(!Array.isArray(levels))return false;
   const prices=new Set<number>();
@@ -107,12 +115,13 @@ export function replayOrder(decision:ExecutionDecision,snapshots:readonly Execut
       while(lo<hi){const mid=Math.ceil((lo+hi)/2);if(result.cost+quote(mid).cost<=decision.maxCost+1e-9)lo=mid;else hi=mid-1;}
       if(!lo){result.reason='cost-cap';break;}
       const q=quote(lo),expectedProfit=round(fair*q.contracts-q.cost);
-      if(expectedProfit/q.contracts<decision.minEdge-1e-9){result.reason='insufficient-edge';break;}
+      // The submitted limit is frozen. A delayed quote or stress charge cannot retroactively cancel a fill
+      // merely because its expected edge deteriorated; that loss of edge is precisely what replay measures.
       result.fills.push({price,...q,expectedProfit});
       result.contracts=round(result.contracts+q.contracts);result.premium=round(result.premium+q.premium);result.fees=round(result.fees+q.fee);result.extraCost=round(result.extraCost+q.extraCost);result.cost=round(result.cost+q.cost);result.expectedProfit=round(result.expectedProfit+expectedProfit);
       available=round(available-q.contracts);
     }
-    if(result.reason==='cost-cap'||result.reason==='insufficient-edge')break;
+    if(result.reason==='cost-cap')break;
   }
   if(!result.contracts)return result;
   result.status=result.contracts>=wanted-1e-9?'filled':'partial';result.reason=result.status==='filled'?null:result.reason;result.settlement='pending';
@@ -123,8 +132,18 @@ export function replayOrder(decision:ExecutionDecision,snapshots:readonly Execut
   return result;
 }
 
+/** Descriptive uncertainty only; whole hours remain together and no interval is shown before 20 blocks. */
+export function executionEvidence(attempts:readonly ExecutionAttempt[]){
+  const settled=attempts.filter(a=>a.settlement==='settled'&&a.pnl!==null&&a.contracts>0).sort((a,b)=>a.decisionTime-b.decisionTime);
+  const blocks=new Map<number,{pnl:number;contracts:number}>();let pnl=0,contracts=0,peak=0,drawdown=0;
+  for(const a of settled){pnl+=a.pnl!;contracts+=a.contracts;peak=Math.max(peak,pnl);drawdown=Math.max(drawdown,peak-pnl);
+    const hour=Math.floor(a.decisionTime/3600000),b=blocks.get(hour)??{pnl:0,contracts:0};b.pnl+=a.pnl!;b.contracts+=a.contracts;blocks.set(hour,b);}
+  let low:number|null=null,high:number|null=null;const values=[...blocks.values()];
+  if(values.length>=20){let seed=77123;const boot:number[]=[];for(let n=0;n<1000;n++){let total=0,size=0;for(let i=0;i<values.length;i++){seed=(Math.imul(seed,1664525)+1013904223)>>>0;const b=values[Math.floor(seed/4294967296*values.length)];total+=b.pnl;size+=b.contracts;}boot.push(total/size);}boot.sort((a,b)=>a-b);low=boot[25];high=boot[974];}
+  return {settledMarkets:settled.length,hourBlocks:values.length,meanNetPerContract:contracts?pnl/contracts:null,low,high,settledSequenceDrawdown:drawdown};
+}
 function summarize(attempts:ExecutionAttempt[]):ExecutionSummary{
-  const summary:ExecutionSummary={decisions:attempts.length,eligible:0,filled:0,partial:0,unfilled:0,excluded:0,pending:0,settled:0,contracts:0,cost:0,fees:0,extraCost:0,settledCost:0,pnl:0,returnOnSettledCost:null,reasons:{}};
+  const summary:ExecutionSummary={decisions:attempts.length,eligible:0,filled:0,partial:0,unfilled:0,excluded:0,pending:0,settled:0,contracts:0,cost:0,fees:0,extraCost:0,settledCost:0,pnl:0,returnOnSettledCost:null,reasons:{},evidence:executionEvidence(attempts)};
   for(const r of attempts){
     if(r.reason)summary.reasons[r.reason]=(summary.reasons[r.reason]??0)+1;
     if(r.status==='excluded')summary.excluded++;else summary.eligible++;

@@ -1,4 +1,4 @@
-import {it,expect} from 'vitest';
+import {it,expect,vi} from 'vitest';
 import {Orderbook,FeedDelay,MAX_BOOK_DELAY_MS,MAX_LOOP_LAG_MS,delaySide} from '../src/engine/feeds/orderbook';
 import {ProxyFeed,type Venue} from '../src/engine/feeds/proxy';
 import {LoopLag} from '../src/engine/loop-lag';
@@ -21,10 +21,10 @@ it('measures how far the stream is behind Kalshi, whatever the clock difference'
   d.observe(t0+800_000,t0+800_000+5_000);d.observe(t0+800_100,t0+800_100+5_000);expect(d.ms).toBe(0);
   d.reset();d.observe(t0,t0+3000);expect(d.ms).toBe(0);expect(MAX_BOOK_DELAY_MS).toBe(2000);
 });
-it('reads the delay from every Kalshi message and keeps 2 min of trades without re-copying the list per trade',()=>{
+it('reads book delay and keeps 2 min of trades without re-copying the list per trade',()=>{
   const f=new KalshiFeed(new KalshiClient('',''),()=>{});f.books.set('A',new Orderbook());const t0=Date.now();
-  f.handle({type:'ticker',sid:2,sending_ts_ms:t0-25_000,msg:{market_ticker:'A'}});
-  f.handle({type:'ticker',sid:2,sending_ts_ms:t0-25_000+50,msg:{market_ticker:'A'}});expect(f.delay.ms).toBeLessThan(1000);
+  f.handle({type:'orderbook_snapshot',sid:2,sending_ts_ms:t0-25_000,msg:{market_ticker:'A'}});
+  f.handle({type:'orderbook_snapshot',sid:2,sending_ts_ms:t0-25_000+50,msg:{market_ticker:'A'}});expect(f.delay.ms).toBeLessThan(1000);
   // 3 min of trades at 1,000 a second: the old per-trade filter took ~57 s for one minute of this.
   const started=performance.now();
   for(let s=0;s<180;s++)for(let i=0;i<1000;i++){f.lastMessage=t0+s*1000;f.handle({type:'trade',sid:2,msg:{market_ticker:'A',yes_price_dollars:'0.41',count_fp:'5',taker_side:'yes',ts_ms:t0+s*1000+i}});}
@@ -40,15 +40,15 @@ it('a delayed book blocks entries and says how far behind it is',()=>{
   expect(late.action).toBe('NO TRADE');expect(late.reason).toBe('Kalshi prices 12 s behind');
   expect(late.gates!.find(g=>g.key==='book')).toMatchObject({ok:false,detail:'12 s behind Kalshi'});
 });
-it('says which side a Kalshi delay comes from: this computer, the connection or Kalshi',()=>{
+it('reports observed delay patterns without claiming the network or provider is proven at fault',()=>{
   expect(delaySide(1500,null,5000)).toBeNull();
   // A stalled loop delays every feed, so it wins even when the exchange feeds are late too.
   expect(delaySide(20_000,15_000,3000)).toBe('engine');
   expect(delaySide(20_000,8000,40)).toBe('network');
   expect(delaySide(20_000,300,40)).toBe('kalshi');
   expect(delaySide(20_000,null,40)).toBe('unknown');expect(MAX_LOOP_LAG_MS).toBe(1000);
-  expect(delayCause({side:'network',exchangeDelay:8000})).toMatch(/internet connection.*8\.0 s behind/);
-  expect(delayCause({side:'kalshi'})).toMatch(/Kalshi’s end/);expect(delayCause({side:'engine',loopLag:2400})).toMatch(/This computer.*2\.4 s/);
+  expect(delayCause({side:'network',exchangeDelay:8000})).toMatch(/8\.0 s behind.*may be contributing/);
+  expect(delayCause({side:'kalshi'})).toMatch(/exact cause is not established/);expect(delayCause({side:'engine',loopLag:2400})).toMatch(/app recently stalled for 2\.4 s/);
   expect(delayCause({side:'unknown'})).toBeNull();
 });
 it('measures each exchange feed against its own timestamps, and counts a silent link as behind',()=>{
@@ -104,6 +104,54 @@ it('uses the REST book while the stream is behind, only while it is fresh, and d
   expect(f.current('A')).toMatchObject({source:'stream',delayed:false});expect(f.current('Z')).toBeNull();
 });
 it('the warning says where prices come from while the REST backup is in use',()=>{
-  expect(backupNote({delayed:false,delay:9400,backup:600})).toBe('Kalshi’s live stream is 9.4 s behind, so prices here come from Kalshi’s regular API instead (0.6 s old, re-read every second).');
+  expect(backupNote({delayed:false,delay:9400,backup:600})).toBe('Kalshi’s live stream is 9.4 s behind. Prices are using the REST backup (0.6 s old).');
+  expect(backupNote({delayed:false,delay:9400,backup:600,recovery:{waitingForSnapshot:true}})).toMatch(/Reconnecting the stream and waiting for a current book/);
   expect(backupNote({delayed:true,delay:9400,backup:null})).toBeNull();expect(backupNote({delayed:false,delay:0,backup:null})).toBeNull();
+});
+
+it('fresh non-book messages cannot clear a delayed book or replace the REST backup',()=>{
+  const now=Date.now(),f=new KalshiFeed(new KalshiClient('',''),()=>{}),book=new Orderbook(),backup=new Orderbook();
+  book.snapshot([['.4','5']],[['.5','5']]);backup.snapshot([['.8','5']],[['.1','5']],'rest');f.books.set('A',book);f.backup.set('A',{book:backup,started:now});
+  f.delay.observe(now-10000,now-9900);
+  f.handle({type:'orderbook_snapshot',sending_ts_ms:now-20000,msg:{market_ticker:'A'}});
+  const before=f.delay.ms;
+  for(const type of ['ticker','subscribed','fill','trade'])f.handle({type,sending_ts_ms:Date.now(),msg:{market_ticker:'A',ts_ms:now,yes_price_dollars:'.5',count_fp:'1',taker_side:'yes'}});
+  expect(f.delay.ms).toBe(before);expect(f.current('A')).toMatchObject({source:'rest',delayed:false});
+});
+
+it('recovers sustained backlog with a cooldown and retains the baseline until a fresh book arrives',async()=>{
+  vi.useFakeTimers();const now=1_792_000_000_000;vi.setSystemTime(now);
+  const logs:any[]=[],client=new KalshiClient('','');
+  client.get=vi.fn(async()=>({orderbook_fp:{yes_dollars:[['.8','5']],no_dollars:[['.1','5']]}}));
+  const f=new KalshiFeed(client,(event,data)=>logs.push({event,data})),book=new Orderbook();book.snapshot([['.4','5']],[['.5','5']]);f.books.set('A',book);
+  f.markets=[{ticker:'A',event_ticker:'E',open_time:new Date(now-60000).toISOString(),close_time:new Date(now+120000).toISOString(),status:'active'}];f.status='connected';
+  try{
+    f.delay.observe(now-1000,now-900);f.delay.observe(now-20000,now);
+    await f.pollBackup();vi.setSystemTime(now+4999);await f.pollBackup();expect(f.recovery.count).toBe(0);
+    vi.setSystemTime(now+5000);await f.pollBackup();expect(f.recovery).toMatchObject({count:1,lastTime:now+5000,waitingForSnapshot:true});
+    expect(f.delay.ms).toBe(19900);expect(f.current('A')).toMatchObject({source:'rest',delayed:false});expect(book.valid).toBe(false);
+    // The first replacement snapshot is still old. Reconnecting must not make it look current.
+    f.handle({type:'orderbook_snapshot',sending_ts_ms:now-15000,msg:{market_ticker:'A',yes_dollars_fp:[['.4','5']],no_dollars_fp:[['.5','5']]}});
+    expect(f.delay.delayed).toBe(true);expect(f.current('A')?.source).toBe('rest');expect(f.recovery.waitingForSnapshot).toBe(true);
+    f.status='connected';vi.setSystemTime(now+34999);await f.pollBackup();expect(f.recovery.count).toBe(1);
+    vi.setSystemTime(now+35000);await f.pollBackup();expect(f.recovery.count).toBe(2);
+    f.handle({type:'orderbook_snapshot',sending_ts_ms:now+34900,msg:{market_ticker:'A',yes_dollars_fp:[['.7','5']],no_dollars_fp:[['.2','5']]}});
+    expect(f.recovery.waitingForSnapshot).toBe(false);expect(f.current('A')).toMatchObject({source:'stream',delayed:false});
+    await f.pollBackup();expect(f.backup.size).toBe(0);expect(logs.filter(x=>x.event==='book-delay-resync')).toHaveLength(2);expect(logs.at(-1).event).toBe('book-delay-recovered');
+  }finally{f.stop();vi.useRealTimers();}
+});
+
+it('does not reconnect for short spikes, and expired REST data remains blocked during recovery',async()=>{
+  vi.useFakeTimers();const now=1_792_000_000_000;vi.setSystemTime(now);
+  const client=new KalshiClient('',''),logs:string[]=[],f=new KalshiFeed(client,event=>logs.push(event));
+  client.get=vi.fn(async()=>{throw new Error('offline');});f.status='connected';
+  const book=new Orderbook(),backup=new Orderbook();book.snapshot([['.4','1']],[['.5','1']]);backup.snapshot([['.8','1']],[['.1','1']],'rest');
+  f.books.set('A',book);f.backup.set('A',{book:backup,started:now});
+  try{
+    f.delay.observe(now-1000,now-900);f.delay.observe(now-10000,now);await f.pollBackup();
+    vi.setSystemTime(now+4000);f.delay.observe(now+3900,now+4000);await f.pollBackup();expect(f.recovery.count).toBe(0);
+    vi.setSystemTime(now+6000);f.delay.observe(now-4000,now+6000);await f.pollBackup();
+    vi.setSystemTime(now+11000);await f.pollBackup();expect(f.recovery.count).toBe(1);
+    expect(f.current('A')).toMatchObject({source:'stream',delayed:true});expect(book.valid).toBe(false);
+  }finally{f.stop();vi.useRealTimers();}
 });

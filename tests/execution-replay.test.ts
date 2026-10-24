@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import Database from 'better-sqlite3';
 import {baseFees,fee} from '../src/engine/model/fees';
-import {replayOrder,replayScenarios,type ExecutionDecision,type ExecutionSnapshot,type ExecutionScenario,type ExecutionOutcome} from '../src/engine/quant/execution-replay';
+import {executionEvidence,executionLimitPrice,replayOrder,replayScenarios,type ExecutionDecision,type ExecutionSnapshot,type ExecutionScenario,type ExecutionOutcome} from '../src/engine/quant/execution-replay';
 import {executionStudy} from '../scripts/execution-study';
 
 const scenario:ExecutionScenario={name:'base',latencyMs:250,maxSnapshotWaitMs:500,maxSnapshotAgeMs:500,maxFeedDelayMs:2000};
@@ -50,10 +50,20 @@ describe('fills and accounting',()=>{
     const result=replayOrder(decision(),[book({no:[[.45,1],[.5,2]]})],outcome,scenario,12000);
     expect(result.status).toBe('partial');expect(result.reason).toBe('partial-depth');expect(result.contracts).toBe(3);expect(result.fills.map(f=>f.price)).toEqual([.5,.5,.55]);expect(result.premium).toBeCloseTo(1.55);
   });
-  it('enforces the limit price and after-fee edge separately at each level',()=>{
+  it('enforces a frozen fee-aware limit without retroactively changing the submitted order',()=>{
     const books=[book({no:[[.5,2],[.35,10]]})];
     const limit=replayOrder(decision(),books,outcome,scenario,12000);expect(limit.contracts).toBe(2);expect(limit.reason).toBe('limit-price');
-    const edge=replayOrder(decision({limitPrice:.9,probability:.7,minEdge:.04}),books,outcome,scenario,12000);expect(edge.contracts).toBe(2);expect(edge.reason).toBe('insufficient-edge');
+    const limitPrice=executionLimitPrice(.7,'yes',.04,baseFees)!;
+    expect(.7-limitPrice-fee(limitPrice)).toBeGreaterThanOrEqual(.04-1e-9);
+    expect(.7-(limitPrice+.0001)-fee(limitPrice+.0001)).toBeLessThan(.04);
+    const edge=replayOrder(decision({limitPrice,probability:.7,minEdge:.04}),books,outcome,scenario,12000);expect(edge.contracts).toBe(2);expect(edge.reason).toBe('limit-price');
+    const sent=replayOrder(decision({limitPrice:.9,probability:.7,minEdge:.04}),books,outcome,scenario,12000);expect(sent.contracts).toBe(5);
+  });
+  it('charges stress costs on the same fills even when they eliminate the originally required edge',()=>{
+    const d=decision({probability:.56,limitPrice:executionLimitPrice(.56,'yes',.04,baseFees)!});
+    const normal=replayOrder(d,[book()],outcome,scenario,12000),stress=replayOrder(d,[book()],outcome,{...scenario,extraCostPerContract:.02},12000);
+    expect(normal.contracts).toBe(5);expect(stress.contracts).toBe(5);expect(normal.pnl!-stress.pnl!).toBeCloseTo(.1);
+    expect(stress.expectedProfit/stress.contracts).toBeLessThan(.04);
   });
   it('includes full per-fill fee rounding and respects the all-in cost cap',()=>{
     const fees={...baseFees,precision:.01},result=replayOrder(decision({fees,maxCost:1.04}),[book()],outcome,scenario,12000);
@@ -77,6 +87,14 @@ describe('fills and accounting',()=>{
 });
 
 describe('paired scenario studies',()=>{
+  it('requires independent hour blocks before reporting a profit interval',()=>{
+    const a=replayOrder(decision(),[book()],outcome,scenario,12000);
+    const sameHour=Array.from({length:30},(_,i)=>({...a,ticker:String(i),decisionTime:1000+i*1000}));
+    expect(executionEvidence(sameHour)).toMatchObject({hourBlocks:1,low:null,high:null});
+    const separated=sameHour.map((r,i)=>({...r,decisionTime:1000+i*3600000})),e=executionEvidence(separated);
+    expect(e.hourBlocks).toBe(30);expect(e.low).toBeCloseTo(a.pnl!/a.contracts);expect(e.high).toBeCloseTo(e.low!);
+    expect(executionEvidence([{...a,pnl:-2},{...a,decisionTime:2000,pnl:1},{...a,decisionTime:3000,pnl:-3}]).settledSequenceDrawdown).toBe(4);
+  });
   it('locks the same first attempt per market, even when it misses, and reports fee/depth stress',()=>{
     const decisions=[decision({id:'A-later',time:1300,probabilityTime:1300}),decision()],snapshots=[book({no:[[.5,8]]}),book({time:1550,bookUpdated:1550})];
     const report=replayScenarios(decisions,snapshots,[outcome],[scenario,{...scenario,name:'stress',depthFraction:.5,extraCostPerContract:.01}],12000);

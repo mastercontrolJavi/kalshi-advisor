@@ -6,6 +6,7 @@ import {KalshiClient} from '../engine/feeds/kalshi';
 import {authorized,requireDashboardCredentials} from '../engine/auth';
 import {defaults,validateConfig,type Config} from '../engine/config';
 import {dayKey} from '../engine/guardrails';
+import {fullSpeed} from '../engine/power';
 import {MarketsJournal} from './journal';
 import {MarketsData} from './kalshi-data';
 import {buildPositions,summarize,snapshotRows,sparkKey,sparkCache,type MarketsState} from './state';
@@ -29,6 +30,7 @@ import {eiaPrices,eiaFor,EIA_HOST,type EiaPrice} from './sources/eia';
  */
 requireDashboardCredentials();
 const journal=new MarketsJournal(),log=(event:string,data:unknown)=>{journal.log(event,data);console.log(JSON.stringify({time:new Date().toISOString(),event,...(data as object)}));};
+fullSpeed(log);
 // 200 ms between requests: at most 5 a second, leaving most of the account's read allowance to the Bitcoin engine.
 const client=new KalshiClient(undefined,undefined,200),data=new MarketsData(client,journal,log);
 // Outside references. Each fetcher only ever calls its own fixed host; the Odds API key goes to the Odds API only.

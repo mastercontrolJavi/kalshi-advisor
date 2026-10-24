@@ -12,6 +12,7 @@ import {RESEARCH_SCHEMA} from './quant/research-journal';
 export const tables=['ticks','signals','paper_trades','outcomes','real_trades','opening_calls','live_calls','next_calls','balances','hourly_calls','hourly_outcomes','price_forecasts','benchmark_ticks','benchmark_forecasts','research_forecasts','research_gaps','sim_accounts','sim_fills'] as const;
 export class Journal {
   db:Database.Database;
+  private restingOrders:Database.Statement;private fillRestingOrder:Database.Statement;
   // ADVISOR_DB lets a verification instance run against a copy of the journal without touching the live one.
   constructor(path=process.env.ADVISOR_DB??'./data/advisor.db'){
     if(path!==':memory:')mkdirSync(dirname(path),{recursive:true});this.db=new Database(path);this.db.pragma('journal_mode = WAL');this.db.pragma('synchronous = NORMAL');this.db.pragma('busy_timeout = 5000');
@@ -34,6 +35,10 @@ export class Journal {
     this.db.exec(PRICE_FORECAST_SCHEMA);
     this.db.exec(BENCHMARK_SCHEMA);
     this.db.exec(RESEARCH_SCHEMA);
+    // Public trades can arrive thousands per second. Reuse the query plan, but read current rows on every trade
+    // so newly resting, filled and expired paper orders retain exactly the same causal fill rules.
+    this.restingOrders=this.db.prepare("SELECT * FROM paper_trades WHERE ticker=? AND status='resting' AND time<? ORDER BY time,id");
+    this.fillRestingOrder=this.db.prepare("UPDATE paper_trades SET status='filled',filled_time=? WHERE id=?");
   }
   log(event:string,context:unknown){this.db.prepare('INSERT INTO events(time,event,context) VALUES(?,?,?)').run(Date.now(),event,JSON.stringify(context));}
   get<T>(key:string,fallback:T):T{const row=this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as {value:string}|undefined;return row?JSON.parse(row.value):fallback;}
@@ -50,10 +55,10 @@ export class Journal {
     })();
   }
   throughTrade(trade:{ticker:string;time:number;yesPrice:number;count:number;takerSide:string}){
-    const orders=this.db.prepare("SELECT * FROM paper_trades WHERE ticker=? AND status='resting' AND time<? ORDER BY time,id").all(trade.ticker,trade.time) as any[];
+    const orders=this.restingOrders.all(trade.ticker,trade.time) as any[];
     let volume=trade.count;
     for(const row of orders){const ctx=JSON.parse(row.context);if(trade.time>=ctx.close||volume<1)continue;const price=row.side==='yes'?trade.yesPrice:1-trade.yesPrice;
-      if(trade.takerSide!==row.side&&price<row.price-1e-8){this.db.prepare("UPDATE paper_trades SET status='filled',filled_time=? WHERE id=?").run(trade.time,row.id);volume-=1;}}
+      if(trade.takerSide!==row.side&&price<row.price-1e-8){this.fillRestingOrder.run(trade.time,row.id);volume-=1;}}
   }
   settle(ticker:string,result:string,time:number,actual:number|null,proxy:number|null,K:number|null,context:unknown){
     if(!['yes','no'].includes(result))return;
