@@ -16,10 +16,11 @@ export interface ExecutionDecision {
 export interface ExecutionOutcome {ticker:string;result:'yes'|'no';availableTime:number}
 /** The first capture at or after arrival is the only permissible snapshot, even if it is unusable.
  * depthFraction models disappearing displayed liquidity; extraCostPerContract models additional adverse costs.
- * maxContractsPerFill is a fee-fragmentation assumption, because aggregated depth does not identify resting orders. */
+ * maxContractsPerFill is a fee-fragmentation assumption, because aggregated depth does not identify resting orders.
+ * feePrecision recharges the same fills at another fee rounding; the frozen limit keeps the captured schedule. */
 export interface ExecutionScenario {
   name:string;latencyMs:number;maxSnapshotWaitMs:number;maxSnapshotAgeMs:number;maxFeedDelayMs:number;
-  depthFraction?:number;extraCostPerContract?:number;quantityStep?:number;maxContractsPerFill?:number;
+  depthFraction?:number;extraCostPerContract?:number;quantityStep?:number;maxContractsPerFill?:number;feePrecision?:number;
 }
 export const EXECUTION_SCENARIOS:ExecutionScenario[]=[
   {name:'base',latencyMs:500,maxSnapshotWaitMs:1200,maxSnapshotAgeMs:1000,maxFeedDelayMs:2000,depthFraction:1,maxContractsPerFill:1},
@@ -47,7 +48,7 @@ const finite=(value:number)=>Number.isFinite(value);
 const round=(value:number)=>Math.round(value*1e8)/1e8;
 const defaults=(s:ExecutionScenario)=>({depthFraction:1,extraCostPerContract:0,quantityStep:1,maxContractsPerFill:1,...s});
 function validScenario(s:ReturnType<typeof defaults>){
-  return !!s.name&&[s.latencyMs,s.maxSnapshotWaitMs,s.maxSnapshotAgeMs,s.maxFeedDelayMs,s.extraCostPerContract].every(n=>finite(n)&&n>=0)&&finite(s.depthFraction)&&s.depthFraction>0&&s.depthFraction<=1&&finite(s.quantityStep)&&s.quantityStep>0&&s.quantityStep<=1&&finite(s.maxContractsPerFill)&&s.maxContractsPerFill>=s.quantityStep;
+  return !!s.name&&[s.latencyMs,s.maxSnapshotWaitMs,s.maxSnapshotAgeMs,s.maxFeedDelayMs,s.extraCostPerContract].every(n=>finite(n)&&n>=0)&&finite(s.depthFraction)&&s.depthFraction>0&&s.depthFraction<=1&&finite(s.quantityStep)&&s.quantityStep>0&&s.quantityStep<=1&&finite(s.maxContractsPerFill)&&s.maxContractsPerFill>=s.quantityStep&&(s.feePrecision===undefined||finite(s.feePrecision)&&s.feePrecision>0&&s.feePrecision<=.01);
 }
 function validDecision(d:ExecutionDecision){
   return !!d.id&&!!d.ticker&&(d.side==='yes'||d.side==='no')&&[d.time,d.probabilityTime,d.closeTime,d.probability,d.limitPrice,d.contracts,d.maxCost,d.minEdge].every(finite)&&d.closeTime>d.time&&d.probability>=0&&d.probability<=1&&d.limitPrice>0&&d.limitPrice<1&&d.contracts>0&&d.maxCost>0&&d.minEdge>=0;
@@ -102,7 +103,7 @@ export function replayOrder(decision:ExecutionDecision,snapshots:readonly Execut
   const quantum=s.quantityStep,floorQuantity=(q:number)=>round(Math.floor((q+1e-9)/quantum)*quantum),wanted=floorQuantity(decision.contracts),fair=decision.side==='yes'?decision.probability:1-decision.probability;
   if(wanted<=0)return exclude('quantity-cap');
   result.status='unfilled';result.reason='partial-depth';
-  const fragment=floorQuantity(s.maxContractsPerFill);
+  const fragment=floorQuantity(s.maxContractsPerFill),charged=s.feePrecision===undefined?decision.fees:{...decision.fees,precision:s.feePrecision};
   for(const [price,visible] of asks){
     if(result.contracts>=wanted-1e-9)break;
     if(price>decision.limitPrice+1e-9){result.reason='limit-price';break;}
@@ -111,7 +112,7 @@ export function replayOrder(decision:ExecutionDecision,snapshots:readonly Execut
       const cap=floorQuantity(Math.min(available,wanted-result.contracts,fragment));
       // Monotone all-in cost permits exact search over contract increments; no fractional hidden depth.
       let lo=0,hi=Math.round(cap/quantum);
-      const quote=(units:number)=>{const contracts=round(units*quantum),premium=round(price*contracts),fees=fee(price,contracts,'taker',decision.fees),extraCost=round(s.extraCostPerContract*contracts);return {contracts,premium,fee:fees,extraCost,cost:round(premium+fees+extraCost)};};
+      const quote=(units:number)=>{const contracts=round(units*quantum),premium=round(price*contracts),fees=fee(price,contracts,'taker',charged),extraCost=round(s.extraCostPerContract*contracts);return {contracts,premium,fee:fees,extraCost,cost:round(premium+fees+extraCost)};};
       while(lo<hi){const mid=Math.ceil((lo+hi)/2);if(result.cost+quote(mid).cost<=decision.maxCost+1e-9)lo=mid;else hi=mid-1;}
       if(!lo){result.reason='cost-cap';break;}
       const q=quote(lo),expectedProfit=round(fair*q.contracts-q.cost);
@@ -142,7 +143,7 @@ export function executionEvidence(attempts:readonly ExecutionAttempt[]){
   if(values.length>=20){let seed=77123;const boot:number[]=[];for(let n=0;n<1000;n++){let total=0,size=0;for(let i=0;i<values.length;i++){seed=(Math.imul(seed,1664525)+1013904223)>>>0;const b=values[Math.floor(seed/4294967296*values.length)];total+=b.pnl;size+=b.contracts;}boot.push(total/size);}boot.sort((a,b)=>a-b);low=boot[25];high=boot[974];}
   return {settledMarkets:settled.length,hourBlocks:values.length,meanNetPerContract:contracts?pnl/contracts:null,low,high,settledSequenceDrawdown:drawdown};
 }
-function summarize(attempts:ExecutionAttempt[]):ExecutionSummary{
+export function summarize(attempts:ExecutionAttempt[]):ExecutionSummary{
   const summary:ExecutionSummary={decisions:attempts.length,eligible:0,filled:0,partial:0,unfilled:0,excluded:0,pending:0,settled:0,contracts:0,cost:0,fees:0,extraCost:0,settledCost:0,pnl:0,returnOnSettledCost:null,reasons:{},evidence:executionEvidence(attempts)};
   for(const r of attempts){
     if(r.reason)summary.reasons[r.reason]=(summary.reasons[r.reason]??0)+1;

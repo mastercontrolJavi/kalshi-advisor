@@ -17,7 +17,8 @@
     "backtest": "tsx scripts/backtest.ts",
     "quant:research": "tsx scripts/quant-research.ts",
     "benchmark:study": "tsx scripts/benchmark-study.ts",
-    "execution:study": "tsx scripts/execution-study.ts"
+    "execution:study": "tsx scripts/execution-study.ts",
+    "tape:check": "tsx scripts/one-sided-tape-check.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.3",
