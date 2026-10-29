@@ -23,8 +23,15 @@ export function classifySetup(i:{tau:number;spot:number;k:number;sigma:number;sp
   const kind:SetupKind=Math.abs(z)<.35?'coinflip':move1!==null&&sg*move1<=-.5?'dip':Math.abs(z)>=1?'strong':'trend';
   return {kind,side:z>=0?'yes':'no',z,move1,change1:i.spot60!==null&&i.spot60>0?i.spot-i.spot60:null,dist:i.spot-i.k,window:windowOf(i.tau)};
 }
-/** Buying one side at the ask, held to settlement: RuleResult plus how often it won and the average price paid. */
-export interface SetupRecord extends RuleResult {win:number;paid:number}
+/**
+ * Every setup was picked out of ~24 cells by the 2026-10-17 pattern study, so a good record on the rounds it was found on
+ * can be luck. A setup counts as an edge only once the rounds opening after this time clear the same bar on their own.
+ * Forward check 2026-10-28: strong trend 15–10 made +2.4¢ before, −1.4¢ on the 165 rounds after (−6.5 to +3.8).
+ */
+export const SETUPS_FOUND=Date.UTC(2026,9,17,7)/1000;
+/** Buying one side at the ask, held to settlement: RuleResult plus how often it won and the average price paid.
+ *  after: the same, on rounds opening after SETUPS_FOUND only (absent in verdicts written before 2026-10-28). */
+export interface SetupRecord extends RuleResult {win:number;paid:number;after?:Omit<SetupRecord,'after'>|null}
 /** with = the side BTC is on (for a dip: the trend side); against = the other side (for a dip: chasing the bounce). */
 export interface SetupStats {window:SetupWindow;kind:SetupKind;with:SetupRecord|null;against:SetupRecord|null}
 /** Your own settled rounds in one cell (engine/my-setups.ts): up = rounds that made money; pnl = the whole round as the
@@ -47,13 +54,19 @@ export function myRecordText(s:Setup,mine:MySetups|null|undefined):string|null{
   const split=w&&a?`buying ${yes} ${w.n} (${usd(w.pnl)}), ${no} ${a.n} (${usd(a.pnl)})`:`buying ${w?yes:no}`;
   return `Your record here: ${rounds(t.n)}, ${t.up} up, ${usd(t.pnl)} on $${t.staked.toFixed(0)} staked — ${split}.${t.flips?` You flipped sides in ${t.flips} of them (${usd(t.flipPnl)}).`:''}`;
 }
-const proven=(r:SetupRecord)=>r.n>=100&&r.ci[0]>0&&r.early>0&&r.late>0;
+const clears=(r:RuleResult)=>r.n>=100&&r.ci[0]>0&&r.early>0&&r.late>0;
+const proven=(r:SetupRecord)=>clears(r)&&!!r.after&&clears(r.after);
 const loses=(r:SetupRecord)=>r.ci[1]<0;
+/** Cleared the bar on the rounds it was found on, but not (or not yet) on rounds since. */
+function unconfirmedText(r:SetupRecord){
+  const a=r.after;
+  return `unconfirmed: since it was found on Oct 17 ${a?.n?`it made ${c(a.mean)} over ${a.n.toLocaleString()} rounds (likely ${c(a.ci[0])} to ${c(a.ci[1])})`:'it has not been checked on new rounds yet'}`;
+}
 export const SETUP_TITLE:Record<SetupKind,string>={coinflip:'Coin flip',dip:'Dip in a trend',strong:'Strong trend',trend:'Trend'};
 /** One-line verdict for a record: what it made, its range, and whether that is an edge, a loss or a fair price. */
 export function recordText(r:SetupRecord|null,what:string){
   if(!r||!r.n)return `${what}: no past rounds yet.`;
-  return `${what} won ${Math.round(r.win*100)}% at ${Math.round(r.paid*100)}¢ on average: ${c(r.mean)} per contract after fee over ${r.n.toLocaleString()} rounds (likely ${c(r.ci[0])} to ${c(r.ci[1])}) — ${proven(r)?'a small edge, in both halves of the record':loses(r)?'loses money':'about a fair price, no proven edge'}.`;
+  return `${what} won ${Math.round(r.win*100)}% at ${Math.round(r.paid*100)}¢ on average: ${c(r.mean)} per contract after fee over ${r.n.toLocaleString()} rounds (likely ${c(r.ci[0])} to ${c(r.ci[1])}) — ${proven(r)?'a small edge, in both halves of the record and on rounds since it was found':clears(r)?unconfirmedText(r):loses(r)?'loses money':'about a fair price, no proven edge'}.`;
 }
 export function setupTone(st:SetupStats|null,kind:SetupKind):'yes'|'warn'|'neutral'{
   if(kind==='coinflip')return 'warn';const w=st?.with;return w&&proven(w)?'yes':w&&loses(w)?'warn':'neutral';

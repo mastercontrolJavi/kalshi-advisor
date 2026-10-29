@@ -1,7 +1,7 @@
 import type {MarketRow,CandleRow} from './history';
 import {spotAt,quote,clusterCI,type SpotSeries} from './sim';
 import {fee} from '../engine/model/fees';
-import {classifySetup,SETUP_WINDOWS,type SetupKind,type SetupRecord,type SetupStats} from './setups';
+import {classifySetup,SETUP_WINDOWS,SETUPS_FOUND,type SetupKind,type SetupRecord,type SetupStats} from './setups';
 /**
  * How each chart setup paid on past rounds, per time-left window: the first minute of each round that shows the setup,
  * buy the side BTC is on (`with`) or the other side (`against`) at the candle's closing ask, hold to settlement, after
@@ -25,12 +25,16 @@ export function setupStats(markets:MarketRow[],candles:Map<string,CandleRow[]>,s
       }
     }
   }
-  const split=ms.length?ms[Math.floor(ms.length/2)].open_ts:0;
-  const rec=(xs:{t:number;pnl:number;win:boolean;price:number}[]):SetupRecord|null=>{
+  const mid=(rounds:MarketRow[])=>rounds.length?rounds[Math.floor(rounds.length/2)].open_ts:0,newer=ms.filter(m=>m.open_ts>=SETUPS_FOUND);
+  const split=mid(ms),splitAfter=mid(newer);
+  type Trade={t:number;pnl:number;win:boolean;price:number};
+  const base=(xs:Trade[],at:number):Omit<SetupRecord,'after'>|null=>{
     if(xs.length<2)return null;const avg=(a:typeof xs)=>a.length?a.reduce((q,x)=>q+x.pnl,0)/a.length:0;
-    return {n:xs.length,mean:avg(xs),ci:clusterCI(xs.map(x=>({sum:x.pnl,n:1}))),early:avg(xs.filter(x=>x.t<split)),late:avg(xs.filter(x=>x.t>=split)),
+    return {n:xs.length,mean:avg(xs),ci:clusterCI(xs.map(x=>({sum:x.pnl,n:1}))),early:avg(xs.filter(x=>x.t<at)),late:avg(xs.filter(x=>x.t>=at)),
       win:xs.filter(x=>x.win).length/xs.length,paid:xs.reduce((q,x)=>q+x.price,0)/xs.length};
   };
+  // after: the rounds since the setups were picked out, judged on their own (SETUPS_FOUND), with their own halves.
+  const rec=(xs:Trade[]):SetupRecord|null=>{const all=base(xs,split);return all&&{...all,after:base(xs.filter(x=>x.t>=SETUPS_FOUND),splitAfter)};};
   const kinds:SetupKind[]=['coinflip','dip','strong','trend'];
   return SETUP_WINDOWS.flatMap(w=>kinds.map(kind=>{const cell=cells.get(`${w.key}|${kind}`);return {window:w.key,kind,with:cell?rec(cell.with):null,against:cell?rec(cell.against):null};}));
 }
