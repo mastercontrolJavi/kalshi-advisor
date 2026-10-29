@@ -3,7 +3,8 @@ export const defaults = {
   maxSpread: .06, minDepth: 20, makerMargin: .03, minMakerEdge: .02, makerMinSeconds: 120,
   exitMargin: .02, exitMode: 'advise' as 'advise'|'hold'|'risk'|'ev', takeProfitPct: .25, stopLossPct: .5, stopWinProb: .25, trailGiveback: .5, trailFloor: .05, showMakerIdeas: false, signalBelowMinSize: true, useQuantForSignals: true, autoBasis: true,
   scalpMinEdge: .03, scalpMinSeconds: 180, scalpMaxSpread: .03, dipMove: .08, kellyFraction: .25, maxRiskPerTrade: .02, maxContracts: 25,
-  dailyLossLimit: .10, consecutiveLossLimit: 3, cooldownMinutes: 30, maxTradesPerHour: 4,
+  /** Loss and trade limits: the daily loss lock, the loss-streak cooldown and trades per hour. Off at the user's request (2026-10-28); the four limits below apply only when on. */
+  guardrails: false, dailyLossLimit: .10, consecutiveLossLimit: 3, cooldownMinutes: 30, maxTradesPerHour: 4,
   chaseMove: .15, chaseSeconds: 60, halfLifeSeconds: 300, realizedBlend: .25,
   basisCorrection: 0, allowEstimatedK: false, staleMs: 2000, bookStaleMs: 5000, accountStaleMs: 60000, minVolSamples: 120,
   feePrecision: .0001, audio: false, notifications: false,

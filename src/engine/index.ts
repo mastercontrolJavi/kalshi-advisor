@@ -331,7 +331,7 @@ const loop=setInterval(()=>{
     if(baseline===null&&accountValue!==null){journal.set(baselineKey,accountValue);log('day-baseline',{day:today,balance:accountValue,cash:account.balance,source:'first observed account value (cash + positions)'});}
     const override=journal.get<string|null>('overrideDay',null),guards=guardrails(events,journal.get(baselineKey,accountValue??0),config,now,override);
     if(guards.dailyLocked)journal.set('lockedDay',today);
-    if(journal.get('lockedDay','')===today&&override!==today){guards.dailyLocked=true;guards.locked=true;guards.reason='Daily loss limit reached';}
+    if(config.guardrails&&journal.get('lockedDay','')===today&&override!==today){guards.dailyLocked=true;guards.locked=true;guards.reason='Daily loss limit reached';}
     const venueStates=Object.values(proxy.venues).map(v=>({...v,healthy:healthy(v,now,config.staleMs),age:now-v.updated}));
     if(newSecond){const healthyPrice=venueStates.filter(v=>v.healthy).length>=3;priceJournal.settle(proxy.history,time,healthyPrice);
       const inputs=healthyPrice?priceInputs(proxy.history.slice(-301),time):null;if(inputs)priceJournal.capture(time,inputs,priceFits);

@@ -128,22 +128,7 @@ export function SignalPanel({s,fresh,compact=false}:{s:any;fresh:boolean;compact
 }
 
 const DirIcon=({d,className}:{d:string;className?:string})=>d==='UP'?<ArrowUpRight aria-hidden className={className}/>:d==='DOWN'?<ArrowDownRight aria-hidden className={className}/>:<Minus aria-hidden className={className}/>;
-/** Polymarket's top crypto traders on the same 15-minute window (markets process, /api/markets/sharps/btc every 15 s). */
-function SharpLean({btc,gate}:{btc:any;gate:boolean}){
-  const h=btc?.stats?.find((x:any)=>x.horizon===300),net=btc?.sharpNet??0,lean=Math.abs(net)>=100?(net>0?'UP':'DOWN'):null;
-  // Trend + sharps agree (scored at the lean horizon nearest now): shown only once proven while the evidence gate is on.
-  const near=btc?.stats?.length?btc.stats.reduce((a:any,x:any)=>Math.abs(x.horizon-btc.tau)<Math.abs(a.horizon-btc.tau)?x:a):null,ag=near?.agree,agree=btc?.agree==='yes'?'UP':btc?.agree==='no'?'DOWN':null;
-  const agRec=ag?.calls?`${ag.hits}/${ag.calls} won at ${near.horizon/60} min left${ag.paper.mean!=null?`, ${ag.paper.mean>=0?'+':'−'}${Math.abs(ag.paper.mean*100).toFixed(1)}¢ per contract`:''}`:'no settled rounds yet';
-  return <section className="border-t border-line pt-4 md:col-span-2 md:border-t md:pt-4 3xl:col-span-1">
-    <Heading icon={<Activity aria-hidden className="size-4 text-faint"/>} title="Polymarket sharps" aside={h?.paper?.n?<span>{h.proven?'proven':`unproven · ${h.paper.n} scored`}</span>:<span>scoring starts</span>}/>
-    {btc?<><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1"><span className={cn('font-display text-3xl font-bold',lean==='UP'?'text-yes':lean==='DOWN'?'text-no':'text-muted')}>{lean??'No lean'}</span><span className="num text-lg">{net>=0?'+':'−'}${Math.abs(Math.round(net)).toLocaleString()} on Up</span><span className="text-xs text-muted">{btc.sharpWallets} wallet{btc.sharpWallets===1?'':'s'} · Polymarket Up {pct(btc.upPrice,0)}</span></div>
-      <p className="mt-1 text-xs text-muted">{h?.paper?.mean!=null?`Buying the lean side on Kalshi at 5:00 left: ${h.paper.mean>=0?'+':'−'}${Math.abs(h.paper.mean*100).toFixed(1)}¢ per contract over ${h.paper.n} rounds. `:''}Their round settles on a 15-minute average, not Kalshi&apos;s last minute. <a href="/markets/sharps" className="text-info hover:underline">Details</a></p>
-      <p className="mt-1 text-xs text-muted">{agree&&(ag?.proven||!gate)?<span className={cn('font-semibold',agree==='UP'?'text-yes':'text-no')}>Trend + sharps agree: {agree}. </span>:null}Trend + sharps agree rule: {agRec}{ag?.proven?' · proven':` · ${gate?'hidden until proven (100+ rounds, profit with 95% confidence and in both halves)':'unproven'}`}.</p>
-      {near?.pmGap?.paper?.n?<p className="mt-1 text-xs text-muted">Polymarket&apos;s own price vs Kalshi&apos;s: when they differed by 3¢+ at {near.horizon/60} min left, buying the side Polymarket favoured made {near.pmGap.paper.mean>=0?'+':'−'}{Math.abs(near.pmGap.paper.mean*100).toFixed(1)}¢ per contract over {near.pmGap.paper.n} rounds{near.pmGap.paper.high!=null&&near.pmGap.paper.high<0?" — Kalshi’s price was the better one":""}.</p>:null}</>
-    :<p className="mt-2 text-sm text-muted">Waiting for the markets engine.</p>}
-  </section>;
-}
-export function ForecastPanel({s,fresh,btc}:{s:any;fresh:boolean;btc?:any}){
+export function ForecastPanel({s,fresh}:{s:any;fresh:boolean}){
   const live=fresh?s?.liveCall:null,q=s?.quality,open=s?.openingCall,rec=s?.calibration?.opening,liveTone:Tone=live?(live.direction==='UP'?'yes':'no'):'neutral';
   const qTone:Tone=q?.level==='solid'?'yes':q?.level==='degraded'?'warn':'no',held=live?Math.max(0,(s.engineTime-live.since)/1000):0;
   const elapsed=s?.market?(Date.parse(s.market.close_time)-Date.parse(s.market.open_time))/1000-(s?.tau??0):null;
@@ -165,7 +150,6 @@ export function ForecastPanel({s,fresh,btc}:{s:any;fresh:boolean;btc?:any}){
         {s?.proxy!=null&&s?.K!=null?<Pill tone={(s.proxy>=s.K)===(open.direction==='UP')?'yes':'warn'}>{(s.proxy>=s.K)===(open.direction==='UP')?'On track':'Behind'}</Pill>:null}<span className="text-xs text-faint">frozen at {mmss(open.tau)} left · Kalshi {pct(open.mid)}{open.inputs?.kSource==='proxy estimate'?' · K estimated':''}</span></div>
       :<p className="mt-2 text-sm text-muted">{s?.market&&elapsed!==null&&elapsed<180?(s?.kConfirmed?'Making the call for this window…':'Waiting for Kalshi to publish the opening price (K). The call is made the moment it does.'):'No call this window: Kalshi had not published K within 3 minutes, or the engine was not running at the open.'}</p>}
     </section>
-    {btc!==undefined?<SharpLean btc={btc} gate={s?.config?.provenSignalsOnly!==false}/>:null}
     <section className="border-t border-line pt-4 md:col-span-2 3xl:col-span-1"><Heading icon={<Activity aria-hidden className="size-4 text-faint"/>} title="Official BRTI" aside={<span>{fresh&&s?.benchmark?.available?'receiving':'waiting for index'}</span>}/>
       <div className="mt-2 flex flex-wrap items-baseline gap-3"><span className="num text-xl">{dollars(fresh?s?.benchmark?.price:null)}</span>{fresh&&s?.benchmark?.available?<span className="text-xs text-muted">{s.benchmark.ageMs} ms old · {s.benchmark.highFrequency?'5 Hz + 1 Hz':'1 Hz'}</span>:null}</div>
       <p className="mt-1 text-xs text-muted">{fresh&&s?.benchmark?.model?`Index forecast: ${pct(s.benchmark.model.p)} UP · ${s.benchmark.model.lockedCount}/60 settlement observations locked. `:'The index forecast needs two uninterrupted minutes of official observations. '}Forward experiment; entry and exit advice still use the current blend. <a href="/calibration" className="text-info hover:underline">Measured results</a></p>
@@ -263,7 +247,7 @@ export function Session({s}:{s:any}){
   const g=s?.guards,warnings:any[]=s?.realWarnings??[],cfg=s?.config;
   return <div className="space-y-4">
     <div className="grid grid-cols-2 gap-4"><Stat label="P&L today" tone={g?.pnl>0?'yes':g?.pnl<0?'no':'neutral'}>{signedDollars(g?.pnl)}</Stat><Stat label="Trades">{g?.trades??0}</Stat><Stat label="Win rate">{pct(g?.winRate)}</Stat><Stat label="Streak" tone={g?.streak>0?'yes':g?.streak<0?'no':'neutral'}>{g?.streak>0?`+${g.streak}`:g?.streak??0}</Stat></div>
-    <div className="space-y-1.5 text-sm"><div className="flex justify-between"><span className="text-muted">This hour</span><span className="num">{g?.hourly??0} / {cfg?.maxTradesPerHour??'—'}</span></div><div className="flex justify-between"><span className="text-muted">Daily loss limit</span><span className="num">{g?.startBalance?dollars(-g.startBalance*(cfg?.dailyLossLimit??0)):'—'}</span></div><div className="flex justify-between"><span className="text-muted">Status</span><span className={g?.locked?'text-warn':'text-yes'}>{g?.reason??'clear'}</span></div></div>
+    <div className="space-y-1.5 text-sm"><div className="flex justify-between"><span className="text-muted">This hour</span><span className="num">{g?.hourly??0}{cfg?.guardrails?` / ${cfg.maxTradesPerHour}`:''}</span></div><div className="flex justify-between"><span className="text-muted">Daily loss limit</span><span className="num">{!cfg?.guardrails?'off':g?.startBalance?dollars(-g.startBalance*(cfg.dailyLossLimit??0)):'—'}</span></div><div className="flex justify-between"><span className="text-muted">Status</span><span className={g?.locked?'text-warn':cfg?.guardrails?'text-yes':'text-muted'}>{g?.reason??(cfg?.guardrails?'clear':'limits off')}</span></div></div>
     {warnings.length?<ul className="space-y-1.5 border-t border-line pt-3">{warnings.flatMap((w:any)=>w.warnings.map((t:string)=><li key={w.id+t} className="flex gap-2 text-xs text-warn"><TriangleAlert aria-hidden className="size-3.5 shrink-0"/>{t}</li>))}</ul>:null}</div>;
 }
 

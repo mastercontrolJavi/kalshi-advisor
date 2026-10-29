@@ -1,5 +1,5 @@
 'use client';
-import {useEffect,useState} from 'react';
+import {useState} from 'react';
 import dynamic from 'next/dynamic';
 import {ChartCandlestick,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,BellRing,History} from 'lucide-react';
 import {useSoundAlerts} from './use-sound-alerts';
@@ -21,9 +21,6 @@ const PriceChart=dynamic(()=>import('./price-chart'),{ssr:false,loading:()=><div
 export default function Dashboard(){
   const {state:s,connected,fresh}=useLive(),markets=useLive('/markets-ws'),[override,setOverride]=useState(''),[error,setError]=useState(''),sound=useSoundAlerts(s,fresh,'15m',{state:markets.state,fresh:markets.fresh});
   async function unlock(){try{const r=await fetch('/api/engine/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:override})});const data=await r.json();if(!r.ok)throw new Error(data.error);setOverride('');}catch(e){setError((e as Error).message);}}
-  // Sharp crypto traders on Polymarket's matching round, from the markets process (null until it answers).
-  const [btc,setBtc]=useState<any>(null);
-  useEffect(()=>{let stopped=false,pending:AbortController|null=null;const load=async()=>{if(pending)return;const controller=new AbortController();pending=controller;const timeout=setTimeout(()=>controller.abort(),10000);try{const r=await fetch('/api/markets/sharps/btc',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('Sharps unavailable');const data=await r.json();if(!stopped)setBtc(data);}catch{if(!stopped)setBtc(null);}finally{clearTimeout(timeout);pending=null;}};void load();const t=setInterval(()=>void load(),15000);return()=>{stopped=true;clearInterval(t);pending?.abort();};},[]);
   const action=fresh?s?.evaluation?.action??'NO TRADE':'NO TRADE',tone=actionTone(action),healthy=s?.venues?.filter((v:any)=>v.healthy).length??0;
   const ambient=!fresh?'warn':tone==='yes'||tone==='no'?tone:'none',holding=fresh&&(s?.exits?.length??0)>0;
   return <>
@@ -49,7 +46,7 @@ export default function Dashboard(){
         <div className="relative min-w-0 lg:col-span-4 3xl:col-span-3"><div className="flex flex-col gap-4 lg:absolute lg:inset-0 lg:overflow-y-auto lg:pr-1 lg:[scrollbar-gutter:stable]">
           {holding?<><Positions s={s} fresh={fresh} compact/><SignalPanel s={s} fresh={fresh} compact/></>:<><SignalPanel s={s} fresh={fresh} compact/><Positions s={s} fresh={fresh} compact/></>}</div></div>
         <div className="relative min-w-0 lg:col-span-12 3xl:col-span-3"><div className="grid gap-4 lg:grid-cols-12 3xl:absolute 3xl:inset-0 3xl:flex 3xl:flex-col 3xl:overflow-y-auto 3xl:pr-1 3xl:[scrollbar-gutter:stable]">
-          <div className="min-w-0 lg:col-span-8"><ForecastPanel s={s} fresh={fresh} btc={btc}/></div>
+          <div className="min-w-0 lg:col-span-8"><ForecastPanel s={s} fresh={fresh}/></div>
           <div className="min-w-0 lg:col-span-4"><Collapsible open remember="order-book" title="Order book" icon={<BookOpen aria-hidden className="size-4 text-info"/>} aside="top 10 bids"><BookLadder s={s}/></Collapsible></div>
         </div></div>
       </div>

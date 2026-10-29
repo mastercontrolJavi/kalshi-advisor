@@ -39,6 +39,13 @@ function LinkCell({b,l,reload}:{b:any;l:any;reload:()=>void}){
     {l.status==='suggested'?<div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={()=>void decide('confirmed')} aria-label={`Confirm “${l.title}” is the same bet as “${b.title}”`}>✓ Same market</Button><Button size="sm" variant="ghost" disabled={busy} onClick={()=>void decide('rejected')} aria-label={`“${l.title}” is not the same bet`}>✗ Not it</Button>{error?<span className="text-xs text-warn">{error}</span>:null}</div>:null}
     <div className={cn('text-xs',state.tone==='yes'?'text-yes':state.tone==='warn'?'text-warn':'text-faint')}>{state.text}</div></div>;
 }
+/** One Bitcoin-round rule scored per horizon: how often its side won, and buying that side at Kalshi's ask plus fee. */
+function LeanTable({rows,columns}:{rows:any[];columns:string[]}){
+  return <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[640px] text-sm"><thead className="text-left text-xs text-muted"><tr>{columns.map(t=><th key={t} scope="col" className="pb-2 pr-3 font-medium">{t}</th>)}</tr></thead>
+    <tbody>{rows.map((s:any)=><tr key={s.horizon} className="border-t border-line"><th scope="row" className="py-1.5 pr-3 text-left font-medium">{s.horizon/60} min left</th><td className="num pr-3">{s.calls??0}</td>
+      <td className="num pr-3">{s.rate!=null?`${pct(s.rate,0)} (${pct(s.low,0)}–${pct(s.high,0)})`:'—'}</td><td className="num pr-3">{s.paper?.mean!=null?`${s.paper.mean>=0?'+':'−'}${Math.abs(s.paper.mean*100).toFixed(1)}¢`:'—'}{s.paper?.low!=null?<span className="text-xs text-muted"> ({(s.paper.low*100).toFixed(1)} to {(s.paper.high*100).toFixed(1)})</span>:null}</td>
+      <td>{s.proven?<Pill tone="yes">proven</Pill>:<span className="text-xs text-faint">unproven · {s.paper?.n??0} scored</span>}</td></tr>)}</tbody></table></div>;
+}
 /** Markets → Sharps: what Polymarket's best-ranked traders hold, tied to Kalshi markets, and how copying them scores. */
 export default function MarketsSharps(){
   const m=useLive('/markets-ws'),sound=useSoundAlerts(null,false,'markets',{state:m.state,fresh:m.fresh});
@@ -69,11 +76,13 @@ export default function MarketsSharps(){
           <div><div className="label">All traders</div><div className="num mt-1 text-xl">{signed(btc.allNet)} on Up</div><div className="text-xs text-muted">{btc.trades} trades</div></div>
           <div><div className="label">Polymarket Up</div><div className="num mt-1 text-xl">{pct(btc.upPrice,0)}</div><div className="text-xs text-muted">{mmss(btc.tau)} left · <span className="num">{btc.ticker}</span></div></div></div>
           {btc.error?<p className="mt-2 text-xs text-warn">{btc.error}</p>:null}
-          <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[640px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['Recorded at','Rounds with a lean','Lean side won','Buy that side on Kalshi','Status'].map(t=><th key={t} scope="col" className="pb-2 pr-3 font-medium">{t}</th>)}</tr></thead>
-            <tbody>{btc.stats.map((s:any)=><tr key={s.horizon} className="border-t border-line"><th scope="row" className="py-1.5 pr-3 text-left font-medium">{s.horizon/60} min left</th><td className="num pr-3">{s.calls}</td>
-              <td className="num pr-3">{s.rate!=null?`${pct(s.rate,0)} (${pct(s.low,0)}–${pct(s.high,0)})`:'—'}</td><td className="num pr-3">{s.paper.mean!=null?`${s.paper.mean>=0?'+':'−'}${Math.abs(s.paper.mean*100).toFixed(1)}¢`:'—'}{s.paper.low!=null?<span className="text-xs text-muted"> ({(s.paper.low*100).toFixed(1)} to {(s.paper.high*100).toFixed(1)})</span>:null}</td>
-              <td>{s.proven?<Pill tone="yes">proven</Pill>:<span className="text-xs text-faint">unproven · {s.paper.n} scored</span>}</td></tr>)}</tbody></table></div>
-          <p className="mt-2 text-xs text-faint">Polymarket&apos;s round settles on Chainlink&apos;s average over the whole 15 minutes; Kalshi&apos;s on the last 60 s. Related, not the same bet, so the lean is scored on Kalshi&apos;s result: did buying the lean side at Kalshi&apos;s ask (plus fee) pay? A lean needs $100+ of sharp money net on one side.</p></>
+          <LeanTable rows={btc.stats} columns={['Recorded at','Rounds with a lean','Lean side won','Buy that side on Kalshi','Status']}/>
+          {/* Moved here from the 15-minute dashboard (2026-10-28): none of these has shown an edge on Kalshi's price. */}
+          <div className="label mt-5">Trend + sharps agree</div>
+          <LeanTable rows={btc.stats.map((s:any)=>({horizon:s.horizon,...s.agree}))} columns={['Recorded at','Rounds they agreed','Agreed side won','Buy that side on Kalshi','Status']}/>
+          <div className="label mt-5">Polymarket&apos;s price vs Kalshi&apos;s, 3¢+ apart</div>
+          <LeanTable rows={btc.stats.map((s:any)=>({horizon:s.horizon,...s.pmGap}))} columns={['Recorded at','Rounds 3¢+ apart',"Polymarket's side won",'Buy that side on Kalshi','Status']}/>
+          <p className="mt-2 text-xs text-faint">Polymarket&apos;s round settles on Chainlink&apos;s average over the whole 15 minutes; Kalshi&apos;s on the last 60 s. Related, not the same bet, so each rule is scored on Kalshi&apos;s result: did buying its side at Kalshi&apos;s ask (plus fee) pay? A lean needs $100+ of sharp money net on one side; trend + sharps needs the trend on the same side.</p></>
         :<p className="mt-3 text-sm text-muted">Waiting for the first read of the current round.</p>}</Card>
       {shown.length?<Card className="rise"><Heading icon={<Users aria-hidden className="size-4 text-info"/>} title="Where sharp traders agree" aside={`${shown.length} bet${shown.length===1?'':'s'} held by 2+ ranked wallets`}/>
         <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[980px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['Bet','Sharp wallets','Against','Their entry → now','On Kalshi'].map(t=><th key={t} scope="col" className="pb-2 pr-3 font-medium">{t}</th>)}</tr></thead>

@@ -24,9 +24,10 @@ export function guardrails(events:RealEvent[],startBalance:number,config:Config,
   const trades=new Set(todayEvents.filter(e=>e.type==='fill').map(e=>e.orderId??e.id)).size;
   const results=settled.filter(e=>dayKey(e.time)===today);
   const wins=results.filter(e=>e.pnl>0).length;
-  const dailyLocked=startBalance>0&&pnl<=-startBalance*config.dailyLossLimit&&overrideDay!==today;
-  const cooldownUntil=streak<=-config.consecutiveLossLimit?lastLoss+config.cooldownMinutes*60000:0;
-  const reason=dailyLocked?'Daily loss limit reached':cooldownUntil>now?'Consecutive-loss cooldown':hourly>=config.maxTradesPerHour?'Hourly trade limit reached':null;
+  // With config.guardrails off the day's figures are still reported, but nothing locks.
+  const on=config.guardrails,dailyLocked=on&&startBalance>0&&pnl<=-startBalance*config.dailyLossLimit&&overrideDay!==today;
+  const cooldownUntil=on&&streak<=-config.consecutiveLossLimit?lastLoss+config.cooldownMinutes*60000:0;
+  const reason=dailyLocked?'Daily loss limit reached':cooldownUntil>now?'Consecutive-loss cooldown':on&&hourly>=config.maxTradesPerHour?'Hourly trade limit reached':null;
   return {locked:!!reason,dailyLocked,reason,cooldownUntil,pnl,trades,winRate:results.length?wins/results.length:null,streak,hourly,startBalance,today};
 }
 /**
