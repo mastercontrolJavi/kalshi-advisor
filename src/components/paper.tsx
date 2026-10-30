@@ -7,7 +7,7 @@ import {SiteHeader} from './site-header';
 import {Card} from './ui/card';
 import {Button} from './ui/button';
 import {Input} from './ui/input';
-import {Pill,Kpi,Empty,Collapsible,Heading,SetupReadout,DelayNote,WindowBar,ForecastPanel,toneText,type Tone} from './panels';
+import {Pill,Kpi,Empty,Collapsible,Heading,SetupReadout,DelayNote,WindowBar,ForecastPanel,Instruments,toneText,type Tone} from './panels';
 import {SectionHelp} from './section-help';
 import {PanelBoundary} from './panel-boundary';
 import {cn} from '@/lib/utils';
@@ -74,6 +74,7 @@ export default function Paper(){
           <Kpi label="Sound decisions" sub={coach?.settled?`${coach.verdicts.good+coach.verdicts.unlucky} of ${coach.settled} rounds`:'graded once rounds settle'}>{coach?.settled?pct((coach.verdicts.good+coach.verdicts.unlucky)/coach.settled,0):'—'}</Kpi>
           <Kpi label="Fees paid" sub="Kalshi’s taker fee, as on real trades">{dollars(sim.fees)}</Kpi>
         </div>
+        <Instruments s={s} paper/>
         {/* Same working areas as the 15-min page: the chart sets the row height and the ticket (and, from 1920 px, the calls
             and coach) scroll inside it, so a new position never pushes the rest of the page down. */}
         <div className="grid gap-4 lg:grid-cols-12">

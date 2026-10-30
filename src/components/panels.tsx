@@ -173,15 +173,16 @@ export function Kpi({label,children,sub,className}:{label:string;children:ReactN
 }
 /** Dashed placeholder for a section with nothing to show yet. */
 export function Empty({children}:{children:ReactNode}){return <p className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-muted">{children}</p>;}
-export function Instruments({s}:{s:any}){
+/** The round's numbers. `paper` (the Paper page) leaves out the real Kalshi balance: that page trades paper cash. */
+export function Instruments({s,paper=false}:{s:any;paper?:boolean}){
   const mid=s?.book?.yesBid!=null&&s?.book?.yesAsk!=null?(s.book.yesBid+s.book.yesAsk)/2:null,d=s?.distance;
-  return <Card className="instrument-strip rise grid grid-cols-3 gap-x-3 gap-y-2 p-3 lg:grid-cols-6 lg:p-4 [animation-delay:120ms]">
+  return <Card className={cn('instrument-strip rise grid grid-cols-3 gap-x-3 gap-y-2 p-3 lg:p-4 [animation-delay:120ms]',paper?'lg:grid-cols-5':'lg:grid-cols-6')}>
     <Stat label={`Opening K${s?.kConfirmed?' ✓':' (est.)'}`} sub={s?.kConfirmed?'Kalshi floor strike':'estimated from proxy'}>{dollars(s?.K)}</Stat>
     <Stat label="BTC proxy" sub={`median of ${s?.venues?.filter((v:any)=>v.healthy).length??0} live venues`}>{dollars(s?.proxy)}</Stat>
     <Stat label="Distance to K" tone={d>0?'yes':d<0?'no':'neutral'} sub={s?.model?`${s.model.z>=0?'+':''}${s.model.z.toFixed(2)} σ of average`:'—'}>{signedDollars(d)}</Stat>
     <Stat label="Model up" sub={<>Kalshi mid <span className="text-info">{pct(mid)}</span></>}>{pct(s?.p)}</Stat>
     <Stat label="Volatility" sub={`${s?.lockedCount??0}/60 locked${s?.lockedImputed?` (${s.lockedImputed} bridged)`:''} · basis ${s?.quant?.basis>=0?'+':'−'}$${Math.abs(s?.quant?.basis??0).toFixed(2)}`}>{s?.regime??'warming'}</Stat>
-    <Stat label="Balance" sub={s?.account?.ready?'account synced':'account unavailable'}>{dollars(s?.account?.balance)}</Stat>
+    {paper?null:<Stat label="Balance" sub={s?.account?.ready?'account synced':'account unavailable'}>{dollars(s?.account?.balance)}</Stat>}
   </Card>;
 }
 
