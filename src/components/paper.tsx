@@ -1,13 +1,13 @@
 'use client';
-import {useEffect,useMemo,useState,type ReactNode} from 'react';
+import {useEffect,useMemo,useState,type FormEvent,type ReactNode} from 'react';
 import dynamic from 'next/dynamic';
-import {ChartCandlestick,GraduationCap,History,BookOpen,Wallet,ExternalLink,TriangleAlert,LineChart as ChartIcon,RotateCcw} from 'lucide-react';
+import {ChartCandlestick,GraduationCap,History,BookOpen,Wallet,ExternalLink,TriangleAlert,LineChart as ChartIcon,RotateCcw,Bitcoin,ChevronDown} from 'lucide-react';
 import {useLive} from './use-live';
 import {SiteHeader} from './site-header';
 import {Card} from './ui/card';
 import {Button} from './ui/button';
 import {Input} from './ui/input';
-import {Pill,Kpi,Empty,Collapsible,Heading,SetupReadout,DelayNote,WindowBar,RoundDial,toneText,type Tone} from './panels';
+import {Pill,Kpi,Empty,Collapsible,Heading,SetupReadout,DelayNote,WindowBar,ForecastPanel,toneText,type Tone} from './panels';
 import {SectionHelp} from './section-help';
 import {PanelBoundary} from './panel-boundary';
 import {cn} from '@/lib/utils';
@@ -74,15 +74,15 @@ export default function Paper(){
           <Kpi label="Sound decisions" sub={coach?.settled?`${coach.verdicts.good+coach.verdicts.unlucky} of ${coach.settled} rounds`:'graded once rounds settle'}>{coach?.settled?pct((coach.verdicts.good+coach.verdicts.unlucky)/coach.settled,0):'—'}</Kpi>
           <Kpi label="Fees paid" sub="Kalshi’s taker fee, as on real trades">{dollars(sim.fees)}</Kpi>
         </div>
-        {/* Same working areas as the 15-min page: the chart sets the row height and the ticket (and, from 1920 px, the coach)
-            scroll inside it, so a new position never pushes the rest of the page down. */}
+        {/* Same working areas as the 15-min page: the chart sets the row height and the ticket (and, from 1920 px, the calls
+            and coach) scroll inside it, so a new position never pushes the rest of the page down. */}
         <div className="grid gap-4 lg:grid-cols-12">
           <Card className="min-w-0 p-0 lg:col-span-8 3xl:col-span-6">
             <div className="flex min-h-12 items-center gap-2 border-b border-line px-4 py-2"><ChartCandlestick aria-hidden className="size-4 text-info"/><h2 className="font-medium">Price action</h2><SectionHelp title="Price action"/><span className="ml-auto hidden text-xs text-muted sm:inline">your paper fills are marked on the Kalshi candles</span></div>
             <div className="p-4"><PanelBoundary name="Price chart"><PriceChart s={s} fresh={fresh} marks={marks}/></PanelBoundary></div>
           </Card>
           <div className="relative min-w-0 lg:col-span-4 3xl:col-span-3"><div className="flex flex-col gap-4 lg:absolute lg:inset-0 lg:overflow-y-auto lg:pr-1 lg:[scrollbar-gutter:stable]"><Ticket s={s} fresh={fresh}/></div></div>
-          <div className="relative min-w-0 lg:col-span-12 3xl:col-span-3"><div className="3xl:absolute 3xl:inset-0 3xl:overflow-y-auto 3xl:pr-1 3xl:[scrollbar-gutter:stable]"><Coach report={report} error={reportError}/></div></div>
+          <div className="relative min-w-0 lg:col-span-12 3xl:col-span-3"><div className="flex flex-col gap-4 3xl:absolute 3xl:inset-0 3xl:overflow-y-auto 3xl:pr-1 3xl:[scrollbar-gutter:stable]"><ForecastPanel s={s} fresh={fresh}/><Coach report={report} error={reportError}/></div></div>
         </div>
         {(sim.positions??[]).some((p:any)=>p.ticker!==s?.market?.ticker)?<Collapsible open title="Other paper positions" icon={<Wallet aria-hidden className="size-4 text-info"/>} aside="copied bets and earlier rounds, settled on Kalshi's result"><OtherPositions s={s} fresh={fresh}/></Collapsible>:null}
         <Collapsible open title="Paper rounds" icon={<History aria-hidden className="size-4 text-info"/>} aside={coach?.settled?`${coach.settled} settled · ${signedDollars(coach.net)}`:'every round, graded'}><Rounds coach={coach}/></Collapsible>
@@ -113,53 +113,98 @@ function StartAccount(){
   </Card>;
 }
 
-/** The order ticket: pick a side, an amount, see exactly what fills before clicking. */
+/** Kalshi-style price: 98.1¢, but 2¢ rather than 2.0¢. */
+const price=(v:number|null|undefined)=>cents(v,v!=null&&Math.round(v*1000)%10?1:0);
+/** Kalshi-style dollars: $21, or $20.37 when there are cents. */
+const payout=(v:number|null|undefined)=>dollars(v??0,v!=null&&Math.round(v*100)%100?2:0);
+/** The order ticket, laid out like Kalshi's own trade view: buy or sell, UP or DOWN, an amount, then review and submit. */
 function Ticket({s,fresh}:{s:any;fresh:boolean}){
-  const sim=s?.sim,[side,setSide]=useState<Side>('yes'),[mode,setMode]=useState<'dollars'|'contracts'>('dollars'),[amount,setAmount]=useState('20'),[busy,setBusy]=useState(false),[status,setStatus]=useState<{ok:boolean;text:string}|null>(null);
+  const sim=s?.sim,[action,setAction]=useState<'buy'|'sell'>('buy'),[side,setSide]=useState<Side>('yes'),[mode,setMode]=useState<'dollars'|'contracts'>('dollars');
+  const [buyAmount,setBuyAmount]=useState('20'),[sellAmount,setSellAmount]=useState(''),[review,setReview]=useState(false),[busy,setBusy]=useState(false),[status,setStatus]=useState<{ok:boolean;text:string}|null>(null);
   const market=s?.market,tau=Math.max(0,s?.tau??0),book=s?.book,q=s?.quant?.p??null,equity=sim?.equity??0,cash=sim?.cash??0;
   const schedule={...baseFees,...(s?.kalshi?.fees??{}),precision:s?.config?.feePrecision??.0001};
-  const pos=(sim?.positions??[]).find((p:any)=>p.ticker===market?.ticker)??null;
-  const amt=Number(amount),levels=book?{yes:book.yes??[],no:book.no??[]}:null;
-  const preview=levels&&amt>0?quoteOrder(levels,side,'buy',mode==='dollars'?{dollars:Math.min(amt,cash)}:{contracts:amt,dollars:cash},schedule):null;
-  const fair=q===null?null:side==='yes'?q:1-q,edge=preview?.contracts&&fair!==null?fair-preview.price-preview.fee/preview.contracts:null,stake=preview&&equity>0?preview.cash/equity:null;
-  const ask=(x:Side)=>x==='yes'?book?.yesAsk:book?.noAsk,fairOf=(x:Side)=>q===null?null:x==='yes'?q:1-q;
-  const blocked=!fresh?'Live prices unavailable':!market?'No round is open':tau<=1?'Round closed':s?.kalshi?.delayed?'Kalshi prices delayed':null;
+  const pos=(sim?.positions??[]).find((p:any)=>p.ticker===market?.ticker)??null,selling=action==='sell',unit=selling?'contracts':mode;
+  // A sale defaults to everything held; a buy keeps the amount last typed.
+  const amount=selling?sellAmount||(pos?String(pos.contracts):''):buyAmount,setAmount=selling?setSellAmount:setBuyAmount;
+  const amt=Number(amount),levels=book?{yes:book.yes??[],no:book.no??[]}:null,held=pos&&pos.side===side?pos:null;
+  const preview=!levels||!(amt>0)?null:selling?(held?quoteOrder(levels,side,'sell',{contracts:Math.min(amt,held.contracts)},schedule):null)
+    :quoteOrder(levels,side,'buy',mode==='dollars'?{dollars:Math.min(amt,cash)}:{contracts:amt,dollars:cash},schedule);
+  const fair=q===null?null:side==='yes'?q:1-q,edge=!selling&&preview?.contracts&&fair!==null?fair-preview.price-preview.fee/preview.contracts:null,stake=!selling&&preview&&equity>0?preview.cash/equity:null;
+  const quote=(x:Side)=>selling?(x==='yes'?book?.yesBid:book?.noBid):(x==='yes'?book?.yesAsk:book?.noAsk),chance=preview?.contracts?preview.price:quote(side);
+  const word=side==='yes'?'UP':'DOWN',verb=selling?'Sell':'Buy',close=market?new Date(market.close_time):null;
+  const closed=!fresh?'Live prices unavailable':!market?'No round is open':tau<=1?'Round closed':s?.kalshi?.delayed?'Kalshi prices delayed':null;
+  const blocked=closed??(selling&&!held?`No ${word} contracts to sell`:null);
   const flash=useFlash<HTMLDivElement>(status?.text);
-  async function send(body:any){setBusy(true);setStatus(null);try{const d=await post('sim/order',body);setStatus({ok:true,text:d.message});}catch(e){setStatus({ok:false,text:(e as Error).message});}finally{setBusy(false);}}
-  const chip=(on:boolean)=>cn('inline-flex min-h-9 cursor-pointer items-center rounded-xl px-3 text-sm transition-colors',on?'bg-surface-2 text-fg':'text-muted hover:text-fg');
-  return <Card ref={flash} className={cn('rise relative',pos?(pos.side==='yes'?'border-yes/40':'border-no/40'):'')}>
-    <div className="mb-3 flex items-center justify-between"><h2 className="label">Paper ticket</h2><SectionHelp title="Paper ticket"/></div>
-    <div className="flex items-center justify-between gap-4"><RoundDial s={s} size={96}/>
-      <div className="text-right"><div className="label">Quant forecast</div><div className="num mt-1 text-2xl font-semibold">{q===null?'—':`YES ${pct(q,0)}`}</div></div></div>
-    <DelayNote s={s}>Paper orders wait until the feed catches up, so every fill is one you could really have got.</DelayNote>
-    <div role="radiogroup" aria-label="Side" className="mt-4 grid grid-cols-2 gap-2">{(['yes','no'] as Side[]).map(x=>{const on=side===x,a=ask(x),f=fairOf(x);
-      return <button key={x} type="button" role="radio" aria-checked={on} onClick={()=>setSide(x)} className={cn('min-h-16 cursor-pointer rounded-xl border px-3 py-2 text-left transition-colors',on?(x==='yes'?'border-yes/60 bg-yes-dim/40':'border-no/60 bg-no-dim/40'):'border-line bg-surface-2/60 hover:border-line-strong')}>
-        <div className={cn('font-display text-2xl font-bold uppercase',x==='yes'?'text-yes':'text-no')}>{x==='yes'?'Yes · up':'No · down'}</div>
-        <div className="num text-sm">ask {cents(a,0)}{f!==null&&a!=null?<span className="text-muted"> · fair {cents(f,0)}</span>:null}</div></button>;})}</div>
-    <div className="mt-4 flex items-center justify-between gap-2"><span id="paper-amount-label" className="text-sm">Amount</span>
-      <div role="group" aria-label="Amount in" className="flex gap-1">{([['dollars','$'],['contracts','Contracts']] as const).map(([m,l])=><button key={m} type="button" aria-pressed={mode===m} onClick={()=>setMode(m)} className={chip(mode===m)}>{l}</button>)}</div></div>
-    <Input aria-labelledby="paper-amount-label" className="mt-1" type="number" inputMode="decimal" min={0} step="any" value={amount} onChange={e=>setAmount(e.target.value)}/>
-    {mode==='dollars'?<div className="mt-2 flex flex-wrap gap-1">{[.01,.02,.05].map(f=><button key={f} type="button" onClick={()=>setAmount(String(Math.max(1,Math.floor(equity*f))))} className={chip(false)}>{pct(f,0)} of equity</button>)}</div>:null}
-    <dl className="mt-4 grid grid-cols-2 gap-y-1.5 border-t border-line pt-3 text-sm">
-      <dt className="text-muted">Fills</dt><dd className="num text-right">{preview?.contracts?`${qty(preview.contracts)} at ${cents(preview.price)}${preview.levels>1?` (${preview.levels} levels)`:''}`:'—'}</dd>
-      <dt className="text-muted">Fee</dt><dd className="num text-right">{preview?.contracts?dollars(preview.fee):'—'}</dd>
-      <dt className="text-muted">Cost / max loss</dt><dd className="num text-right">{preview?.contracts?dollars(preview.cash):'—'}</dd>
-      <dt className="text-muted">Pays if right</dt><dd className="num text-right text-yes">{preview?.contracts?`${dollars(preview.contracts)} (${signedDollars(preview.contracts-preview.cash)})`:'—'}</dd>
-      <dt className="text-muted">Edge after fee</dt><dd className={cn('num text-right',edge==null?'':edge>=0?'text-yes':'text-no')}>{edge==null?'—':`${signedCents(edge)} a contract`}</dd>
-      <dt className="text-muted">Of your equity</dt><dd className={cn('num text-right',stake!=null&&stake>MAX_STAKE?'text-warn':'')}>{stake==null?'—':pct(stake,1)}</dd>
-    </dl>
-    {stake!=null&&stake>MAX_STAKE?<p className="mt-2 flex items-start gap-1.5 text-xs text-warn"><TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0"/>Over {pct(MAX_STAKE,0)} of equity on one round: the coach will flag it.</p>:null}
-    {edge!=null&&edge<0?<p className="mt-1 flex items-start gap-1.5 text-xs text-warn"><TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0"/>Above the forecast after the fee: expected to lose {signedCents(edge).slice(1)} a contract.</p>:null}
-    <Button className={cn('mt-4 w-full',side==='no'&&'bg-no hover:bg-no/85')} disabled={busy||!!blocked||!preview?.contracts} onClick={()=>void send({side,action:'buy',[mode]:amt})}>
-      {busy?'Sending…':blocked??(preview?.contracts?`Buy ${qty(preview.contracts)} ${side.toUpperCase()} for ${dollars(preview.cash)}`:'Enter an amount')}</Button>
-    <p role="status" className={cn('mt-2 min-h-5 text-sm',status?(status.ok?'text-yes':'text-no'):'text-muted')}>{status?.text??''}</p>
-    {pos?<div className="mt-3 rounded-xl border border-line bg-surface-2/60 p-3">
+  useEffect(()=>{setReview(false);},[market?.ticker,action,side]);
+  async function send(body:any){setBusy(true);setStatus(null);try{const d=await post('sim/order',body);setStatus({ok:true,text:d.message});setReview(false);if(body.action==='sell')setSellAmount('');}catch(e){setStatus({ok:false,text:(e as Error).message});}finally{setBusy(false);}}
+  // Enter or "Review" shows the fill first; "Submit" sends it at the live book, as Kalshi's own two-step ticket does.
+  function submit(e:FormEvent){e.preventDefault();if(busy||blocked||!preview?.contracts)return;if(!review){setReview(true);return;}void send({side,action,[unit]:amt});}
+  const tab=(on:boolean)=>cn('font-display min-h-12 cursor-pointer border-b-2 text-lg font-bold tracking-wide uppercase transition-colors',on?'border-fg text-fg':'border-transparent text-faint hover:text-muted');
+  const chip='inline-flex min-h-8 cursor-pointer items-center rounded-full px-2.5 text-xs text-muted transition-colors hover:bg-surface-2 hover:text-fg';
+  return <Card ref={flash} className={cn('rise relative p-0',pos?(pos.side==='yes'?'border-yes/40':'border-no/40'):'')}>
+    <form onSubmit={submit}>
+    <div className="flex items-center justify-between gap-3 border-b border-line px-5">
+      <div role="group" aria-label="Order" className="flex gap-5">{(['buy','sell'] as const).map(a=><button key={a} type="button" aria-pressed={action===a} onClick={()=>{setAction(a);if(a==='sell'&&pos)setSide(pos.side);}} className={tab(action===a)}>{a}</button>)}</div>
+      <label className="relative flex items-center"><span className="sr-only">Amount in</span>
+        <select value={unit} disabled={selling} onChange={e=>setMode(e.target.value as 'dollars'|'contracts')} className="font-display min-h-11 cursor-pointer appearance-none bg-transparent pr-6 text-right text-lg font-bold tracking-wide text-fg uppercase disabled:cursor-default disabled:text-muted"><option value="dollars">Dollars</option><option value="contracts">Contracts</option></select>
+        <ChevronDown aria-hidden className="pointer-events-none absolute right-0 size-4"/></label>
+    </div>
+    <div className="space-y-5 p-5">
+      <div className="flex items-center gap-3"><span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-warn text-bg"><Bitcoin aria-hidden className="size-6"/></span>
+        <h2 className="font-display min-w-0 text-2xl leading-tight font-bold">BTC 15 min · {s?.K!=null?<span className="num">{dollars(s.K)} target</span>:'target pending'}</h2><span className="ml-auto"><SectionHelp title="Paper ticket"/></span></div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div role="radiogroup" aria-label="Side" className="flex rounded-full border border-line bg-surface-2/70 p-1">{(['yes','no'] as Side[]).map(x=>{const on=side===x;
+          return <button key={x} type="button" role="radio" aria-checked={on} disabled={selling&&!!pos&&pos.side!==x} onClick={()=>setSide(x)} className={cn('font-display num min-h-11 cursor-pointer rounded-full px-5 text-lg font-bold tracking-wide uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-40',on?(x==='yes'?'bg-yes text-bg':'bg-no text-bg'):'text-fg hover:bg-surface')}>{x==='yes'?'Up':'Down'} {price(quote(x))}</button>;})}</div>
+        <span className={cn('num text-[15px] underline decoration-dotted underline-offset-4',tau<=60&&market?'text-warn':'text-muted')} aria-label={market?`${mmss(tau)} left in the round`:'No round open'}>{market?`${mmss(tau)} left`:'no round'}</span>
+      </div>
+      <DelayNote s={s}>Paper orders wait until the feed catches up, so every fill is one you could really have got.</DelayNote>
+      <label className="flex min-h-16 cursor-text items-center justify-between gap-3 rounded-[14px] border border-line-strong bg-bg/70 px-4 transition-colors focus-within:border-info hover:border-faint">
+        <span className="text-[17px] text-muted">{unit==='dollars'?'Dollars':'Contracts'}</span>
+        <span className="flex min-w-0 items-baseline">{unit==='dollars'?<span className={cn('font-display text-3xl font-bold',amt>0?'text-fg':'text-faint')}>$</span>:null}
+          <input type="number" inputMode="decimal" min={0} step="any" placeholder="0" value={amount} onChange={e=>{setAmount(e.target.value);setReview(false);}} style={{width:`calc(${Math.min(10,Math.max(1,amount.length))}ch + 2px)`}} className="num font-display min-w-0 bg-transparent text-right text-3xl font-bold text-fg outline-none placeholder:text-faint [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"/></span>
+      </label>
+      <div className="-mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <span className="text-[15px] text-muted">Paper account · {selling?(pos?`${qty(pos.contracts)} ${pos.side==='yes'?'UP':'DOWN'} held`:'nothing held this round'):`${dollars(cash)} available`}</span>
+        {!selling&&mode==='dollars'?<span className="flex gap-0.5">{[.01,.02,.05].map(f=><button key={f} type="button" onClick={()=>{setBuyAmount(String(Math.max(1,Math.floor(equity*f))));setReview(false);}} className={chip}>{pct(f,0)}</button>)}</span>:null}
+      </div>
+      {review&&preview?.contracts?<div className="rounded-xl border border-line bg-surface-2/60 p-4">
+        <div className="label">Review your paper order</div>
+        <div className={cn('font-display mt-1 text-3xl font-bold uppercase',side==='yes'?'text-yes':'text-no')}>{verb} {qty(preview.contracts)} {word}</div>
+        <dl className="mt-3 grid grid-cols-2 gap-y-1.5 text-sm">
+          <dt className="text-muted">Average price</dt><dd className="num text-right">{cents(preview.price)}{preview.levels>1?` · ${preview.levels} levels`:''}</dd>
+          <dt className="text-muted">Fee</dt><dd className="num text-right">{dollars(preview.fee)}</dd>
+          {selling&&held?<>
+            <dt className="text-muted">You receive</dt><dd className="num text-right">{dollars(preview.cash)}</dd>
+            <dt className="text-muted">P&L on these</dt><dd className={cn('num text-right',preview.cash-preview.contracts*held.avgCost>=0?'text-yes':'text-no')}>{signedDollars(preview.cash-preview.contracts*held.avgCost)}</dd>
+            <dt className="text-muted">Hold value at the forecast</dt><dd className="num text-right">{dollars(held.holdValue*preview.contracts/held.contracts)}</dd>
+          </>:<>
+            <dt className="text-muted">Total cost</dt><dd className="num text-right">{dollars(preview.cash)}</dd>
+            <dt className="text-muted">Payout if {word}</dt><dd className="num text-right text-yes">{dollars(preview.contracts)} ({signedDollars(preview.contracts-preview.cash)})</dd>
+            <dt className="text-muted">Edge after fee</dt><dd className={cn('num text-right',edge==null?'':edge>=0?'text-yes':'text-no')}>{edge==null?'—':`${signedCents(edge)} a contract`}</dd>
+            <dt className="text-muted">Of your equity</dt><dd className={cn('num text-right',stake!=null&&stake>MAX_STAKE?'text-warn':'')}>{stake==null?'—':pct(stake,1)}</dd>
+          </>}
+        </dl>
+        {preview.partial?<p className="mt-2 text-xs text-warn">Only {qty(preview.contracts)} fill at the bids showing now.</p>:null}
+      </div>:<dl className="space-y-3">
+        <div className="flex items-center justify-between gap-3"><dt className="text-[17px] text-muted">Odds</dt><dd className="num text-xl">{chance==null?'—':`${pct(chance,0)} chance`}</dd></div>
+        <div className="flex items-end justify-between gap-3"><dt className="text-[17px] text-muted">{selling?'You receive':'Max payout'}{close?<span className="block text-[15px]">{close.toLocaleDateString([],{month:'short',day:'numeric',year:'numeric'})} · {close.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}</span>:null}</dt>
+          <dd className="num font-display text-5xl leading-none font-bold">{payout(selling?preview?.cash:preview?.contracts)}</dd></div>
+      </dl>}
+      {stake!=null&&stake>MAX_STAKE?<p className="-mt-2 flex items-start gap-1.5 text-xs text-warn"><TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0"/>Over {pct(MAX_STAKE,0)} of equity on one round: the coach will flag it.</p>:null}
+      {edge!=null&&edge<0?<p className="-mt-2 flex items-start gap-1.5 text-xs text-warn"><TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0"/>Above the forecast after the fee: expected to lose {signedCents(edge).slice(1)} a contract.</p>:null}
+      {review&&preview?.contracts?<div className="grid grid-cols-[auto_1fr] gap-2"><Button type="button" variant="outline" className="h-14 px-6" onClick={()=>setReview(false)}>Back</Button>
+        <Button type="submit" className={cn('h-14 text-base',side==='no'&&'bg-no hover:bg-no/85')} disabled={busy||!!blocked}>{busy?'Sending…':blocked??`Submit ${verb.toLowerCase()}`}</Button></div>
+        :<Button type="submit" className="h-14 w-full text-base" disabled={busy||!!blocked||!preview?.contracts}>{blocked??`Review ${verb}`}</Button>}
+      <p role="status" className={cn('-mt-2 min-h-5 text-sm',status?(status.ok?'text-yes':'text-no'):'text-muted')}>{status?.text??''}</p>
+    </div>
+    </form>
+    {pos?<div className="mx-5 mb-5 rounded-xl border border-line bg-surface-2/60 p-3">
       <div className="flex items-baseline justify-between gap-2"><span className="label">Your paper position</span><span className={cn('num text-lg font-semibold',pos.unrealized>0?'text-yes':pos.unrealized<0?'text-no':'')}>{signedDollars(pos.unrealized)}</span></div>
-      <div className="mt-1 text-sm"><span className="num">{qty(pos.contracts)}</span> {pos.side.toUpperCase()} · avg <span className="num">{cents(pos.avgCost)}</span> incl. fees · bid <span className="num">{cents(pos.bid)}</span></div>
+      <div className="mt-1 text-sm"><span className="num">{qty(pos.contracts)}</span> {pos.side==='yes'?'UP':'DOWN'} · avg <span className="num">{cents(pos.avgCost)}</span> incl. fees · bid <span className="num">{cents(pos.bid)}</span></div>
       <div className="mt-0.5 text-xs text-muted">Hold value at the forecast {dollars(pos.holdValue)} · sell now {dollars(pos.value)} before the fee</div>
-      <Button variant="outline" size="sm" className="mt-3 w-full" disabled={busy||!!blocked||pos.bid==null} onClick={()=>void send({side:pos.side,action:'sell',contracts:pos.contracts})}>{busy?'Sending…':`Sell all ${qty(pos.contracts)} at the bid`}</Button>
+      <Button variant="outline" size="sm" className="mt-3 w-full" disabled={busy||!!closed||pos.bid==null} onClick={()=>void send({side:pos.side,action:'sell',contracts:pos.contracts})}>{busy?'Sending…':`Sell all ${qty(pos.contracts)} at the bid`}</Button>
     </div>:null}
-    {market?<SetupReadout s={s}/>:null}
+    {market?<div className="px-5 pb-5"><SetupReadout s={s}/></div>:null}
   </Card>;
 }
 
