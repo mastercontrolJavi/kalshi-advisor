@@ -33,11 +33,15 @@ describe('official benchmark data integrity',()=>{
 });
 const prices=(end:number)=>Array.from({length:180},(_,i)=>({time:end-(179-i)*1000,price:80000+Math.sin(i/3)*15}));
 describe('benchmark settlement challenger',()=>{
-  it('uses (close−60s, close] and complete contiguous official observations',()=>{
+  it('uses [close−60s, close) and complete contiguous official observations',()=>{
     const close=base+180000,history=prices(close-10000),forecast=benchmarkForecast(history,80000,close,close-9900)!;
-    expect(forecast.lockedCount).toBe(50);expect(forecast.active).toBe(false);expect(forecast.p).toBeGreaterThan(0);
-    expect(benchmarkForecast(prices(close-60000),80000,close,close-59900)?.lockedCount).toBe(0);
-    expect(benchmarkForecast(prices(close-1000),80000,close,close-900)?.lockedCount).toBe(59);
+    expect(forecast.lockedCount).toBe(51);expect(forecast.active).toBe(false);expect(forecast.p).toBeGreaterThan(0);
+    expect(benchmarkForecast(prices(close-61000),80000,close,close-60900)?.lockedCount).toBe(0);
+    expect(benchmarkForecast(prices(close-60000),80000,close,close-59900)?.lockedCount).toBe(1);
+    // With the last pre-close second in, all 60 are locked and the expected average is exactly Kalshi's settlement value.
+    const full=prices(close-1000),settled=benchmarkForecast(full,80000,close,close-900)!,window=full.filter(s=>s.time>=close-60000&&s.time<close);
+    expect(settled.lockedCount).toBe(60);expect(window).toHaveLength(60);
+    expect(settled.expected).toBeCloseTo(window.reduce((sum,s)=>sum+s.price,0)/60,9);expect(settled.variance).toBe(0);
     expect(benchmarkForecast(history.slice(-120),80000,close,close-9900)).toBeNull();
     expect(benchmarkForecast(history.filter((_,i)=>i!==170),80000,close,close-9900)).toBeNull();
     expect(benchmarkForecast(history,80000,close,close-7000)).toBeNull();expect(benchmarkForecast(history,80000,close,close)).toBeNull();

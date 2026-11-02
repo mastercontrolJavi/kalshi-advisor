@@ -10,8 +10,9 @@ export function benchmarkForecast(history:Sample[],strike:number,close:number,no
   const vol=volatility(history),vr=varianceRatio(history,60,1,60),sigma=vol.sigma1s*Math.sqrt(vr.ratio);
   if(!(sigma>0))return null;
   const byTime=new Map(history.map(s=>[s.time,s.price])),locked:number[]=[],offsets:number[]=[];
-  // Kalshi's documented quarter-hour final minute is (close - 60s, close], exactly 60 1Hz values.
-  for(let t=close-59000;t<=close;t+=1000){
+  // Kalshi settles on the 60 1Hz values in [close - 60s, close): the close second itself is excluded. Checked against
+  // Kalshi's published value on 983 of 983 rounds (within half a cent); (close - 60s, close] was one second late (DECISIONS 69).
+  for(let t=close-60000;t<close;t+=1000){
     if(t<=latest.time){const p=byTime.get(t);if(p===undefined)return null;locked.push(p);}
     else offsets.push((t-latest.time)/1000);
   }
