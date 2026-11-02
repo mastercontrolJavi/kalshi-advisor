@@ -8,7 +8,9 @@ import {Journal} from './journal';
 import {ProxyFeed,healthy} from './feeds/proxy';
 import {KalshiClient,KalshiFeed,type Market} from './feeds/kalshi';
 import {BenchmarkFeed} from './feeds/benchmark';
-import {benchmarkForecast} from './quant/benchmark';
+import {benchmarkForecast,lockReadout} from './quant/benchmark';
+import {LockShadow,lockShadowScores} from './quant/lock-shadow';
+import {StaleBreaker,staleReasons,dangerBadges} from './execution-guard';
 import {BenchmarkJournal} from './quant/benchmark-journal';
 import {CoinbaseMicrostructureFeed,orderFlowEnabled} from './feeds/microstructure';
 import {fullSpeed} from './power';
@@ -26,7 +28,7 @@ import {authorized,requireDashboardCredentials} from './auth';
 import {createExecutor} from './executor';
 import {buildCalibration} from './calibration';
 import {openingCall,OPENING_K_DEADLINE_SECONDS} from './model/opening';
-import {exitAdvice,entryCost,type ExitMemory} from './exits';
+import {exitAdvice,entryCost,exitComparison,type ExitMemory} from './exits';
 import {nextDirection,confidence,dueHorizon,dataQuality,type Direction} from './model/live';
 import {fitStack,predict,explain,describe,type StackFit,type StackSample} from './quant/stack';
 import {stackSamples,lateSamples} from './quant/samples';
@@ -90,6 +92,8 @@ const proxy=new ProxyFeed(log);proxy.history=journal.restoreHistory();const loop
 const client=new KalshiClient(),account=new Account(client,journal),restProbe=new RestProbe(client,log);
 const benchmarkJournal=new BenchmarkJournal(journal.db),benchmark=new BenchmarkFeed(client,log,t=>benchmarkJournal.tick(t));
 const researchJournal=new ResearchJournal(journal.db);
+// Execution guardrails (execution-guard.ts, DECISIONS 70): the 500 ms stale-book breaker and the final-minute lock shadow log.
+const breaker=new StaleBreaker(),lockShadow=new LockShadow(journal.db);let lockShadowState=lockShadowScores(journal.db),lockShadowAt=0,lastBreaker=false;
 const orderFlow=orderFlowEnabled(),microstructure=new CoinbaseMicrostructureFeed({onEvent:e=>researchJournal.enqueue(e),onStatus:status=>log('microstructure-status',{status})});
 let flowState=microstructure.snapshot(),researchFailure:{at:number;message:string}|null=null;
 // A research recorder failure must not change the production forecast or interrupt the trading loop.
@@ -340,7 +344,11 @@ const loop=setInterval(()=>{
     if(newSecond&&rawVol.count>=config.minVolSamples&&rawVol.sigma>0&&time%60000===0)journal.set('lastSigma',{sigma:rawVol.sigma,time:now});
     // The round's book: the stream, or the REST backup while the stream is behind (kalshi.current, DECISIONS 64).
     const roundBook=market?kalshi.current(market.ticker,now):null;
-    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,recovery:{...kalshi.recovery},lag:kalshi.lag,delay:Math.round(kalshi.delay.ms),delayed:roundBook?roundBook.delayed:kalshi.delay.delayed,backup:roundBook?.source==='rest'?Math.round(roundBook.delayMs):null,...feedCheck,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,backtestRefresh:{running:refresher.running,lastFinished:refresher.lastFinished,lastExit:refresher.lastExit},next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory,mySetups:mySetupsCached(now)};
+    // Stale-book breaker: the book the engine trades on and the BRTI index, 500 ms; while it is on, nothing is advised.
+    const breakerView=breaker.update(now,staleReasons({kalshi:roundBook?{status:kalshi.status,bookValid:roundBook.book.valid,source:roundBook.source,delayMs:roundBook.delayMs,silentMs:now-kalshi.lastMessage}:null,brti:benchmark.health(now)}));
+    if(breakerView.stale!==lastBreaker){lastBreaker=breakerView.stale;log('stale-breaker',{stale:breakerView.stale,reasons:breakerView.reasons,trips:breakerView.trips});}
+    if(newSecond&&now-lockShadowAt>=10000){lockShadowAt=now;recordResearch(()=>{lockShadowState=lockShadowScores(journal.db);});}
+    const common={engineTime:now,status:market?'Live market':'Awaiting market',config,venues:venueStates,proxy:spot,vol,kalshi:{status:kalshi.status,recovery:{...kalshi.recovery},lag:kalshi.lag,delay:Math.round(kalshi.delay.ms),delayed:roundBook?roundBook.delayed:kalshi.delay.delayed,backup:roundBook?.source==='rest'?Math.round(roundBook.delayMs):null,...feedCheck,age:now-kalshi.lastMessage,clockOffset:client.clockOffset,clockSynced:client.clockSynced,fees:kalshi.fees,limits:client.limits},account:{balance:account.balance,ready:account.ready,error:account.error,updated:account.updated,positionsUpdated:account.positionsUpdated,positions:account.positions},guards,realWarnings:[...new Map(events.filter(e=>e.warnings?.length).map(e=>[e.orderId??e.id,e])).values()].slice(-5),backtest:verdict,backtestRefresh:{running:refresher.running,lastFinished:refresher.lastFinished,lastExit:refresher.lastExit},next:kalshi.markets.find(m=>m.ticker!==market?.ticker),history:seriesHistory,mySetups:mySetupsCached(now),breaker:breakerView,lockShadow:lockShadowState};
     if(!market){
       // Between windows: poll every second so the next market and its K are picked up immediately.
       if(now-lastFastRefresh>1000){lastFastRefresh=now;safe('market-refresh-error',refresh);}
@@ -377,7 +385,10 @@ const loop=setInterval(()=>{
       const stackInputs=model?{modelP:model.p,mid:kalshiP,sigma:vol.sigma,momentum30s:features.momentum30s,momentum120s:features.momentum120s,imbalance:features.imbalance,tradeFlow30s:features.tradeFlow30s,tradeVolume30s:features.tradeVolume30s}:null;
       const forecast=tau<60&&lateStack.active==='fitted'?lateStack:stack;
       const q=stackInputs?predict(forecast,stackInputs).p:null,pSignal=config.useQuantForSignals&&q!==null?q:model?.p??.5;
-      const benchmarkState=benchmark.snapshot(now),benchmarkModel=confirmed&&benchmarkState.available&&client.clockSynced?benchmarkForecast(benchmark.history.filter(p=>p.time<=benchmarkState.secondTime!),K!,close,now+client.clockOffset):null;
+      const benchmarkState=benchmark.snapshot(now),brtiHistory=benchmarkState.secondTime!==null?benchmark.history.filter(p=>p.time<=benchmarkState.secondTime!):[];
+      const benchmarkModel=confirmed&&benchmarkState.available&&client.clockSynced?benchmarkForecast(brtiHistory,K!,close,now+client.clockOffset):null;
+      // Final-minute lock readout on the official index: locked seconds of [close − 60 s, close) and the average the rest need.
+      const lock=confirmed&&client.clockSynced?lockReadout(brtiHistory,K!,close,now+client.clockOffset,benchmarkModel?.sigma??(vol.sigma>0?vol.sigma:null)):null;
       const actualTau=(close-now-client.clockOffset)/1000;
       const calibrationInput=benchmarkModel?{brtiP:benchmarkModel.p,marketP:kalshiP,quantP:q,tau:actualTau,sigma:benchmarkModel.sigma}:null;
       const calibratedBenchmark=calibrationInput&&actualTau<=60?predictBenchmarkCalibration(benchmarkCalibration,calibrationInput,now+client.clockOffset):null;
@@ -392,7 +403,7 @@ const loop=setInterval(()=>{
       // Hard gates end a shown BUY at once; spread and depth blips do not (they are what made signals flash).
       if(latchTicker!==market.ticker){latch=emptyLatch(latch.id);latchTicker=market.ticker;}
       const hardGate=rawEvaluation.gates?.find(g=>!g.ok&&['market','feeds','book','k','model','account','guards'].includes(g.key)),closedForEntries=tau<(config.finalMinuteSignals?5:60);
-      const firm=latchSignal(latch,rawEvaluation,pSignal,bv,config,schedule,account.balance,now,hardGate?`${hardGate.label}: ${hardGate.detail}`:closedForEntries?'Closed for entries (final minute)':null);
+      const firm=latchSignal(latch,rawEvaluation,pSignal,bv,config,schedule,account.balance,now,breakerView.stale?`STALE BOOK — DO NOT TRADE: ${breakerView.reasons.join(' · ')}`:hardGate?`${hardGate.label}: ${hardGate.detail}`:closedForEntries?'Closed for entries (final minute)':null);
       latch=firm.latch;const evaluation=firm.evaluation;
       const quality=dataQuality({healthyFeeds:venueStates.filter(v=>v.healthy).length,totalFeeds:venueStates.length,kalshiLive:kalshi.status==='connected',bookLive:bv.valid&&now-bv.updated<=config.bookStaleMs,kConfirmed:confirmed,modelReady:!!model,clockSynced:client.clockSynced});
       const callOf=(p:number,direction:'UP'|'DOWN')=>({direction,p,baseP:model.p,lean:p-model.p,confidence:confidence(p),reasons:explain(forecast,stackInputs!),inputs:{...stackInputs,K,kSource:confirmed?'kalshi':'proxy estimate'}});
@@ -422,7 +433,7 @@ const loop=setInterval(()=>{
       // Tactics: scalp and dip ideas, priced after fees, only on live data and outside locks.
       if(newSecond&&q!==null)tacticsHistory.push({time,yesAsk:bv.yesAsk,noAsk:bv.noAsk,q});while(tacticsHistory.length>120)tacticsHistory.shift();
       const tcfg={scalpMinEdge:config.scalpMinEdge,scalpMinSeconds:config.scalpMinSeconds,scalpMaxSpread:config.scalpMaxSpread,dipMove:config.dipMove,minDepth:config.minDepth,minEdge:config.minEdge};
-      const tacticsLive=q!==null&&quality.level!=='unreliable'&&!guards.locked&&market.status==='active'&&bv.valid&&now-bv.updated<=config.bookStaleMs&&!delayed;
+      const tacticsLive=q!==null&&quality.level!=='unreliable'&&!guards.locked&&market.status==='active'&&bv.valid&&now-bv.updated<=config.bookStaleMs&&!delayed&&!breakerView.stale;
       const scalpIdea=tacticsLive?scalp(q!,tau,bv,schedule,tcfg):null,dipState=q!==null?dips(tacticsHistory,time,q,bv,schedule,tcfg,tau):{watch:[],idea:null};
       const tacticIdeas=[scalpIdea,tacticsLive?dipState.idea:null].filter((t):t is NonNullable<typeof scalpIdea>=>!!t).map(t=>({...t,...size(t.side==='yes'?q!:1-q!,t.price,account.balance??0,config,schedule)}));
       // Chart setup (backtest/setups.ts): coin flip / trend / strong trend / dip, on the basis-corrected price, so the
@@ -432,8 +443,11 @@ const loop=setInterval(()=>{
       const tick={time,ticker:market.ticker,proxy:spot,K,tau,sigma:vol.sigma,p:model?.p??null,q,mid,regime:vol.regime,model,kConfirmed:confirmed,setup,kalshiDelay:Math.round(kalshi.delay.ms),bookSource:roundBook!.source,bookDelay:Math.round(delayMs),coinbaseDelay:feedCheck.coinbaseDelay,exchangeDelay:feedCheck.exchangeDelay,loopLag:feedCheck.loopLag,loopBusy:feedCheck.loopBusy,delaySide:side,book:{...bv,yes:bv.yes.slice(0,10),no:bv.no.slice(0,10)},features,stackInputs,engineTime:now,bookStaleMs:config.bookStaleMs,benchmark:{...benchmarkState,model:benchmarkModel,calibration:calibratedBenchmark},close,evaluation,rawAction:rawEvaluation.action};
       // The taker signal is journaled (and paper-traded) once, at the price shown when it confirmed, not every second it stands.
       const newFirm=evaluation.idea&&evaluation.firm&&evaluation.firm.id!==journaledLatch?[evaluation.idea]:[];
-      if(newSecond){journal.tick(tick);if(newFirm.length)journaledLatch=evaluation.firm!.id;for(const idea of [...newFirm,...evaluation.makers,...tacticIdeas.map(t=>({...t,queue:0}))])journal.signal(market.ticker,time,idea as any,tick,schedule);
-      seriesHistory.push({time,model:model?.p??null,market:mid,quant:q});if(seriesHistory.length>901)seriesHistory.shift();}
+      if(newSecond){journal.tick(tick);if(newFirm.length)journaledLatch=evaluation.firm!.id;for(const idea of [...newFirm,...(breakerView.stale?[]:evaluation.makers),...tacticIdeas.map(t=>({...t,queue:0}))])journal.signal(market.ticker,time,idea as any,tick,schedule);
+      seriesHistory.push({time,model:model?.p??null,market:mid,quant:q});if(seriesHistory.length>901)seriesHistory.shift();
+      recordResearch(()=>lockShadow.observe({ticker:market.ticker,time,tau,close,p:benchmarkModel?.p??null,quote:{yesBid:bv.yesBid,yesAsk:bv.yesAsk,noBid:bv.noBid,noAsk:bv.noAsk},schedule,
+        fresh:!breakerView.stale&&bv.valid,complete:lock?.phase==='locking'&&benchmarkModel!==null,
+        context:{lock,benchmark:benchmarkModel?{p:benchmarkModel.p,sigma:benchmarkModel.sigma,lockedCount:benchmarkModel.lockedCount,sourceTime:benchmarkModel.sourceTime,version:benchmarkModel.version}:null,quant:q,book:{yesBid:bv.yesBid,yesAsk:bv.yesAsk,yesDepth:bv.yesDepth,noDepth:bv.noDepth,source:roundBook!.source,delayMs:Math.round(delayMs)}}}));}
       const exits=(account.positions as any[]).filter(pos=>String(pos.ticker).startsWith('KXBTC15M')).map(pos=>{
         // Memory is keyed by the position itself, so adding to or flipping a position restarts its trailing stop.
         const key=`${pos.ticker}:${pos.position_fp}:${pos.market_exposure_dollars}`,mem=exitMemory.get(key)??{action:null,peak:null};
@@ -443,20 +457,25 @@ const loop=setInterval(()=>{
         if(posClose!==null&&posClose<=time){const official=journal.db.prepare('SELECT result FROM outcomes WHERE ticker=?').get(pos.ticker) as {result:'yes'|'no'}|undefined;
           const avg=filledSeconds(proxy.history,posClose-60000,posClose),k=Number(posMarket!.floor_strike);
           closed={result:official?.result??null,estimate:avg&&Number.isFinite(k)&&k>0?(mean(avg.values)+basis>=k?'yes':'no'):null};}
-        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,(()=>{const c=kalshi.current(pos.ticker,now);return c&&!c.delayed?c.book.view():null;})(),schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule),pos.ticker===market.ticker?tau:null);
+        const view=(()=>{const c=kalshi.current(pos.ticker,now);return c&&!c.delayed?c.book.view():null;})(),stalePos=breakerView.stale&&pos.ticker===market.ticker;
+        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,view,schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule),pos.ticker===market.ticker?tau:null);
         if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,peakPct:e.peakPct});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,title:e.notice.title,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,winProb:e.winProb});exitMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
-        return e;}).filter(Boolean);
+        // Fee-aware exit comparison (hold / maker sell at the ask / taker sell at the bid); paused while the breaker is on.
+        return e?{...e,stale:stalePos,compare:e.action==='SETTLING'||stalePos||!view?null:exitComparison(e.side,e.contracts,e.avgCost,view,e.winProb,schedule)}:e;}).filter(Boolean);
       // What Your positions shows, journaled when it changes (with the dashboards connected), so a card that stays empty
       // while the engine holds a position can be traced (user report, 2026-10-21).
       const shownNow=(exits as any[]).map(e=>`${e.ticker}:${Math.round(e.contracts*100)/100}`).join(',');
       if(shownNow!==shownPositions){shownPositions=shownNow;log('positions-shown',{positions:(exits as any[]).map(e=>({ticker:e.ticker,side:e.side,contracts:e.contracts,action:e.action})),dashboards:wss.clients.size,maxBuffered:Math.max(0,...[...wss.clients].map(c=>c.bufferedAmount))});}
       // Evidence gate (evidence.ts, DECISIONS 56): the journal and paper trades above saw every signal; the dashboard
       // and its sounds see only rules that have proven an edge.
-      const shown=gateEvaluation(evaluation,verdict,config.useQuantForSignals&&q!==null?'quant':'model',config.provenSignalsOnly);
+      const gated=gateEvaluation(evaluation,verdict,config.useQuantForSignals&&q!==null?'quant':'model',config.provenSignalsOnly);
+      const shown=breakerView.stale?{...gated,action:'STALE BOOK',reason:`STALE BOOK — DO NOT TRADE · ${breakerView.reasons.join(' · ')}`,idea:null,makers:[],firm:null,forming:null,edges:{yes:null,no:null},
+        gates:[{key:'breaker',label:'Stale book',ok:false,detail:breakerView.reasons.join(' · ')},...(gated.gates??[])]}:gated;
       const tactics=gateTactics(tacticIdeas,dipState.watch,calibration,config.provenSignalsOnly);
       state={...common,...tick,market,evaluation:shown,exits,liveCall,nextCall,quality,openingCall:journal.openingCall(market.ticker),
         quant:{p:q,model:model?.p??null,mid,active:forecast.active,markets:forecast.markets,reason:forecast.reason,late:{active:lateStack.active,markets:lateStack.markets,inUse:forecast===lateStack,cv:lateStack.cv},basis,autoBasis:basisState,signalSource:config.useQuantForSignals&&q!==null?'quant':'model'},
-        tactics:{live:tacticsLive,ideas:tactics.ideas,dips:tactics.watch,hidden:tactics.hidden},lockedCount:locked?.length??0,lockedImputed:lockedFill?.imputed??0,distance:spot!==null&&K!==null?spot-K:null};
+        tactics:{live:tacticsLive,ideas:tactics.ideas,dips:tactics.watch,hidden:tactics.hidden},lockedCount:locked?.length??0,lockedImputed:lockedFill?.imputed??0,distance:spot!==null&&K!==null?spot-K:null,
+        lock,danger:dangerBadges(mid,now,schedule)};
     }
     // Hourly board: recomputed once per second, reused between the faster publishes.
     if(newSecond){try{hourlyState=computeHourly(time,now,spot,vol,venueStates,guards);}catch(e){log('hourly-error',{message:(e as Error).message});}}

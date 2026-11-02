@@ -13,3 +13,8 @@ data/*.json
 output/
 *.log
 .next-verify/
+
+# Python research (quant/)
+quant/.venv/
+quant/cache/
+__pycache__/

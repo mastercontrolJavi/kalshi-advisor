@@ -13,7 +13,55 @@ import {delayCause,backupNote} from './delay-cause';
 export type Tone='yes'|'no'|'warn'|'neutral';
 export const toneText:Record<Tone,string>={yes:'text-yes',no:'text-no',warn:'text-warn',neutral:'text-fg'};
 const toneBorder:Record<Tone,string>={yes:'border-yes/40',no:'border-no/40',warn:'border-warn/40',neutral:'border-line'};
-export const actionTone=(action:string):Tone=>action==='BUY YES'?'yes':action==='BUY NO'?'no':'neutral';
+export const actionTone=(action:string):Tone=>action==='BUY YES'?'yes':action==='BUY NO'||action==='STALE BOOK'?'no':'neutral';
+
+/** STALE BOOK — DO NOT TRADE (engine execution-guard.ts): the Kalshi book or the BRTI index is > 500 ms behind or lost an update. */
+export function StaleBanner({s}:{s:any}){
+  const b=s?.breaker;if(!b?.stale)return null;
+  return <div role="alert" className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border-2 border-no bg-no-dim/60 px-4 py-3">
+    <TriangleAlert aria-hidden className="size-6 shrink-0 text-no"/><span className="font-display text-2xl font-bold tracking-tight text-no uppercase sm:text-3xl">Stale book — do not trade</span>
+    <span className="text-sm text-fg/90">{b.reasons.join(' · ')}{b.clearing?' · clearing':''}</span>
+    <span className="ml-auto text-xs text-muted">Signals, exit numbers and the lock log are paused{b.sinceMs!=null?<> · <span className="num">{ago(b.sinceMs)}</span></>:null}</span></div>;
+}
+/** Where your fills lost most (quant/ post-mortem): the 40–60¢ fee peak and 9 PM–midnight PT. Shown, never enforced. */
+export function DangerBadges({s}:{s:any}){
+  const d=s?.danger;if(!d?.peakFee&&!d?.lowVol)return null;
+  return <div className="mt-3 flex flex-wrap gap-2">
+    {d.peakFee?<Pill tone="warn" title="The taker fee peaks at 1.75¢ a contract at 50¢. Your fills at 40–60¢ lost $432.58 net."><TriangleAlert aria-hidden className="size-3.5"/>Peak fee zone · {cents(d.peakFee.feePerContract,2)} a contract each way</Pill>:null}
+    {d.lowVol?<Pill tone="warn" title="Your fills from 9 PM to midnight PT lost $651.13 net; 15-minute BTC moves are smaller then."><Clock aria-hidden className="size-3.5"/>9 PM–12 AM PT · your worst hours</Pill>:null}</div>;
+}
+/**
+ * The final-minute lock (engine quant/benchmark.ts lockReadout): seconds of [close − 60 s, close) already in the official
+ * BRTI average and what the rest must average for YES, plus the forward shadow log of the ≤ 30 s / ≤ 15 s lock rule.
+ */
+export function LockHud({s}:{s:any}){
+  const l=s?.lock,tau=Math.max(0,s?.tau??0),stale=!!s?.breaker?.stale,sh=s?.lockShadow,usd=(x:number|null|undefined)=>x==null?'—':`$${x.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+  const log=sh?.buckets?.length?<p className="mt-1.5 text-xs text-muted">Shadow log (paper, toward {sh.target}): {sh.buckets.map((b:any)=><span key={b.bucket} className="mr-2">≤ {b.bucket} s <span className="num text-fg">{b.settled}</span>{b.takerAvg!=null?<> · taker <span className="num">{signedCents(b.takerAvg)}</span>{b.makerFilled?<> · maker <span className="num">{signedCents(b.makerAvg)}</span> ({b.makerFilled})</>:null}</>:null}</span>)}</p>:null;
+  if(!s?.market||!l)return log?<div className="mt-3">{log}</div>:null;
+  if(l.phase==='before'&&tau>90)return <div className="mt-3 rounded-xl border border-line bg-surface-2/40 px-3 py-2 text-sm text-muted">Final-minute lock opens at 1:00 left.{log}</div>;
+  const yesSide=l.requiredMove!=null&&l.requiredMove<=0;
+  return <div className={cn('mt-3 rounded-xl border px-3 py-2',stale?'border-no/40 opacity-60':'border-warn/40 bg-warn-dim/20')} aria-live="off">
+    <div className="flex items-baseline justify-between gap-2"><span className="flex items-center gap-1"><span className="label">Final-minute lock · BRTI</span><SectionHelp title="Final-minute lock"/></span>{stale?<span className="text-xs font-medium text-no">paused · stale book</span>:null}</div>
+    {l.phase==='before'?<p className="mt-1 text-sm">Window opens in <span className="num">{Math.ceil(l.opensIn)}</span> s: all 60 seconds must average ≥ <span className="num">{usd(l.requiredAvg)}</span> for YES.</p>
+    :l.phase==='gap'?<p className="mt-1 text-sm text-warn">{l.missing} BRTI second{l.missing===1?'':'s'} missing from the window: lock math paused.</p>
+    :l.phase==='settled'?<p className="num mt-1 text-lg">Locked: 60/60s ({usd(l.settledAvg)} avg) → <span className={l.result==='yes'?'text-yes':'text-no'}>{String(l.result).toUpperCase()}</span> <span className="font-sans text-xs text-muted">until Kalshi posts the result</span></p>
+    :<><p className="num mt-1 text-lg leading-snug">Locked: {l.lockedCount}/60s ({usd(l.lockedAvg)} avg) | Remaining {l.remaining} seconds need ≥ {usd(l.requiredAvg)} to settle YES</p>
+      <p className="mt-0.5 text-xs text-muted">BRTI now <span className="num text-fg">{usd(l.spot)}</span> · {l.requiredMove!=null?<>needs <span className={cn('num',yesSide?'text-yes':'text-no')}>{l.requiredMove>=0?'+':'−'}{usd(Math.abs(l.requiredMove))}</span> on average{l.z!=null?<> (<span className="num">{Math.abs(l.z).toFixed(1)}</span> sd {yesSide?'of room for YES':'for YES to make it'})</>:null}</>:null}</p></>}
+    {log}</div>;
+}
+/** Fee-aware exit comparison (engine exits.ts exitComparison): each way out, net of what the position cost incl. the entry fee. */
+function ExitCompare({e}:{e:any}){
+  if(e.stale)return <div role="status" className="mt-3 rounded-xl border border-no/40 bg-no-dim/30 px-3 py-2 text-sm font-medium text-no">STALE BOOK — exit prices paused. Check Kalshi before you sell.</div>;
+  const c=e.compare;if(!c)return null;const net=(x:number|null|undefined)=>x==null?'—':signedDollars(x),tone=(x:number|null|undefined)=>x==null?'text-muted':x>0.005?'text-yes':x<-0.005?'text-no':'text-fg';
+  // Stacked rows, not a table: the positions column is ~250 px wide beside the chart.
+  const row=(name:ReactNode,value:ReactNode,valueTone:string,detail:ReactNode)=><li className="border-t border-line py-1.5 first:border-0"><div className="flex items-baseline justify-between gap-3"><span className="font-medium">{name}</span><span className={cn('num shrink-0',valueTone)}>{value}</span></div><div className="text-xs text-muted">{detail}</div></li>;
+  return <div className="mt-3 rounded-xl border border-line bg-surface-2/40 px-3 py-2 text-sm"><div className="text-xs text-muted">Ways out, net of your cost <span className="num">{c.cost!=null?dollars(c.cost):'(unknown)'}</span> incl. the entry fee</div>
+    <ul className="mt-1">
+      {row('A · Hold to settlement',c.hold.ev!=null?<>EV {net(c.hold.ev)}</>:'—',tone(c.hold.ev),<>No fee · wins <span className="num">{net(c.hold.win)}</span> · loses <span className="num">{net(c.hold.lose)}</span></>)}
+      {row(<>B · Maker sell at {c.maker?<span className="num">{cents(c.maker.price)}</span>:'the ask'}</>,net(c.maker?.net),tone(c.maker?.net),c.maker?<>Fee <span className="num">{dollars(c.maker.fee)}</span> · rests at the ask; fills only if a buyer lifts it</>:'No ask to join')}
+      {row(<>C · Taker sell at {c.taker?<span className="num">{cents(c.taker.price)}</span>:'the bid'}</>,net(c.taker?.net),tone(c.taker?.net),c.taker?<><span className="text-warn">Second fee <span className="num">−{dollars(c.taker.fee)}</span> (<span className="num">{cents(c.taker.feePerContract,2)}</span>/contract)</span>{c.taker.vsHold!=null?<> · vs holding <span className="num">{net(c.taker.vsHold)}</span></>:null}</>:'No bid to sell into')}
+    </ul></div>;
+}
 
 /** Mobile-first: closed on phones so the call stays on the first screen; `open` panels expand on ≥1024px. */
 /** `remember` keeps the panel open or minimized across reloads (per browser), shared by every page that uses the key. */
@@ -110,6 +158,8 @@ export function SignalPanel({s,fresh,compact=false}:{s:any;fresh:boolean;compact
     </div>
     <div ref={flash} className={cn('font-display mt-3 origin-left leading-none font-bold tracking-tight uppercase',compact?'text-5xl':'text-6xl sm:text-8xl',toneText[tone])} aria-live="polite">{action}</div>
     {fresh&&ev?.firm?<div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1"><span className={cn('num text-3xl font-semibold',toneText[tone])}>at {ev.firm.limit!=null?cents(ev.firm.limit,0):'—'} or less</span><span className="text-sm text-muted">steady for {mmss(ev.firm.heldMs/1000)}{idea&&ev.firm.limit!=null&&idea.price>ev.firm.limit+1e-9?' · ask is above this price: wait, or skip':''}</span></div>:null}
+    {fresh?<DangerBadges s={s}/>:null}
+    {fresh?<LockHud s={s}/>:null}
     {fresh?<DelayNote s={s}>The forecast is using the model alone and BUY is blocked until the feed catches up. Check the price in Kalshi before you trade.</DelayNote>:null}
     {fresh&&ev?.hidden?<div className="mt-3 flex items-start gap-2 rounded-xl border border-line bg-surface-2/60 px-3 py-2 text-sm"><FlaskConical aria-hidden className="mt-0.5 size-4 shrink-0 text-muted"/><span>{ev.hidden.text} It is still paper-traded and shows again by itself once it proves an edge. Settings → Entry rules → Only show proven signals.</span></div>:null}
     {fresh&&ev?.forming?<div className="mt-3"><Pill tone="neutral"><Clock aria-hidden className="size-3.5"/>BUY {String(ev.forming.side).toUpperCase()} forming · shows if it holds {Math.max(1,Math.ceil((ev.forming.needMs-ev.forming.ms)/1000))} s more</Pill></div>:null}
@@ -173,15 +223,16 @@ export function Kpi({label,children,sub,className}:{label:string;children:ReactN
 }
 /** Dashed placeholder for a section with nothing to show yet. */
 export function Empty({children}:{children:ReactNode}){return <p className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-muted">{children}</p>;}
-export function Instruments({s}:{s:any}){
+/** The round's numbers. `paper` (the Paper page) leaves out the real Kalshi balance: that page trades paper cash. */
+export function Instruments({s,paper=false}:{s:any;paper?:boolean}){
   const mid=s?.book?.yesBid!=null&&s?.book?.yesAsk!=null?(s.book.yesBid+s.book.yesAsk)/2:null,d=s?.distance;
-  return <Card className="instrument-strip rise grid grid-cols-3 gap-x-3 gap-y-2 p-3 lg:grid-cols-6 lg:p-4 [animation-delay:120ms]">
+  return <Card className={cn('instrument-strip rise grid grid-cols-3 gap-x-3 gap-y-2 p-3 lg:p-4 [animation-delay:120ms]',paper?'lg:grid-cols-5':'lg:grid-cols-6')}>
     <Stat label={`Opening K${s?.kConfirmed?' ✓':' (est.)'}`} sub={s?.kConfirmed?'Kalshi floor strike':'estimated from proxy'}>{dollars(s?.K)}</Stat>
     <Stat label="BTC proxy" sub={`median of ${s?.venues?.filter((v:any)=>v.healthy).length??0} live venues`}>{dollars(s?.proxy)}</Stat>
     <Stat label="Distance to K" tone={d>0?'yes':d<0?'no':'neutral'} sub={s?.model?`${s.model.z>=0?'+':''}${s.model.z.toFixed(2)} σ of average`:'—'}>{signedDollars(d)}</Stat>
     <Stat label="Model up" sub={<>Kalshi mid <span className="text-info">{pct(mid)}</span></>}>{pct(s?.p)}</Stat>
     <Stat label="Volatility" sub={`${s?.lockedCount??0}/60 locked${s?.lockedImputed?` (${s.lockedImputed} bridged)`:''} · basis ${s?.quant?.basis>=0?'+':'−'}$${Math.abs(s?.quant?.basis??0).toFixed(2)}`}>{s?.regime??'warming'}</Stat>
-    <Stat label="Balance" sub={s?.account?.ready?'account synced':'account unavailable'}>{dollars(s?.account?.balance)}</Stat>
+    {paper?null:<Stat label="Balance" sub={s?.account?.ready?'account synced':'account unavailable'}>{dollars(s?.account?.balance)}</Stat>}
   </Card>;
 }
 
@@ -196,7 +247,7 @@ export function Positions({s,fresh,compact=false}:{s:any;fresh:boolean;compact?:
   const fold=(note:ReactNode)=>compact?<details className="mt-4"><summary className="flex min-h-8 items-center gap-1 text-xs text-muted"><ChevronRight aria-hidden className="chev size-3.5"/>How exit advice works</summary>{note}</details>:note;
   return <Card ref={flash} className={cn('rise',urgent?'border-warn/50':'border-info/30',compact&&'p-4')}><Heading icon={<Wallet aria-hidden className="size-4 text-info"/>} title="Your positions · exit plan" aside={mode==='advise'?`advise · sells only in the final 90 s · ${synced}`:mode==='hold'?`hold to settlement · ${synced}`:s?.config?.exitMode==='ev'?'expected-value mode':`ride from +${Math.round((s?.config?.takeProfitPct??.25)*100)}% · trail ${Math.round((s?.config?.trailGiveback??.5)*100)}% give-back · stop −${Math.round((s?.config?.stopLossPct??.5)*100)}% or < ${Math.round((s?.config?.stopWinProb??.25)*100)}%`}/>
     <DelayNote s={s}>The bid and exit advice below are paused until the feed catches up. Check the price in Kalshi.</DelayNote>
-    {exits.map(e=>{const pnlTone:Tone=e.unrealized>0.005?'yes':e.unrealized<-0.005?'no':'neutral',t=hold&&e.action==='HOLD'?pnlTone:tones[e.action]??'neutral',[why,plan]=String(e.reason).split(' Plan: ');return <div key={e.ticker} className={cn('mt-4 grid gap-4 border-t border-line pt-4 first-of-type:border-0 first-of-type:pt-0',!compact&&'lg:grid-cols-[1fr_auto]')}>
+    {exits.map(e=>{const pnlTone:Tone=e.unrealized>0.005?'yes':e.unrealized<-0.005?'no':'neutral',t=hold&&e.action==='HOLD'?pnlTone:tones[e.action]??'neutral',[why,plan]=String(e.reason).split(' Plan: ');return <div key={e.ticker} className="mt-4 border-t border-line pt-4 first-of-type:border-0 first-of-type:pt-0">
       <div><div className="flex flex-wrap items-baseline gap-x-4 gap-y-1"><div className={cn('font-display leading-none font-bold uppercase',compact?'text-4xl':'text-5xl',toneText[t],e.action==='TOO LATE'&&'text-muted',e.urgent&&'animate-pulse motion-reduce:animate-none')} aria-live={e.urgent?'assertive':'polite'}>{e.action}</div>
         {e.unrealized!=null&&e.action!=='SETTLING'?<div className={cn('num text-2xl font-semibold',toneText[pnlTone])}>{e.unrealized>=0?'UP':'DOWN'} {signedDollars(e.unrealized)} <span className="text-base">({sp(e.unrealizedPct)})</span></div>:null}</div><div className="mt-2 text-sm"><span className="num">{qty(e.contracts)}</span> {e.side.toUpperCase()} · cost <span className="num">{cents(e.avgCost)}</span>{e.costSource==='exposure'?' (before fees)':' incl. fees'}{e.costSource==='estimate'?<span className="text-faint"> (fee estimated)</span>:null} · win chance <span className="num">{pct(e.winProb,0)}</span> <span className="num ml-1 text-xs text-faint">{e.ticker}</span></div>
         {e.action!=='SETTLING'&&(e.peakPct!=null||e.entryWinProb!=null)?<div className="mt-1 text-xs text-muted">Best {sp(e.peakPct)} · worst {sp(e.troughPct)} so far{e.entryWinProb!=null?<> · win chance {pct(e.winProb,0)} (was {pct(e.entryWinProb,0)} when you bought)</>:null}</div>:null}
@@ -205,7 +256,7 @@ export function Positions({s,fresh,compact=false}:{s:any;fresh:boolean;compact?:
         {e.sellAtBid!=null&&(e.action==='SELL'||e.action==='SELL NOW')?<div className="mt-2"><Pill tone="warn">Sell at {cents(e.sellAtBid)} or better</Pill></div>:null}
         {mode==='advise'&&sellEvidence(s?.backtest??null,e.action)?<p className="mt-2 flex items-start gap-1.5 text-xs text-muted"><FlaskConical aria-hidden className="mt-0.5 size-3.5 shrink-0"/>{sellEvidence(s?.backtest??null,e.action)}</p>:null}
         {plan&&e.action!=='SETTLING'?<div className="mt-2 flex flex-wrap gap-2 text-xs">{e.trailBid!=null?<Pill tone="yes">Trailing stop at bid ≤ {cents(e.trailBid)} · peak {e.peakPct>=0?'+':''}{Math.round((e.peakPct??0)*100)}%</Pill>:<><Pill tone="yes">Ride from bid ≥ {cents(e.takeProfitBid)}</Pill><Pill tone="no">Cut loss at bid ≤ {cents(e.stopBid)}</Pill></>}<Pill tone="neutral">or win chance &lt; {Math.round((s?.config?.stopWinProb??.25)*100)}%</Pill></div>:null}</div>
-      <div className={cn('grid grid-cols-3 self-start',compact?'gap-3 text-left':'gap-5 text-right')}><Stat label="P&L if sold" tone={e.unrealized>0?'yes':e.unrealized<0?'no':'neutral'} sub={e.unrealizedPct!=null?`${e.unrealizedPct>=0?'+':'−'}${Math.abs(e.unrealizedPct*100).toFixed(0)}% of cost`:undefined}>{signedDollars(e.unrealized)}</Stat><Stat label="Sell now" sub={`bid ${cents(e.bid)} − ${dollars(e.sellFee)} fee`}>{dollars(e.sellValue)}</Stat><Stat label="Hold value" sub="forecast × $1">{dollars(e.holdValue)}</Stat></div></div>;})}
+      <ExitCompare e={e}/></div>;})}
     {fold(<p className={cn('text-xs text-faint',compact?'mt-2':'mt-4')}>{mode==='advise'?'LET IT RIDE: you are the favourite, hold to settlement. HOLD: the bid undervalues it, do not sell or add. SELL / SELL NOW: only in the final 90 s, when the bid pays clearly more than the forecast says it is worth. LET IT SETTLE: it pays $1, selling only costs the fee. TOO LATE: nothing left to sell. ':hold?'Hold mode keeps the position to settlement but calls out big moves: a gain past the ride level, giving back half of it, a loss past the cut-loss level, or the win chance falling 25 points. Risk mode in Settings turns those into TAKE PROFIT / CUT LOSS calls. ':'Exits use your real cost after fees. RIDE = winning past the arm level; the trailing stop follows your best gain. '}{exitVerdict(s?.backtest??null)??'Exits manage risk; they do not create edge.'} Change the exit style in Settings.</p>)}</Card>;
 }
 

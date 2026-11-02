@@ -68,6 +68,29 @@ export function holdNotice(unrealized:number|null,u:number|null,peak:number|null
   if(arm!==null&&(u>=arm||was('gain')&&u>=arm*.8))return {kind:'gain',tone:'yes',title:`Up ${pctTxt(u)}`,text:`${sell}; holding pays $${contracts.toFixed(2)} if it wins (${wp} chance). ${backtest}`};
   return null;
 }
+/**
+ * Fee-aware exit comparison (2026-11-02, DECISIONS 70): what each way out pays, net of what the position cost you
+ * (avgCost includes the entry fee). Of your 704 lots, 521 were sold early as a taker, paying a second fee each time
+ * ($352.67 of exit fees); this puts that fee next to the alternatives instead of inside one number.
+ *   hold  — no fee: pays $1 a contract if it wins, $0 if not; EV at the forecast win chance.
+ *   maker — a resting sell at the held side's ask, at the maker fee (0 on this series): fills only if a buyer lifts it.
+ *   taker — sell into the held side's bid now, paying the taker fee.
+ */
+export interface ExitComparison {
+  cost:number|null;
+  hold:{payout:number;win:number|null;lose:number|null;ev:number|null};
+  maker:{price:number;proceeds:number;fee:number;net:number|null}|null;
+  taker:{price:number;proceeds:number;fee:number;feePerContract:number;net:number|null;vsHold:number|null}|null;
+}
+export function exitComparison(side:'yes'|'no',contracts:number,avgCost:number|null,book:{yesBid:number|null;yesAsk:number|null;noBid:number|null;noAsk:number|null}|null,winProb:number|null,schedule:FeeSchedule):ExitComparison{
+  const cost=avgCost!==null&&Number.isFinite(avgCost)?contracts*avgCost:null,ok=(x:number|null|undefined):x is number=>x!=null&&x>0&&x<1;
+  const bid=book?(side==='yes'?book.yesBid:book.noBid):null,ask=book?(side==='yes'?book.yesAsk:book.noAsk):null;
+  const ev=winProb!==null&&Number.isFinite(winProb)?contracts*winProb:null;
+  const hold={payout:contracts,win:cost===null?null:contracts-cost,lose:cost===null?null:-cost,ev:ev===null||cost===null?null:ev-cost};
+  const sale=(price:number,kind:'maker'|'taker')=>{const f=fee(price,contracts,kind,schedule),proceeds=contracts*price-f;return {price,proceeds,fee:f,net:cost===null?null:proceeds-cost};};
+  const taker=ok(bid)?sale(bid,'taker'):null;
+  return {cost,hold,maker:ok(ask)?sale(ask,'maker'):null,taker:taker?{...taker,feePerContract:taker.fee/contracts,vsHold:ev===null?null:taker.proceeds-ev}:null};
+}
 export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|null;noBid:number|null}|null,schedule:FeeSchedule,cfg:ExitConfig,memory:ExitMemory={action:null,peak:null},closed:ClosedRound|null=null,cost:{avgCost:number;source:'fills'|'estimate'}|null=null,tau:number|null=null):ExitAdvice|null{
   const signed=Number(position.position_fp);if(!Number.isFinite(signed)||Math.abs(signed)<1e-9)return null;
   // Kalshi convention: positive position = YES contracts, negative = NO contracts.
