@@ -9,7 +9,7 @@ import Settings from './settings';
 import {Button} from './ui/button';
 import {Input} from './ui/input';
 import {Card} from './ui/card';
-import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Session,Feeds,Collapsible,WindowBar,Pill,RecentRounds,DataUpdate,actionTone} from './panels';
+import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Session,Feeds,Collapsible,WindowBar,Pill,RecentRounds,DataUpdate,StaleBanner,actionTone} from './panels';
 import {SiteHeader} from './site-header';
 import {SectionHelp} from './section-help';
 import {PanelBoundary} from './panel-boundary';
@@ -33,6 +33,7 @@ export default function Dashboard(){
     </SiteHeader>
     <main className="mx-auto max-w-[1600px] space-y-4 px-4 pt-4 pb-16 sm:px-6 3xl:max-w-[2400px] 4xl:max-w-[3200px]">
       <DataUpdate s={s}/>
+      {fresh?<StaleBanner s={s}/>:null}
       <Instruments s={s}/>
       {!fresh?<div role="status" className="rounded-xl border border-warn/40 bg-warn-dim/30 px-4 py-2 text-sm text-warn">{connected?'Updates are stale':'Reconnecting to the engine'} · entry and exit advice paused. Chart history remains available.</div>:null}
       {/* One grid, three working areas. From 1024 px the chart sets the row height and the decision/positions column
