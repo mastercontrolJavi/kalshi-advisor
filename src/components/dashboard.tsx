@@ -1,7 +1,8 @@
 'use client';
 import {useState} from 'react';
 import dynamic from 'next/dynamic';
-import {ChartCandlestick,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,BellRing,History} from 'lucide-react';
+import {ChartCandlestick,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,BellRing,History,Waves} from 'lucide-react';
+import {flowAlignment} from '@/engine/flow';
 import {useSoundAlerts} from './use-sound-alerts';
 import {SoundPanel,SoundToggle} from './sound-panel';
 import {useLive} from './use-live';
@@ -12,6 +13,7 @@ import {Card} from './ui/card';
 import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Session,Feeds,Collapsible,WindowBar,Pill,RecentRounds,DataUpdate,StaleBanner,actionTone} from './panels';
 import {SiteHeader} from './site-header';
 import {SectionHelp} from './section-help';
+import {FlowPulse} from './flow-pulse';
 import {PanelBoundary} from './panel-boundary';
 import {cn} from '@/lib/utils';
 import {ago,signedDollars} from './format';
@@ -49,6 +51,7 @@ export default function Dashboard(){
         <div className="relative min-w-0 lg:col-span-12 3xl:col-span-3"><div className="grid gap-4 lg:grid-cols-12 3xl:absolute 3xl:inset-0 3xl:flex 3xl:flex-col 3xl:overflow-y-auto 3xl:pr-1 3xl:[scrollbar-gutter:stable]">
           <div className="min-w-0 lg:col-span-8"><ForecastPanel s={s} fresh={fresh}/></div>
           <div className="min-w-0 lg:col-span-4"><Collapsible open remember="order-book" title="Order book" icon={<BookOpen aria-hidden className="size-4 text-info"/>} aside="top 10 bids"><BookLadder s={s}/></Collapsible></div>
+          <div className="min-w-0 lg:col-span-12"><Collapsible open remember="flow-pulse" title="Order flow & futures pulse" icon={<Waves aria-hidden className="size-4 text-info"/>} aside={fresh&&s?.liveCall?.direction&&s?.flowPulse?.healthy?`live call: ${flowAlignment(s.liveCall.direction,s.flowPulse).label.toLowerCase()}`:'untested · recording'}><PanelBoundary name="Order flow"><FlowPulse s={s} fresh={fresh}/></PanelBoundary></Collapsible></div>
         </div></div>
       </div>
       <Collapsible remember="recent-rounds" title="Recent rounds" icon={<History aria-hidden className="size-4 text-info"/>} aside={s?.calibration?.roundTrends?.totals?.live300?.n?`5:00 call ${Math.round(s.calibration.roundTrends.totals.live300.rate*100)}% right`:'calls & results'}><RecentRounds s={s}/></Collapsible>

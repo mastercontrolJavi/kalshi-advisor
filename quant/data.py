@@ -150,9 +150,16 @@ def _ticks() -> pl.DataFrame:
     return pl.concat(parts, how="diagonal_relaxed").sort("time")
 
 
+def _flow() -> pl.DataFrame:
+    """250 ms order-flow bars from the engine's flow worker (src/engine/flow.ts); empty until data/flow.db exists."""
+    if not (DATA / "flow.db").exists():
+        return pl.DataFrame({"t": []}, schema={"t": pl.Int64})
+    return query("flow.db", "SELECT * FROM flow_bars ORDER BY t")
+
+
 BUILDERS = {
     "fills": _fills, "settlements": _settlements, "rounds": _rounds, "candles": _candles, "spot": _spot,
-    "outcomes": _outcomes, "brti_1s": _brti_1s, "brti_5hz": _brti_5hz, "ticks": _ticks,
+    "outcomes": _outcomes, "brti_1s": _brti_1s, "brti_5hz": _brti_5hz, "ticks": _ticks, "flow": _flow,
 }
 
 
