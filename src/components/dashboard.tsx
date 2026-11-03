@@ -14,6 +14,7 @@ import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Se
 import {SiteHeader} from './site-header';
 import {SectionHelp} from './section-help';
 import {FlowPulse} from './flow-pulse';
+import {MasterSignal} from './master-signal';
 import {PanelBoundary} from './panel-boundary';
 import {cn} from '@/lib/utils';
 import {ago,signedDollars} from './format';
@@ -34,6 +35,7 @@ export default function Dashboard(){
       <span className="num hidden text-xs text-muted md:inline" title="Age of data on screen">{s?ago(Math.max(0,Date.now()-s.engineTime)):'—'}</span>
     </SiteHeader>
     <main className="mx-auto max-w-[1600px] space-y-4 px-4 pt-4 pb-16 sm:px-6 3xl:max-w-[2400px] 4xl:max-w-[3200px]">
+      <PanelBoundary name="Master signal"><MasterSignal s={s} fresh={fresh}/></PanelBoundary>
       <DataUpdate s={s}/>
       {fresh?<StaleBanner s={s}/>:null}
       <Instruments s={s}/>
