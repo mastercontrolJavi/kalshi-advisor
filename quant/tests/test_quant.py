@@ -73,10 +73,21 @@ def test_flow_seconds_use_only_bars_that_finished_before_the_second(tmp_path, mo
         row = {"t": t, "cb_last": 77000.0, "cb_buy": 1.0, "cb_sell": 0.0, "cb_n": 1, "bn_last": 77100.0 + (30 if i >= 4 * 399 else 0), "bn_buy": 0.0, "bn_sell": 1.0, "bn_n": 1}
         db.execute(f"INSERT INTO flow_bars({', '.join(row)}) VALUES({', '.join('?' * len(row))})", list(row.values()))
     db.commit(); db.close()
-    monkeypatch.setattr(data, "DATA", tmp_path); monkeypatch.setattr(data, "CACHE", tmp_path / "cache"); monkeypatch.setattr(flow, "DATA", tmp_path)
+    monkeypatch.setattr(data, "DATA", tmp_path); monkeypatch.setattr(data, "CACHE", tmp_path / "cache"); monkeypatch.delenv("FLOW_DB", raising=False)
     s = flow.seconds()
     at = lambda sec: s.filter(pl.col("time") == t0 + sec * 1000).row(0, named=True)
     assert at(59)["cvd_spot60"] is None and at(60)["cvd_spot60"] == pytest.approx(240)  # second 60 holds bars [0 s, 60 s)
     assert at(60)["ratio_spot60"] == 1 and at(60)["cvd_perp60"] == pytest.approx(-240)
     assert at(399)["lead1"] == pytest.approx(0) and at(400)["lead1"] == pytest.approx(30)  # the jump lands in the bars of [399 s, 400 s)
     assert at(400)["votes"] == 1 + -1 + 1  # spot buys, perp sells, perp impulse up
+
+
+def test_flow_db_follows_flow_db_like_the_engine(tmp_path, monkeypatch):
+    import data
+    monkeypatch.setattr(data, "DATA", tmp_path / "data"); monkeypatch.setattr(data, "ROOT", tmp_path)
+    monkeypatch.delenv("FLOW_DB", raising=False)
+    assert data.flow_db() == tmp_path / "data" / "flow.db"
+    (tmp_path / ".env.local").write_text("KALSHI_KEY_ID=x\nFLOW_DB=./data/other-flow.db\n", encoding="utf-8")
+    assert data.flow_db() == (tmp_path / "data" / "other-flow.db").resolve()  # .env.local, relative to the repo root
+    monkeypatch.setenv("FLOW_DB", str(tmp_path / "elsewhere.db"))
+    assert data.flow_db() == tmp_path / "elsewhere.db"  # the environment wins, as with dotenv

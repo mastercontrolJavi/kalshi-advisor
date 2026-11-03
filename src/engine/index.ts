@@ -30,7 +30,7 @@ import {authorized,requireDashboardCredentials} from './auth';
 import {createExecutor} from './executor';
 import {buildCalibration} from './calibration';
 import {openingCall,OPENING_K_DEADLINE_SECONDS} from './model/opening';
-import {exitAdvice,entryCost,exitComparison,type ExitMemory} from './exits';
+import {exitAdvice,entryCost,exitComparison,pausedExit,type ExitMemory} from './exits';
 import {nextDirection,confidence,dueHorizon,dataQuality,type Direction} from './model/live';
 import {fitStack,predict,explain,describe,type StackFit,type StackSample} from './quant/stack';
 import {stackSamples,lateSamples} from './quant/samples';
@@ -105,7 +105,7 @@ function recordResearch(fn:()=>void){try{fn();researchFailure=null;}catch(e){con
 const flowOn=process.env.FLOW_PULSE!=='off',flowPath=process.env.FLOW_DB??join(dirname(process.env.ADVISOR_DB??'./data/advisor.db'),'flow.db');
 let flowWorker:Worker|null=null,flowLatest:{pulse:FlowPulse;db:{written:number;error:string|null};received:number}|null=null,flowRestarts=0,flowOffset:number|null=null,stopping=false;
 function startFlow(){
-  const worker=new Worker(new URL('./flow-worker.ts',import.meta.url),{workerData:{path:flowPath}});flowWorker=worker;flowOffset=null;
+  if(stopping)return;const worker=new Worker(new URL('./flow-worker.ts',import.meta.url),{workerData:{path:flowPath}});flowWorker=worker;flowOffset=null;
   worker.on('message',(m:any)=>{if(m.kind==='pulse'){flowLatest={pulse:m.pulse,db:m.db,received:Date.now()};flowRestarts=0;}else if(m.kind==='log')log(m.event,m.data);});
   worker.on('error',e=>log('flow-worker-error',{message:e.message}));
   worker.on('exit',code=>{if(flowWorker!==worker)return;flowWorker=null;if(stopping)return;const wait=Math.min(60000,5000*2**Math.min(flowRestarts++,4));log('flow-worker-exit',{code,restartInMs:wait});setTimeout(startFlow,wait);});
@@ -471,8 +471,10 @@ const loop=setInterval(()=>{
           const avg=filledSeconds(proxy.history,posClose-60000,posClose),k=Number(posMarket!.floor_strike);
           closed={result:official?.result??null,estimate:avg&&Number.isFinite(k)&&k>0?(mean(avg.values)+basis>=k?'yes':'no'):null};}
         const view=(()=>{const c=kalshi.current(pos.ticker,now);return c&&!c.delayed?c.book.view():null;})(),stalePos=breakerView.stale&&pos.ticker===market.ticker;
-        const e=exitAdvice(pos,pos.ticker===market.ticker?q:null,view,schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule),pos.ticker===market.ticker?tau:null);
-        if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,peakPct:e.peakPct});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,title:e.notice.title,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,winProb:e.winProb});exitMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
+        const advice=exitAdvice(pos,pos.ticker===market.ticker?q:null,view,schedule,config,mem,closed,entryCost(pos,account.openCosts.get(pos.ticker),schedule),pos.ticker===market.ticker?tau:null);
+        // While the breaker is on the whole call is paused, and stale prices neither move the trailing peak nor journal a change.
+        const paused=!!advice&&stalePos&&advice.action!=='SETTLING',e=paused?pausedExit(advice!,mem):advice;
+        if(e&&!paused){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,side:e.side,contracts:e.contracts,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,peakPct:e.peakPct});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,title:e.notice.title,unrealized:e.unrealized,unrealizedPct:e.unrealizedPct,winProb:e.winProb});exitMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
         // Fee-aware exit comparison (hold / maker sell at the ask / taker sell at the bid); paused while the breaker is on.
         return e?{...e,stale:stalePos,compare:e.action==='SETTLING'||stalePos||!view?null:exitComparison(e.side,e.contracts,e.avgCost,view,e.winProb,schedule)}:e;}).filter(Boolean);
       // What Your positions shows, journaled when it changes (with the dashboards connected), so a card that stays empty
@@ -510,5 +512,8 @@ const loop=setInterval(()=>{
     const message=JSON.stringify({...state,...slow,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
-const shutdown=()=>{stopping=true;void flowWorker?.terminate();refresher.stop();loopLag.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();if(orderFlow)microstructure.stop();recordResearch(()=>researchJournal.flush());kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
+// The flow worker writes its last bars and closes its database on 'stop', then exits itself; it gets 2 s before the process
+// ends without it. The journal stays open until then, since the worker's log messages are written to it.
+const shutdown=()=>{if(stopping)process.exit(0);stopping=true;refresher.stop();loopLag.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();if(orderFlow)microstructure.stop();recordResearch(()=>researchJournal.flush());kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();
+  const exit=()=>{journal.db.close();process.exit(0);},w=flowWorker;if(!w)return exit();w.once('exit',exit);setTimeout(exit,2000);w.postMessage({kind:'stop'});};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

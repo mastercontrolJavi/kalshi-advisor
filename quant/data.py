@@ -7,6 +7,7 @@ Run ``uv run python data.py --refresh`` to rebuild the cache from the current da
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -20,14 +21,33 @@ CACHE = Path(__file__).resolve().parent / "cache"
 SERIES = "KXBTC15M"
 
 
-def connect(name: str) -> sqlite3.Connection:
+def env(key: str) -> str | None:
+    """A setting the way the engine reads it: the process environment first, then .env.local (dotenv does not override)."""
+    if key in os.environ:
+        return os.environ[key]
+    path = ROOT / ".env.local"
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            k, sep, v = line.strip().partition("=")
+            if sep and k.strip() == key:
+                return v.strip().strip("'\"")
+    return None
+
+
+def flow_db() -> Path:
+    """The flow worker's database: FLOW_DB if set (relative to the repo root, where the engine runs), else data/flow.db."""
+    path = env("FLOW_DB")
+    return (ROOT / path).resolve() if path else DATA / "flow.db"
+
+
+def connect(name: str | Path) -> sqlite3.Connection:
     db = sqlite3.connect(f"file:{(DATA / name).as_posix()}?mode=ro", uri=True, timeout=30)
     db.execute("PRAGMA query_only = ON")
     db.execute("PRAGMA busy_timeout = 30000")
     return db
 
 
-def query(name: str, sql: str, params: tuple = ()) -> pl.DataFrame:
+def query(name: str | Path, sql: str, params: tuple = ()) -> pl.DataFrame:
     db = connect(name)
     try:
         cur = db.execute(sql, params)
@@ -151,10 +171,11 @@ def _ticks() -> pl.DataFrame:
 
 
 def _flow() -> pl.DataFrame:
-    """250 ms order-flow bars from the engine's flow worker (src/engine/flow.ts); empty until data/flow.db exists."""
-    if not (DATA / "flow.db").exists():
+    """250 ms order-flow bars from the engine's flow worker (src/engine/flow.ts); empty until its database exists."""
+    path = flow_db()
+    if not path.exists():
         return pl.DataFrame({"t": []}, schema={"t": pl.Int64})
-    return query("flow.db", "SELECT * FROM flow_bars ORDER BY t")
+    return query(path, "SELECT * FROM flow_bars ORDER BY t")
 
 
 BUILDERS = {

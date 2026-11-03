@@ -1,5 +1,5 @@
 import {it,expect} from 'vitest';
-import {exitAdvice,entryCost,type ExitConfig,type ExitMemory} from '../src/engine/exits';
+import {exitAdvice,entryCost,pausedExit,type ExitConfig,type ExitMemory} from '../src/engine/exits';
 import {baseFees,fee} from '../src/engine/model/fees';
 const risk:ExitConfig={exitMode:'risk',exitMargin:.02,makerMargin:.03,takeProfitPct:.25,stopLossPct:.5,stopWinProb:.25,trailGiveback:.5,trailFloor:.05};
 const ev:ExitConfig={...risk,exitMode:'ev'};
@@ -106,3 +106,13 @@ it('advise mode: let it settle near $1, too late with nothing to sell',()=>{
   expect(adv(.9,.98,400).action).toBe('LET IT SETTLE');
   expect(adv(.96,.9,50).action).toBe('LET IT SETTLE');
   const late=adv(.1,.02,100);expect(late.action).toBe('TOO LATE');expect(late.reason).toContain('Do not add');});
+it('a stale book pauses the whole call, not just the exit comparison (DECISIONS 72)',()=>{
+  // Down past the stop at a stale bid: risk mode would say CUT LOSS from prices that may already be gone.
+  const memory:ExitMemory={action:'HOLD',peak:.1,trough:-.2};
+  const live=exitAdvice(yes('10','6.00'),.2,book(.15,.84),baseFees,risk,memory)!;expect(live.action).toBe('CUT LOSS');
+  const p=pausedExit(live,memory);
+  expect(p.action).toBe('STALE BOOK');expect(p.reason).toContain('paused');
+  expect(p).toMatchObject({urgent:false,notice:null,sellAtBid:null,winProb:null,bid:null,sellValue:null,unrealized:null,unrealizedPct:null,stopBid:null,trailBid:null,peakPct:.1,troughPct:-.2,contracts:10,side:'yes'});
+  // A closed round's settlement does not read the book.
+  const settling=exitAdvice(yes('10','6.00'),null,null,baseFees,risk,memory,{result:'yes',estimate:null})!;expect(pausedExit(settling,memory)).toBe(settling);
+});

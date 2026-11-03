@@ -240,7 +240,7 @@ export function Positions({s,fresh,compact=false}:{s:any;fresh:boolean;compact?:
   const exits:any[]=fresh?s?.exits??[]:[],flash=useFlash<HTMLDivElement>(exits.map(e=>`${e.ticker}:${e.action}`).join(','));
   const synced=s?.account?.positionsUpdated?`synced ${ago(Math.max(0,Date.now()-s.account.positionsUpdated))} ago`:'not synced yet';
   if(!exits.length)return <Card className={cn('flex min-h-14 flex-wrap items-center gap-3 py-3',compact&&'px-4')}><Wallet aria-hidden className="size-4 text-faint"/><span className="label">Your positions</span><SectionHelp title="Your positions"/><span className="ml-auto text-sm text-muted">{!fresh?'Live positions unavailable':s?.account?.ready?<>No open BTC 15-min position <span className="text-xs text-faint">· {synced}</span></>:'Waiting for account'}</span></Card>;
-  const tones:Record<string,Tone>={'SETTLING':'neutral','RIDE':'yes','LET IT RIDE':'yes','TAKE PROFIT':'yes','LET IT SETTLE':'yes','CUT LOSS':'no','SELL':'warn','SELL NOW':'warn','HOLD':'neutral','TOO LATE':'neutral','NO MODEL':'neutral'};
+  const tones:Record<string,Tone>={'SETTLING':'neutral','RIDE':'yes','LET IT RIDE':'yes','TAKE PROFIT':'yes','LET IT SETTLE':'yes','CUT LOSS':'no','SELL':'warn','SELL NOW':'warn','HOLD':'neutral','TOO LATE':'neutral','NO MODEL':'neutral','STALE BOOK':'no'};
   const mode=s?.config?.exitMode,hold=mode==='hold'||mode==='advise',urgent=exits.some(e=>['TAKE PROFIT','CUT LOSS','SELL','SELL NOW'].includes(e.action)||e.notice);
   const sp=(x:number|null|undefined)=>x==null?'—':`${x>=0?'+':'−'}${Math.abs(x*100).toFixed(0)}%`;
   // In the narrow column the long how-it-works note folds away, like Measured results under the forecast.

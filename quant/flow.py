@@ -1,6 +1,6 @@
 """Part 1c: do order flow and the perp futures lead add anything to Kalshi's price, after fees? (DECISIONS 71)
 
-The engine's flow worker records 250 ms bars to data/flow.db from 2026-11-02: Coinbase spot, Binance and Bybit BTCUSDT
+The engine's flow worker records 250 ms bars to data/flow.db (or FLOW_DB) from 2026-11-02: Coinbase spot, Binance and Bybit BTCUSDT
 perp taker volume and last trades, Binance's top-of-book and mark/index. Bars are keyed in Kalshi's clock, like the
 journal's ticks. Each journal second gets features from bars that finished before it (no look-ahead), then the same
 walk-forward test as the feature study: does adding the feature to a model that already knows Kalshi's mid lower the
@@ -15,7 +15,7 @@ import polars as pl
 from scipy.stats import spearmanr
 
 from common import md_table
-from data import DATA, load
+from data import flow_db, load
 from features import _deciles, _ev, _incremental_logloss, build_panel
 
 FLOW_FEATURES = {
@@ -34,7 +34,7 @@ FLOW_FEATURES = {
 
 def seconds() -> pl.DataFrame | None:
     """One row per Kalshi-clock second s, from the bars in [s − 1 s, s); windows need ≥ 90% of their bars present."""
-    if not (DATA / "flow.db").exists():
+    if not flow_db().exists():
         return None
     bars = load("flow", refresh=True)
     if bars.height == 0:
@@ -80,10 +80,10 @@ def seconds() -> pl.DataFrame | None:
 
 
 def flow_study() -> tuple[dict, str]:
-    head = "## 3. Order flow & the perp futures lead (data/flow.db)"
+    head = f"## 3. Order flow & the perp futures lead ({flow_db().name})"
     flow = seconds()
     if flow is None:
-        return {"rows": 0}, f"{head}\n\nNo flow data yet: the engine's flow worker writes data/flow.db while it runs.\n"
+        return {"rows": 0}, f"{head}\n\nNo flow data yet: the engine's flow worker writes {flow_db()} (FLOW_DB) while it runs.\n"
     panel = _ev(build_panel()).join(flow.select("time", *FLOW_FEATURES), on="time", how="inner")
     sample = panel.filter(pl.col("time") % 5000 == 0)
     payload = {"seconds": flow.height, "panel_rows": panel.height, "rounds": panel["ticker"].n_unique(),

@@ -36,5 +36,6 @@ const pulseTimer=setInterval(()=>{try{send({kind:'pulse',pulse:state.pulse(at())
 const barTimer=setInterval(()=>{try{const rows=state.drain(at()-FLOW_BUCKET_MS);if(rows.length){writeBars(rows);written+=rows.length;}dbError=null;}catch(e){const message=(e as Error).message;if(message!==dbError)log('flow-db-error',{message});dbError=message;}},1000);
 parentPort!.on('message',(m:any)=>{
   if(m?.kind==='clock'&&Number.isFinite(m.offset)&&m.offset!==offset){offset=m.offset;state.rebase();}
-  if(m?.kind==='stop'){clearInterval(pulseTimer);clearInterval(barTimer);clearInterval(bybitPing);for(const s of sockets)s.stop();try{writeBars(state.drain(at()+FLOW_BUCKET_MS));}catch{}db.close();process.exit(0);}
+  // Engine shutdown: write the bars completed since the last 1-s write (not the bucket still filling), then close the file.
+  if(m?.kind==='stop'){clearInterval(pulseTimer);clearInterval(barTimer);clearInterval(bybitPing);for(const s of sockets)s.stop();try{writeBars(state.drain(at()));}catch{}db.close();process.exit(0);}
 });
