@@ -22,6 +22,8 @@ export const FLOW_RATIO_VOTE=.55;
 export const FLOW_MIN_VOLUME={spot:.25,perp:2};
 /** 1 s perp lead over spot that counts as an impulse: ≥ 2 sd of its own last 5 minutes and ≥ $5 (a quiet tape makes the sd tiny). */
 export const FLOW_IMPULSE_Z=2,FLOW_IMPULSE_MIN_USD=5;
+/** The engine resends the worker's last pulse if the worker stalls; older than this, the dashboard treats it as not current. */
+export const FLOW_PULSE_STALE_MS=1500;
 /** A venue is unhealthy after this long without any frame, or with a feed delay above FLOW_MAX_DELAY_MS. */
 export const FLOW_SILENT_MS=3000,FLOW_MAX_DELAY_MS=2000,FLOW_QUOTE_MS=1000;
 export interface FlowTrade {venue:FlowVenueId;at:number;source:number|null;price:number;size:number;buy:boolean;id?:number|null}
