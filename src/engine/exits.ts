@@ -19,7 +19,7 @@ import {fee,type FeeSchedule} from './model/fees';
  * while still capping blow-ups. EV mode is the original comparison: sell only when the bid beats the forecast.
  */
 export interface Position {ticker:string;position_fp:string;market_exposure_dollars?:string}
-export type ExitAction='TAKE PROFIT'|'RIDE'|'LET IT RIDE'|'CUT LOSS'|'SELL'|'SELL NOW'|'HOLD'|'LET IT SETTLE'|'TOO LATE'|'NO MODEL'|'SETTLING';
+export type ExitAction='TAKE PROFIT'|'RIDE'|'LET IT RIDE'|'CUT LOSS'|'SELL'|'SELL NOW'|'HOLD'|'LET IT SETTLE'|'TOO LATE'|'NO MODEL'|'SETTLING'|'STALE BOOK';
 /** A position whose round has already closed: Kalshi's official result if known, else the app's closing-average estimate. */
 export interface ClosedRound {result:'yes'|'no'|null;estimate:'yes'|'no'|null}
 export interface ExitConfig {exitMode:'advise'|'hold'|'risk'|'ev';exitMargin:number;makerMargin:number;takeProfitPct:number;stopLossPct:number;stopWinProb:number;trailGiveback:number;trailFloor:number}
@@ -90,6 +90,16 @@ export function exitComparison(side:'yes'|'no',contracts:number,avgCost:number|n
   const sale=(price:number,kind:'maker'|'taker')=>{const f=fee(price,contracts,kind,schedule),proceeds=contracts*price-f;return {price,proceeds,fee:f,net:cost===null?null:proceeds-cost};};
   const taker=ok(bid)?sale(bid,'taker'):null;
   return {cost,hold,maker:ok(ask)?sale(ask,'maker'):null,taker:taker?{...taker,feePerContract:taker.fee/contracts,vsHold:ev===null?null:taker.proceeds-ev}:null};
+}
+/**
+ * The live round's exit advice while the stale-book breaker is on (DECISIONS 72): no call, and none of the numbers read
+ * off the stale bid or BRTI (P&L, sell value, win chance, stops, heads-ups). Best / worst so far stay at what they were
+ * before the breaker tripped. A closed round's SETTLING does not depend on the book, so it is kept.
+ */
+export function pausedExit(e:ExitAdvice,memory:ExitMemory):ExitAdvice{
+  if(e.action==='SETTLING')return e;
+  return {...e,action:'STALE BOOK',urgent:false,notice:null,sellAtBid:null,winProb:null,bid:null,holdValue:null,sellValue:null,sellFee:null,unrealized:null,unrealizedPct:null,limitPrice:null,takeProfitBid:null,stopBid:null,trailBid:null,
+    peakPct:memory.peak,troughPct:memory.trough??null,reason:'Exit advice paused: the Kalshi book or BRTI is stale, so the bid, P&L and call would be out of date.'};
 }
 export function exitAdvice(position:Position,p:number|null,book:{yesBid:number|null;noBid:number|null}|null,schedule:FeeSchedule,cfg:ExitConfig,memory:ExitMemory={action:null,peak:null},closed:ClosedRound|null=null,cost:{avgCost:number;source:'fills'|'estimate'}|null=null,tau:number|null=null):ExitAdvice|null{
   const signed=Number(position.position_fp);if(!Number.isFinite(signed)||Math.abs(signed)<1e-9)return null;
