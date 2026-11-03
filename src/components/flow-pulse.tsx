@@ -1,7 +1,7 @@
 'use client';
 import {useState} from 'react';
 import {ArrowUpRight,ArrowDownRight,Minus} from 'lucide-react';
-import {flowAlignment,FLOW_RATIO_VOTE,FLOW_IMPULSE_Z,FLOW_IMPULSE_MIN_USD,type FlowVerdict} from '@/engine/flow';
+import {flowAlignment,FLOW_RATIO_VOTE,FLOW_IMPULSE_Z,FLOW_IMPULSE_MIN_USD,FLOW_PULSE_STALE_MS,type FlowVerdict} from '@/engine/flow';
 import {Pill,type Tone} from './panels';
 import {SectionHelp} from './section-help';
 import {cn} from '@/lib/utils';
@@ -30,7 +30,7 @@ export function FlowPulse({s,fresh}:{s:any;fresh:boolean}){
   const p=s?.flowPulse,[idea,setIdea]=useState<'UP'|'DOWN'|null>(null);
   if(!p)return <p className="text-sm text-muted">Off (FLOW_PULSE=off).</p>;
   if(p.starting)return <p className="text-sm text-muted">Connecting to Coinbase, Binance and Bybit…</p>;
-  const stale=!fresh||p.ageMs>1500,live=fresh&&!stale?p:null,l=p.lead,b=p.basis;
+  const stale=!fresh||p.ageMs>FLOW_PULSE_STALE_MS,live=fresh&&!stale?p:null,l=p.lead,b=p.basis;
   const ideaButton=(d:'UP'|'DOWN')=><button type="button" onClick={()=>setIdea(idea===d?null:d)} aria-pressed={idea===d} className={cn('rounded-lg border px-2 py-0.5 text-xs font-medium',idea===d?(d==='UP'?'border-yes/60 bg-yes-dim/40 text-yes':'border-no/60 bg-no-dim/40 text-no'):'border-line text-muted hover:text-fg')}>{d}</button>;
   const positions=(s?.exits??[]).filter((e:any)=>e.side==='yes'||e.side==='no');
   const leadTone=l.impulse===1?'text-yes':l.impulse===-1?'text-no':'text-fg';
