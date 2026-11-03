@@ -58,3 +58,25 @@ def test_block_bootstrap_brackets_the_mean():
     values, groups = rng.normal(1, 1, 3000), np.repeat(np.arange(300), 10)
     lo, hi = block_bootstrap(values, groups)
     assert lo < values.mean() < hi
+
+
+def test_flow_seconds_use_only_bars_that_finished_before_the_second(tmp_path, monkeypatch):
+    import sqlite3
+    import data
+    import flow
+    db = sqlite3.connect(tmp_path / "flow.db")
+    cols = ["t"] + [f"{v}_{f}" for v in ("cb", "bn", "by") for f in ("last", "buy", "sell", "n", "lag")] + ["bn_bid", "bn_ask", "bn_mark", "bn_index", "bn_funding"]
+    db.execute(f"CREATE TABLE flow_bars({', '.join(cols)})")
+    t0 = 1_793_600_000_000
+    for i in range(4 * 400):  # 400 s of bars: 1 BTC taker buy on Coinbase per bar, perp 1 BTC sell; perp jumps at the end
+        t = t0 + i * 250
+        row = {"t": t, "cb_last": 77000.0, "cb_buy": 1.0, "cb_sell": 0.0, "cb_n": 1, "bn_last": 77100.0 + (30 if i >= 4 * 399 else 0), "bn_buy": 0.0, "bn_sell": 1.0, "bn_n": 1}
+        db.execute(f"INSERT INTO flow_bars({', '.join(row)}) VALUES({', '.join('?' * len(row))})", list(row.values()))
+    db.commit(); db.close()
+    monkeypatch.setattr(data, "DATA", tmp_path); monkeypatch.setattr(data, "CACHE", tmp_path / "cache"); monkeypatch.setattr(flow, "DATA", tmp_path)
+    s = flow.seconds()
+    at = lambda sec: s.filter(pl.col("time") == t0 + sec * 1000).row(0, named=True)
+    assert at(59)["cvd_spot60"] is None and at(60)["cvd_spot60"] == pytest.approx(240)  # second 60 holds bars [0 s, 60 s)
+    assert at(60)["ratio_spot60"] == 1 and at(60)["cvd_perp60"] == pytest.approx(-240)
+    assert at(399)["lead1"] == pytest.approx(0) and at(400)["lead1"] == pytest.approx(30)  # the jump lands in the bars of [399 s, 400 s)
+    assert at(400)["votes"] == 1 + -1 + 1  # spot buys, perp sells, perp impulse up

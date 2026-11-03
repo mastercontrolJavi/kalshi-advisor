@@ -3,6 +3,7 @@
     uv run python research.py              # both parts
     uv run python research.py fills        # only the fill post-mortem
     uv run python research.py features     # only the feature study
+    uv run python research.py flow --refresh   # order flow & perp lead (flow.py); --refresh rebuilds the journal cache
 
 Writes output/quant/research.json and output/quant/research.md. Read-only on data/*.db (see data.py).
 """
@@ -163,6 +164,10 @@ def post_mortem() -> tuple[dict, str]:
 
 def main(parts: list[str]):
     payload, md = {}, ["# Python research", ""]
+    if "--refresh" in parts:
+        # The flow bars only start on 2026-11-02, so the cached journal and panel must include the latest seconds.
+        from features import build_panel
+        load("ticks", refresh=True); build_panel(refresh=True)
     if "fills" in parts:
         p, m = post_mortem()
         payload["fills"] = p; md.append(m)
@@ -170,10 +175,14 @@ def main(parts: list[str]):
         from features import feature_study
         p, m = feature_study()
         payload["features"] = p; md.append(m)
+    if "flow" in parts:
+        from flow import flow_study
+        p, m = flow_study()
+        payload["flow"] = p; md.append(m)
     write_json("research.json", payload)
     (QUANT_OUT / "research.md").write_text("\n".join(md), encoding="utf-8")
     print("\n".join(md))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:] or ["fills", "features"])
+    main(sys.argv[1:] or ["fills", "features", "flow"])

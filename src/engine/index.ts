@@ -3,6 +3,7 @@ dotenv.config({path:'.env.local',quiet:true});
 import {createServer} from 'node:http';
 import {Worker} from 'node:worker_threads';
 import {readFileSync,statSync} from 'node:fs';
+import {dirname,join} from 'node:path';
 import {WebSocketServer,WebSocket} from 'ws';
 import {Journal} from './journal';
 import {ProxyFeed,healthy} from './feeds/proxy';
@@ -13,6 +14,7 @@ import {LockShadow,lockShadowScores} from './quant/lock-shadow';
 import {StaleBreaker,staleReasons,dangerBadges} from './execution-guard';
 import {BenchmarkJournal} from './quant/benchmark-journal';
 import {CoinbaseMicrostructureFeed,orderFlowEnabled} from './feeds/microstructure';
+import type {FlowPulse} from './flow';
 import {fullSpeed} from './power';
 import {ResearchJournal} from './quant/research-journal';
 import {fitBenchmarkCalibration,predictBenchmarkCalibration} from './quant/benchmark-calibration';
@@ -98,6 +100,17 @@ const orderFlow=orderFlowEnabled(),microstructure=new CoinbaseMicrostructureFeed
 let flowState=microstructure.snapshot(),researchFailure:{at:number;message:string}|null=null;
 // A research recorder failure must not change the production forecast or interrupt the trading loop.
 function recordResearch(fn:()=>void){try{fn();researchFailure=null;}catch(e){const message=(e as Error).message;if(!researchFailure||Date.now()-researchFailure.at>60000)log('research-recording-error',{message});researchFailure={at:Date.now(),message};}}
+// Order flow & futures pulse (flow.ts, DECISIONS 71): Coinbase spot and Binance/Bybit perp trades, basis and lead, on a
+// worker thread with its own sockets and data/flow.db. This thread only keeps the latest ~2 KB pulse (4×/s). FLOW_PULSE=off.
+const flowOn=process.env.FLOW_PULSE!=='off',flowPath=process.env.FLOW_DB??join(dirname(process.env.ADVISOR_DB??'./data/advisor.db'),'flow.db');
+let flowWorker:Worker|null=null,flowLatest:{pulse:FlowPulse;db:{written:number;error:string|null};received:number}|null=null,flowRestarts=0,flowOffset:number|null=null,stopping=false;
+function startFlow(){
+  const worker=new Worker(new URL('./flow-worker.ts',import.meta.url),{workerData:{path:flowPath}});flowWorker=worker;flowOffset=null;
+  worker.on('message',(m:any)=>{if(m.kind==='pulse'){flowLatest={pulse:m.pulse,db:m.db,received:Date.now()};flowRestarts=0;}else if(m.kind==='log')log(m.event,m.data);});
+  worker.on('error',e=>log('flow-worker-error',{message:e.message}));
+  worker.on('exit',code=>{if(flowWorker!==worker)return;flowWorker=null;if(stopping)return;const wait=Math.min(60000,5000*2**Math.min(flowRestarts++,4));log('flow-worker-exit',{code,restartInMs:wait});setTimeout(startFlow,wait);});
+}
+if(flowOn)startFlow();
 const kalshi=new KalshiFeed(client,log,t=>journal.throughTrade(t),()=>void account.onFill());
 const known=new Map<string,Market>();let state:any={status:'Starting',config,engineTime:Date.now(),evaluation:{action:'NO TRADE',reason:'Warming feeds',makers:[]}};
 const seriesHistory:{time:number;model:number|null;market:number|null;quant:number|null}[]=[];
@@ -320,7 +333,7 @@ const loop=setInterval(()=>{
   // Evaluate and publish 4×/second on live quotes; journal ticks/signals once per second.
   lastLoop=now;if(now-lastPublish<250)return;lastPublish=now;const newSecond=time!==lastSecond;lastSecond=time;
   try{
-    if(newSecond){journal.expire(time);loopLag.sample(now);}
+    if(newSecond){journal.expire(time);loopLag.sample(now);if(flowWorker&&client.clockOffset!==flowOffset){flowOffset=client.clockOffset;flowWorker.postMessage({kind:'clock',offset:flowOffset});}}
     if(newSecond&&orderFlow){flowState=microstructure.snapshot(now);recordResearch(()=>{researchJournal.flush(now);researchJournal.features(now,flowState);});}
     // Which side a Kalshi delay comes from: this computer (loop stalls or a saturated loop), the connection (exchange feeds late too) or Kalshi.
     const exchanges=proxy.delay(now),side=delaySide(kalshi.delay.ms,exchanges.median,loopLag.ms,loopLag.busy);
@@ -481,6 +494,7 @@ const loop=setInterval(()=>{
     if(newSecond){try{hourlyState=computeHourly(time,now,spot,vol,venueStates,guards);}catch(e){log('hourly-error',{message:(e as Error).message});}}
     state.hourly=hourlyState;
     state.shortTerm=priceState;
+    state.flowPulse=flowOn?flowLatest?{...flowLatest.pulse,db:flowLatest.db,ageMs:now-flowLatest.received,path:flowPath}:{starting:true,path:flowPath}:null;
     state.research={orderFlow,flow:flowState,recorder:{...researchJournal.stats,error:researchFailure?.message??null},calibration:{state:benchmarkCalibration.state,markets:benchmarkCalibration.markets,reason:benchmarkCalibration.reason}};
     // The paper account marked at the live bids (the hold value uses the quant forecast on the current round).
     state.sim=desk.summary((ticker,side)=>{const live=kalshi.books.get(ticker);
@@ -496,5 +510,5 @@ const loop=setInterval(()=>{
     const message=JSON.stringify({...state,...slow,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
-const shutdown=()=>{refresher.stop();loopLag.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();if(orderFlow)microstructure.stop();recordResearch(()=>researchJournal.flush());kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
+const shutdown=()=>{stopping=true;void flowWorker?.terminate();refresher.stop();loopLag.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();if(orderFlow)microstructure.stop();recordResearch(()=>researchJournal.flush());kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();journal.db.close();process.exit(0);};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
