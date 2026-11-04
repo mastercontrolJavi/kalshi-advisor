@@ -32,21 +32,24 @@ export type {ChartMark} from './candles';
 export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;marks?:ChartMark[]}){
   const box=useRef<HTMLDivElement>(null),chart=useRef<IChartApi|null>(null),main=useRef<ISeriesApi<'Candlestick'>|null>(null),extra=useRef<ISeriesApi<'Line'>[]>([]);
   const samples=useRef<[number,number][]>([]),rounds=useRef<Round[]>([]),candles=useRef<Candle[]>([]),selection=useRef(''),lastUpdate=useRef(0),previousLoad=useRef(0);
-  const projection=useRef<{lines:ISeriesApi<'Line'>[];band:PriceProjectionBand}|null>(null),markers=useRef<ISeriesMarkersPluginApi<Time>|null>(null),target=useRef<IPriceLine|null>(null);
+  const projection=useRef<{lines:ISeriesApi<'Line'>[];band:PriceProjectionBand}|null>(null),markers=useRef<ISeriesMarkersPluginApi<Time>|null>(null),target=useRef<{series:ISeriesApi<'Candlestick'|'Line'>;line:IPriceLine}|null>(null),btcLine=useRef<ISeriesApi<'Line'>|null>(null),userMoved=useRef(false);
   // Last time on each overlay line. History times carry Kalshi's clock offset and the quant line includes seconds with no
   // two-sided book, so a live point can fall behind a line's end; lightweight-charts throws on that, so skip it instead.
   const ends=useRef(new WeakMap<ISeriesApi<'Line'>,number>());
   const extend=(l:ISeriesApi<'Line'>|undefined,time:number,value:number,color?:string)=>{if(!l||!Number.isFinite(value)||time<(ends.current.get(l)??-Infinity))return;l.update(color?{time:ts(time),value,color}:{time:ts(time),value});ends.current.set(l,time);};
   const [horizon,setHorizon]=useState(60);
-  const [view,setView]=useState<View>('kalshi'),[tf,setTf]=useState(15),[lines,setLines]=useState(true),[loaded,setLoaded]=useState(0),[error,setError]=useState('');
-  useEffect(()=>{try{const v=JSON.parse(localStorage.getItem(KEY)??'null');if(v&&(v.view==='btc'||v.view==='kalshi')&&TFS[v.view as View].some(([x])=>x===v.tf)){setView(v.view);setTf(v.tf);}if(typeof v?.lines==='boolean')setLines(v.lines);}catch{}},[]);
-  const save=(v:View,t:number,l:boolean)=>{try{localStorage.setItem(KEY,JSON.stringify({view:v,tf:t,lines:l}));}catch{}};
-  const choose=(v:View,t:number)=>{setView(v);setTf(t);save(v,t,lines);},toggleLines=()=>{setLines(!lines);save(view,tf,!lines);};
+  const [view,setView]=useState<View>('kalshi'),[tf,setTf]=useState(15),[lines,setLines]=useState(true),[overlay,setOverlay]=useState(true),[loaded,setLoaded]=useState(0),[error,setError]=useState('');
+  useEffect(()=>{try{const v=JSON.parse(localStorage.getItem(KEY)??'null');if(v&&(v.view==='btc'||v.view==='kalshi')&&TFS[v.view as View].some(([x])=>x===v.tf)){setView(v.view);setTf(v.tf);}if(typeof v?.lines==='boolean')setLines(v.lines);if(typeof v?.btc==='boolean')setOverlay(v.btc);}catch{}},[]);
+  const save=(v:View,t:number,l:boolean,b=overlay)=>{try{localStorage.setItem(KEY,JSON.stringify({view:v,tf:t,lines:l,btc:b}));}catch{}};
+  const choose=(v:View,t:number)=>{setView(v);setTf(t);save(v,t,lines);},toggleLines=()=>{setLines(!lines);save(view,tf,!lines);},toggleOverlay=()=>{setOverlay(!overlay);save(view,tf,lines,!overlay);};
   useEffect(()=>{const el=box.current;if(!el)return;
     const c=createChart(el,{autoSize:true,layout:{background:{color:'transparent'},textColor:k.axis,fontSize:11,fontFamily:'inherit'},grid:{vertLines:{visible:false},horzLines:{color:k.grid}},
       rightPriceScale:{borderVisible:false,scaleMargins:{top:.12,bottom:.08}},timeScale:{borderVisible:false,timeVisible:true,secondsVisible:true,rightOffset:3,tickMarkFormatter:hhmm},
       crosshair:{vertLine:{color:k.line,labelBackgroundColor:k.surface},horzLine:{color:k.line,labelBackgroundColor:k.surface}},localization:{timeFormatter:(t:Time)=>new Date(Number(t)*1000).toLocaleTimeString()}});
-    chart.current=c;return()=>{c.remove();chart.current=null;main.current=null;extra.current=[];projection.current=null;};},[]);
+    // Once you scroll, zoom or drag the chart, it stops moving the view itself (2026-11-04: the 1-s forecast update re-centred
+    // it and undid your zoom). Latest, or a new chart or candle length, follows the live candle again.
+    const moved=()=>{userMoved.current=true;};for(const e of ['wheel','pointerdown','touchstart'] as const)el.addEventListener(e,moved,{capture:true,passive:true});
+    chart.current=c;return()=>{for(const e of ['wheel','pointerdown','touchstart'] as const)el.removeEventListener(e,moved,{capture:true});c.remove();chart.current=null;main.current=null;extra.current=[];btcLine.current=null;projection.current=null;};},[]);
   useEffect(()=>{let stop=false,pending:AbortController|null=null;const load=async()=>{if(pending)return;const controller=new AbortController();pending=controller;const timeout=setTimeout(()=>controller.abort(),10000);try{const r=await fetch('/api/engine/candles',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error(`HTTP ${r.status}`);const d=await r.json();if(stop)return;samples.current=mergeSamples(d.samples??[],samples.current,Date.now()-7200000);rounds.current=d.rounds??[];setLoaded(Date.now());setError('');}catch(e){if(!stop)setError((e as Error).message);}finally{clearTimeout(timeout);pending=null;}};
     void load();const t=setInterval(()=>void load(),60000);return()=>{stop=true;clearInterval(t);pending?.abort();};},[]);
   const ticker=s?.market?.ticker??null;
@@ -55,9 +58,9 @@ export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;ma
   // Rebuild the series when the view, timeframe, history or (for Kalshi) the round changes.
   useEffect(()=>{const c=chart.current;if(!c)return;
     // The first history response replaces a tiny live-only range. Later refreshes preserve the user's zoom.
-    const key=`${view}:${tf}:${view==='kalshi'?ticker:''}`,same=selection.current===key&&previousLoad.current>0,range=same?c.timeScale().getVisibleLogicalRange():null,timeRange=same?c.timeScale().getVisibleRange():null,following=range?range.to>=candles.current.length-2:true;selection.current=key;previousLoad.current=loaded;lastUpdate.current=0;
+    const key=`${view}:${tf}:${view==='kalshi'?ticker:''}`,same=selection.current===key&&previousLoad.current>0,range=same?c.timeScale().getVisibleLogicalRange():null,timeRange=same?c.timeScale().getVisibleRange():null,following=range?range.to>=candles.current.length-2:true;if(!same)userMoved.current=false;selection.current=key;previousLoad.current=loaded;lastUpdate.current=0;
     if(projection.current){for(const l of projection.current.lines)c.removeSeries(l);projection.current=null;}
-    if(main.current)c.removeSeries(main.current);for(const l of extra.current)c.removeSeries(l);extra.current=[];
+    if(main.current)c.removeSeries(main.current);for(const l of extra.current)c.removeSeries(l);extra.current=[];if(btcLine.current){c.removeSeries(btcLine.current);btcLine.current=null;}
     const btc=view==='btc',fmt=btc?{type:'price' as const,precision:2,minMove:.01}:{type:'price' as const,precision:1,minMove:.1};
     const m=c.addSeries(CandlestickSeries,{upColor:k.yes,downColor:k.no,wickUpColor:k.yes,wickDownColor:k.no,borderVisible:false,priceFormat:fmt,priceLineColor:k.muted});main.current=m;markers.current=createSeriesMarkers(m,[]);target.current=null;
     if(btc){candles.current=aggregate(samples.current,tf);m.setData(candles.current.map(x=>({...x,time:ts(x.time)})));
@@ -72,8 +75,15 @@ export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;ma
         const pts=new Map<number,{v:number;gap:number|null}>();for(const x of s?.history??[]){const v=x[q?'quant':'model'];if(v!=null)pts.set(bucketOf(x.time,tf),{v:v*100,gap:q&&x.market!=null?(x.quant-x.market)*100:null});}
         const sorted=[...pts].sort((a,b)=>a[0]-b[0]);l.setData(sorted.map(([t,p])=>q?{time:ts(t),value:p.v,color:gapColor(p.gap,key==='halo'?.3:1)}:{time:ts(t),value:p.v}));ends.current.set(l,sorted.at(-1)?.[0]??-Infinity);return l;};
       const halo=line('halo',gapColor(null,.3),LineStyle.Solid);
-      extra.current=[line('quant',k.info,LineStyle.Solid),line('model',k.axis,LineStyle.Dashed),halo];}
-    const n=candles.current.length;if(n){if(same&&timeRange&&!following)c.timeScale().setVisibleRange(timeRange);else {const span=same&&range?range.to-range.from:SHOWN[view]+3;c.timeScale().setVisibleLogicalRange({from:Math.max(0,n+3-span),to:n+3});}}
+      extra.current=[line('quant',k.info,LineStyle.Solid),line('model',k.axis,LineStyle.Dashed),halo];
+      // Bitcoin on its own left-hand dollar axis, so the round's target can be drawn on the YES chart (2026-11-04, user
+      // request). Only this round's seconds, one point per candle (the bucket's last price).
+      const bl=c.addSeries(LineSeries,{priceScaleId:'left',visible:overlay,color:rgba(k.muted,.75),lineWidth:2,priceLineVisible:false,lastValueVisible:true,crosshairMarkerVisible:false,title:'BTC',priceFormat:{type:'price',precision:2,minMove:.01}});
+      const from=s?.market?.open_time?Date.parse(s.market.open_time):(candles.current[0]?.time??Infinity)*1000,btcPts=new Map<number,number>();
+      for(const [t,p] of samples.current)if(t>=from)btcPts.set(bucketOf(t,tf),p);
+      const sortedBtc=[...btcPts].sort((a,b)=>a[0]-b[0]);bl.setData(sortedBtc.map(([t,v])=>({time:ts(t),value:v})));ends.current.set(bl,sortedBtc.at(-1)?.[0]??-Infinity);btcLine.current=bl;}
+    c.applyOptions({leftPriceScale:{visible:!btc&&overlay,borderVisible:false,scaleMargins:{top:.12,bottom:.08}}});
+    const n=candles.current.length;if(n){if(same&&timeRange&&(!following||userMoved.current))c.timeScale().setVisibleRange(timeRange);else {const span=same&&range?range.to-range.from:SHOWN[view]+3;c.timeScale().setVisibleLogicalRange({from:Math.max(0,n+3-span),to:n+3});}}
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[view,tf,loaded,view==='kalshi'?ticker:null]);
   // Fills on both charts: buys below the bar, sales above, in the side's colour, at the candle they fell in. Pieces of
@@ -83,19 +93,23 @@ export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;ma
   },[marks,view,tf,loaded,view==='kalshi'?ticker:null]);
   // The round's target (K, the price to beat) as a level across the Bitcoin chart with its price on the axis, as in
   // Kalshi's app; the dashed step line under it keeps earlier rounds' targets.
-  useEffect(()=>{const m=main.current;if(!m)return;if(target.current){m.removePriceLine(target.current);target.current=null;}
-    if(view==='btc'&&s?.K>0)target.current=m.createPriceLine({price:s.K,color:k.warn,lineWidth:2,lineStyle:LineStyle.Dashed,axisLabelVisible:true,title:'Target'});
+  // On the Kalshi YES chart it sits on the Bitcoin overlay's left axis.
+  useEffect(()=>{const owner=view==='btc'?main.current:btcLine.current;if(target.current){try{target.current.series.removePriceLine(target.current.line);}catch{}target.current=null;}
+    if(owner&&s?.K>0)target.current={series:owner,line:owner.createPriceLine({price:s.K,color:k.warn,lineWidth:2,lineStyle:LineStyle.Dashed,axisLabelVisible:true,title:'Target'})};
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[s?.K,view,tf,loaded]);
   // Forecast lines on/off without rebuilding the candles.
   useEffect(()=>{if(view==='kalshi')for(const l of extra.current)l.applyOptions({visible:lines});},[lines,view]);
+  // Bitcoin + target overlay on/off: the line, its target and the left axis together.
+  useEffect(()=>{btcLine.current?.applyOptions({visible:overlay});chart.current?.applyOptions({leftPriceScale:{visible:view==='kalshi'&&overlay}});},[overlay,view]);
   // Live: each state update moves the last candle (and the K / forecast lines) without redrawing the history.
   useEffect(()=>{const m=main.current;if(!m||!s?.engineTime||!fresh)return;const t=s.engineTime;if(t<=lastUpdate.current)return;lastUpdate.current=t;
-    if(view==='btc'){if(!(s.proxy>0))return;samples.current.push([t,s.proxy]);while(samples.current.length&&samples.current[0][0]<t-7200000)samples.current.shift();
+    if(s.proxy>0){samples.current.push([t,s.proxy]);while(samples.current.length&&samples.current[0][0]<t-7200000)samples.current.shift();}
+    if(view==='btc'){if(!(s.proxy>0))return;
       const c=addPrice(candles.current,t,s.proxy,tf);if(!c)return;m.update({...c,time:ts(c.time)});
       const r=withCurrent().find(x=>t>=x.open&&t<x.close);if(r)extend(extra.current[0],c.time,r.k);}
     else{const b=s.book,price=b?usableMid(b,t,s?.config?.bookStaleMs??5000,1):null,mid=price===null?null:price*100;if(mid==null)return;const c=addPrice(candles.current,t,mid,tf);if(!c)return;m.update({...c,time:ts(c.time)});
-      if(s.quant?.p!=null){const gap=s.quant.p*100-mid;extend(extra.current[0],c.time,s.quant.p*100,gapColor(gap));extend(extra.current[2],c.time,s.quant.p*100,gapColor(gap,.3));}if(s.quant?.model!=null)extend(extra.current[1],c.time,s.quant.model*100);}
+      if(s.quant?.p!=null){const gap=s.quant.p*100-mid;extend(extra.current[0],c.time,s.quant.p*100,gapColor(gap));extend(extra.current[2],c.time,s.quant.p*100,gapColor(gap,.3));}if(s.quant?.model!=null)extend(extra.current[1],c.time,s.quant.model*100);if(s.proxy>0)extend(btcLine.current??undefined,c.time,s.proxy);}
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[s?.engineTime,fresh,view,tf,loaded]);
   // Future projections are independent line series: they can never become observed candles or leak into OHLC.
@@ -105,10 +119,10 @@ export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;ma
     const range=c.timeScale().getVisibleRange(),following=!range||Number(range.to)>=Number(candles.current.at(-1)?.time??Infinity),width=c.timeScale().getVisibleLogicalRange();
     if(!projection.current){const lines=[0,1,2].map(i=>c.addSeries(LineSeries,{color:i===0?k.info:'rgba(154,168,255,0.4)',lineWidth:i===0?2:1,lineStyle:LineStyle.Dashed,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,priceFormat:{type:'price',precision:2,minMove:.01}}));const band=new PriceProjectionBand(c,lines[0]);lines[0].attachPrimitive(band);projection.current={lines,band};}
     const points=priceProjection(p,tf);for(const [i,key] of (['expected','low','high'] as const).entries())projection.current.lines[i].setData(points.map(x=>({time:ts(x.time),value:x[key]})));projection.current.band.setData(points);
-    if(following){const end=c.timeScale().timeToIndex(ts(points.at(-1)!.time),false);if(end!==null){const span=width?width.to-width.from:SHOWN.btc+3;c.timeScale().setVisibleLogicalRange({from:Math.max(0,end+3-span),to:end+3});}}
+    if(following&&!userMoved.current){const end=c.timeScale().timeToIndex(ts(points.at(-1)!.time),false);if(end!==null){const span=width?width.to-width.from:SHOWN.btc+3;c.timeScale().setVisibleLogicalRange({from:Math.max(0,end+3-span),to:end+3});}}
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[s?.shortTerm?.time,horizon,view,tf,loaded,fresh]);
-  function latest(){const c=chart.current;if(!c)return;const p:PricePrediction|undefined=view==='btc'&&projection.current?s?.shortTerm?.horizons?.find((p:PricePrediction)=>p.horizon===horizon):undefined;
+  function latest(){const c=chart.current;if(!c)return;userMoved.current=false;const p:PricePrediction|undefined=view==='btc'&&projection.current?s?.shortTerm?.horizons?.find((p:PricePrediction)=>p.horizon===horizon):undefined;
     const endTime=p?Math.floor(p.targetTime/1000):candles.current.at(-1)?.time;if(endTime===undefined)return;const end=c.timeScale().timeToIndex(ts(endTime),true);if(end!==null)c.timeScale().setVisibleLogicalRange({from:Math.max(0,end-SHOWN[view]),to:end+3});}
   const last=candles.current.at(-1),K=s?.K,diff=view==='btc'&&last&&K>0?last.close-K:null;
   const label=view==='btc'?`Bitcoin ${tf}-second candles${last?`, last $${last.close.toFixed(2)}`:''}${diff!=null?`, ${diff>=0?'above':'below'} the target by $${Math.abs(diff).toFixed(2)}`:''}`:`Kalshi YES price candles this round${last?`, last ${last.close.toFixed(1)} cents`:''}`;
@@ -116,7 +130,7 @@ export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;ma
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
       <div role="group" aria-label="Chart" className="flex gap-1">{([['btc','Bitcoin'],['kalshi','Kalshi YES']] as [View,string][]).map(([v,l])=><button key={v} type="button" aria-pressed={view===v} onClick={()=>choose(v,TFS[v].some(([x])=>x===tf)?tf:15)} className={cn(chip(view===v),'font-medium')}>{l}</button>)}</div>
       <div role="group" aria-label="Candle length" className="flex gap-1">{TFS[view].map(([x,l])=><button key={x} type="button" aria-pressed={tf===x} onClick={()=>choose(view,x)} className={chip(tf===x)}>{l}</button>)}</div>
-      {view==='kalshi'?<button type="button" aria-pressed={lines} onClick={toggleLines} className={chip(lines)}>Forecast lines</button>:null}
+      {view==='kalshi'?<><button type="button" aria-pressed={lines} onClick={toggleLines} className={chip(lines)}>Forecast lines</button><button type="button" aria-pressed={overlay} onClick={toggleOverlay} className={chip(overlay)}>Bitcoin + target</button></>:null}
       <div className="ml-auto flex flex-wrap items-baseline gap-x-3 text-sm">{view==='btc'?<>
         <span className="num text-lg font-semibold">{last?`$${last.close.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`:'—'}</span>
         {diff!=null?<span className={cn('num',diff>=0?'text-yes':'text-no')}>{diff>=0?'+':'−'}${Math.abs(diff).toFixed(2)} vs target</span>:null}
@@ -128,7 +142,7 @@ export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;ma
     </div>
     <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted"><span>{fresh?'Live updates':'Updates paused'} · {candles.current.length} candles</span>{view==='btc'&&fresh&&s?.shortTerm?.ready?<span className="text-info">Dashed + shade: {horizon===30?'30s':horizon===60?'1m':'3m'} estimate · 80% range</span>:null}<button type="button" className="inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 hover:bg-surface-2 hover:text-fg" onClick={latest}><LocateFixed aria-hidden className="size-3.5"/>Latest</button></div>
     {error?<p className="mt-2 text-xs text-warn">Price history unavailable ({error}); showing live prices only.</p>
-      :<p className="mt-2 text-xs text-faint">{view==='btc'?'The model\'s own spot (median of healthy exchange feeds; may differ from official BRTI). Kalshi settles on the last 60 s average against the target (K). Arrows: your fills this round.':lines?'Candles: Kalshi YES mid. Thick line: the forecast the signals use, green when it sits 2¢+ above Kalshi’s price, pink 2¢+ below, blue in line; dashed: the raw model. Rising/falling fast = the forecast moved 3+ points in 15 s, a cue to look: Kalshi usually catches up within about a second.':'YES mid this round. Gaps are seconds with no two-sided book. Forecast lines are hidden.'}</p>}
+      :<p className="mt-2 text-xs text-faint">{view==='btc'?'The model\'s own spot (median of healthy exchange feeds; may differ from official BRTI). Kalshi settles on the last 60 s average against the target (K). Arrows: your fills this round.':(overlay?'Grey line: Bitcoin on the left axis, with the round’s target dashed; above it, YES wins. ':'')+(lines?'Candles: Kalshi YES mid. Thick line: the forecast the signals use, green when it sits 2¢+ above Kalshi’s price, pink 2¢+ below, blue in line; dashed: the raw model. Rising/falling fast = the forecast moved 3+ points in 15 s, a cue to look: Kalshi usually catches up within about a second.':'YES mid this round. Gaps are seconds with no two-sided book. Forecast lines are hidden.')}</p>}
     <ShortTermForecast board={s?.shortTerm??null} fresh={fresh} horizon={horizon} onSelect={setHorizon} bitcoin={view==='btc'} k={s?.K}/>
   </div>;
 }
