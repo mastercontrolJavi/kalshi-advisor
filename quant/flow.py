@@ -40,20 +40,36 @@ def seconds() -> pl.DataFrame | None:
     if bars.height == 0:
         return None
     vol = lambda c: pl.col(c).fill_null(0)
+    for c in ("bn_bid", "bn_mark"):
+        if c not in bars.columns:
+            bars = bars.with_columns(pl.lit(None, dtype=pl.Float64).alias(c))
     s = (
         bars.with_columns(s=(pl.col("t") // 1000 + 1) * 1000)
         .group_by("s").agg(
             bars=pl.len(),
             spot_buy=vol("cb_buy").sum(), spot_sell=vol("cb_sell").sum(),
             perp_buy=(vol("bn_buy") + vol("by_buy")).sum(), perp_sell=(vol("bn_sell") + vol("by_sell")).sum(),
+            bn_buy=vol("bn_buy").sum(), bn_sell=vol("bn_sell").sum(), by_buy=vol("by_buy").sum(), by_sell=vol("by_sell").sum(),
+            # A venue frame in this second: a trade (any venue), or Binance's depth or mark stream (they keep it alive too).
+            cb_frame=(vol("cb_n") > 0).any(), by_frame=(vol("by_n") > 0).any(),
+            bn_frame=((vol("bn_n") > 0) | pl.col("bn_bid").is_not_null() | pl.col("bn_mark").is_not_null()).any(),
             spot=pl.col("cb_last").drop_nulls().last(), perp=pl.coalesce("bn_last", "by_last").drop_nulls().last(),
             mark=pl.col("bn_mark").drop_nulls().last(), index=pl.col("bn_index").drop_nulls().last(),
         )
     )
     grid = pl.DataFrame({"s": np.arange(s["s"].min(), s["s"].max() + 1000, 1000, dtype=np.int64)})
     s = grid.join(s, on="s", how="left").sort("s").with_columns(
-        pl.col("bars", "spot_buy", "spot_sell", "perp_buy", "perp_sell").fill_null(0),
+        pl.col("bars", "spot_buy", "spot_sell", "perp_buy", "perp_sell", "bn_buy", "bn_sell", "by_buy", "by_sell").fill_null(0),
+        pl.col("cb_frame", "bn_frame", "by_frame").fill_null(False),
         pl.col("spot", "perp", "mark", "index").forward_fill(limit=5),
+    )
+    # The card's health gates, rebuilt from the bars (code review on PR #6). A venue is healthy while it sent a frame within
+    # FLOW_SILENT_MS = 3 s (flow.ts healthy(); its feed-delay test is not replayed). The pulse is current only when the worker
+    # wrote bars this second (it writes every 250 ms, and the card drops a pulse older than 1.5 s); it is usable only with
+    # Coinbase and at least one perp healthy (flow.ts: healthy = spotOk && perpVenue).
+    alive = lambda c: pl.col(c).cast(pl.Int8).rolling_max(window_size=3, min_samples=1) == 1
+    s = s.with_columns(cb_alive=alive("cb_frame"), bn_alive=alive("bn_frame"), by_alive=alive("by_frame")).with_columns(
+        pulse_ok=(pl.col("bars") > 0) & pl.col("cb_alive") & (pl.col("bn_alive") | pl.col("by_alive")),
     )
     roll = lambda c, n: pl.col(c).rolling_sum(window_size=n)
     cover = lambda n: roll("bars", n) >= .9 * 4 * n
@@ -72,14 +88,21 @@ def seconds() -> pl.DataFrame | None:
         lead_z=pl.col("lead1") / pl.col("lead1").pow(2).rolling_mean(window_size=300, min_samples=240).sqrt(),
     )
     # The dashboard badge's votes (flow.ts): 60 s taker share ≥ 55% / ≤ 45% on enough volume, and a 1-s lead ≥ 2 sd and ≥ $5.
-    v = lambda ratio, volume, lo: pl.when(volume < lo).then(0).when(pl.col(ratio) >= .55).then(1).when(pl.col(ratio) <= .45).then(-1).otherwise(0)
+    # Only healthy venues vote (flow.ts side()): a perp that went silent drops out of the 60 s perp volumes; with no healthy
+    # venue on a side its vote is null (FLOW UNKNOWN), and with no usable pulse every vote and the impulse are null.
+    vote = lambda buy, sell, lo: pl.when((buy + sell) < lo).then(0).when(buy / (buy + sell) >= .55).then(1).when(buy / (buy + sell) <= .45).then(-1).otherwise(0)
+    healthy_sum = lambda col: (pl.when(pl.col("bn_alive")).then(roll(f"bn_{col}", 60)).otherwise(0)
+                               + pl.when(pl.col("by_alive")).then(roll(f"by_{col}", 60)).otherwise(0))
+    usable = pl.col("pulse_ok") & cover(60)
     s = s.with_columns(
-        spot_vote=v("ratio_spot60", roll("spot_buy", 60) + roll("spot_sell", 60), .25),
-        perp_vote=v("ratio_perp60", roll("perp_buy", 60) + roll("perp_sell", 60), 2),
-        impulse=pl.when((pl.col("lead_z") >= 2) & (pl.col("lead1") >= 5)).then(1).when((pl.col("lead_z") <= -2) & (pl.col("lead1") <= -5)).then(-1).otherwise(0),
+        spot_vote=pl.when(usable).then(vote(roll("spot_buy", 60), roll("spot_sell", 60), .25)),
+        perp_vote=pl.when(usable).then(vote(healthy_sum("buy"), healthy_sum("sell"), 2)),
+        impulse=pl.when(pl.col("pulse_ok") & pl.col("lead_z").is_not_null()).then(
+            pl.when((pl.col("lead_z") >= 2) & (pl.col("lead1") >= 5)).then(1).when((pl.col("lead_z") <= -2) & (pl.col("lead1") <= -5)).then(-1).otherwise(0)),
     )
-    # The card's impulse memory (master-signal.ts nextImpulse): the last impulse in either direction and when it fired.
-    fired = pl.col("impulse") != 0
+    # The card's impulse memory (master-signal.ts nextImpulse): the last impulse in either direction and when it fired,
+    # recorded only from a current, healthy pulse and kept (not refreshed) while the pulse is stale.
+    fired = pl.col("impulse").fill_null(0) != 0
     return s.with_columns(
         votes=pl.col("spot_vote") + pl.col("perp_vote") + pl.col("impulse"),
         last_impulse=pl.when(fired).then(pl.col("impulse")).forward_fill(),
@@ -133,14 +156,24 @@ def maker_price(bid: pl.Expr, ask: pl.Expr) -> pl.Expr:
     return pl.when(below > 0).then(price)
 
 
-def master_stages(panel: pl.DataFrame, opening: pl.DataFrame) -> pl.DataFrame:
+def live_calls(ticks: pl.DataFrame) -> pl.DataFrame:
+    """The live call at every journal second, from the complete tick stream: the engine updates its remembered direction
+    on every tick (index.ts), including the seconds build_panel() drops (stale or invalid books), so the band's state has
+    to be carried through those seconds too (code review on PR #6)."""
+    t = ticks.select("ticker", "time", "q").unique(["ticker", "time"], keep="first").sort("ticker", "time")
+    return t.select("ticker", "time").with_columns(live_direction(t))
+
+
+def master_stages(panel: pl.DataFrame, opening: pl.DataFrame, ticks: pl.DataFrame | None = None) -> pl.DataFrame:
     """Per journal second: the side the card would take and how far down its STRONG BUY checklist it gets.
 
-    `panel` needs ticker, time, tau, q, yes_bid, yes_ask, y, spot_vote, perp_vote, last_impulse, last_impulse_at.
-    Not replayed: the stale-book breaker and data-freshness gates (the panel already keeps only fresh, valid books).
+    `panel` needs ticker, time, tau, q, yes_bid, yes_ask, y, pulse_ok, spot_vote, perp_vote, impulse, last_impulse and
+    last_impulse_at. `ticks` is the unfiltered journal (ticker, time, q) the live call's state is carried through; without
+    it the panel's own q is used. Not replayed: the stale-book breaker (the panel keeps only fresh, valid books).
     """
     p = panel.sort("ticker", "time")
-    p = p.with_columns(live_direction(p)).join(
+    calls = live_calls(p if ticks is None else ticks)
+    p = p.join(calls, on=["ticker", "time"], how="left").join(
         opening.select("ticker", pl.col("time").alias("open_at"),
                        pl.when(pl.col("direction") == "UP").then(1).otherwise(-1).cast(pl.Int8).alias("open_dir")),
         on="ticker", how="left",
@@ -154,7 +187,9 @@ def master_stages(panel: pl.DataFrame, opening: pl.DataFrame) -> pl.DataFrame:
         side_ask=ask, side_bid=bid,
         live=d.is_not_null() & (pl.col("tau") >= MIN_ENTRY_TAU) & ask.is_between(0, 1, closed="none"),
         agree=opening_now.is_null() | (opening_now == d),
-        flow=(pl.col("spot_vote") == d) & (pl.col("perp_vote") == d) & (pl.col("impulse") != -d),
+        # flowAlignment on a current, healthy pulse (master-signal.ts pulseCurrent, flow.ts): otherwise FLOW UNKNOWN.
+        # A missing impulse counts as not against, as in flow.ts (votes.impulse ?? 0).
+        flow=pl.col("pulse_ok") & (pl.col("spot_vote") == d) & (pl.col("perp_vote") == d) & (pl.col("impulse").fill_null(0) != -d),
         recent=(pl.col("last_impulse") == d) & (pl.col("time") - pl.col("last_impulse_at") <= IMPULSE_HOLD_MS),
         won=pl.when(d == 1).then(pl.col("y")).otherwise(1 - pl.col("y")),
     ).with_columns(
@@ -207,7 +242,7 @@ def master_summary(stages: pl.DataFrame) -> pl.DataFrame:
 
 
 def master_study(panel: pl.DataFrame) -> tuple[dict, str]:
-    stages = master_stages(panel, load("opening_calls"))
+    stages = master_stages(panel, load("opening_calls"), load("ticks").select("ticker", "time", "q"))
     table = master_summary(stages)
     strong = table.filter(pl.col("stage") == STAGES["strong"]).row(0, named=True)
     md = [
@@ -235,7 +270,7 @@ def flow_study() -> tuple[dict, str]:
     flow = seconds()
     if flow is None:
         return {"rows": 0}, f"{head}\n\nNo flow data yet: the engine's flow worker writes {flow_db()} (FLOW_DB) while it runs.\n"
-    card_cols = ["spot_vote", "perp_vote", "impulse", "last_impulse", "last_impulse_at"]
+    card_cols = ["pulse_ok", "spot_vote", "perp_vote", "impulse", "last_impulse", "last_impulse_at"]
     panel = _ev(build_panel()).join(flow.select("time", *FLOW_FEATURES, *card_cols), on="time", how="inner")
     if panel.height == 0:
         # Say why instead of printing an empty table that reads like "not enough data yet".
