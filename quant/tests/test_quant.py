@@ -80,6 +80,125 @@ def test_flow_seconds_use_only_bars_that_finished_before_the_second(tmp_path, mo
     assert at(60)["ratio_spot60"] == 1 and at(60)["cvd_perp60"] == pytest.approx(-240)
     assert at(399)["lead1"] == pytest.approx(0) and at(400)["lead1"] == pytest.approx(30)  # the jump lands in the bars of [399 s, 400 s)
     assert at(400)["votes"] == 1 + -1 + 1  # spot buys, perp sells, perp impulse up
+    assert (at(400)["spot_vote"], at(400)["perp_vote"], at(400)["impulse"]) == (1, -1, 1)
+    assert at(400)["last_impulse"] == 1 and at(400)["last_impulse_at"] == t0 + 400_000 and at(399)["last_impulse"] is None
+
+
+def test_live_call_flips_only_past_the_band_and_resets_each_round():
+    import flow
+    f = pl.DataFrame({"ticker": ["A"] * 5 + ["B"] * 2, "q": [.55, .49, .47, .51, .53, None, .45]})
+    assert flow.live_direction(f).to_list() == [1, 1, -1, -1, 1, None, -1]
+
+
+def test_maker_price_matches_the_card():
+    import flow
+    f = pl.DataFrame({"bid": [.40, .44, None, None], "ask": [.45, .45, .45, .01]}, schema={"bid": pl.Float64, "ask": pl.Float64})
+    got = f.select(flow.maker_price(pl.col("bid"), pl.col("ask")).alias("m"))["m"].to_list()
+    assert got[:3] == pytest.approx([.41, .44, .44]) and got[3] is None  # a tick up; join the bid; under the ask; nothing below 1¢
+
+
+def _card_round(n=10, **over):
+    t0 = 1_793_600_000_000
+    base = {"ticker": ["R"] * n, "time": [t0 + i * 1000 for i in range(n)], "tau": [600 - i for i in range(n)],
+            "q": [.6] * n, "yes_bid": [.55] * n, "yes_ask": [.57] * n, "y": [1] * n,
+            "pulse_ok": [True] * n, "spot_vote": [1] * n, "perp_vote": [1] * n, "impulse": [0] * n,
+            "last_impulse": [1] * n, "last_impulse_at": [t0] * n}
+    return pl.DataFrame(base | over), t0
+
+
+def test_strong_buy_needs_every_check_and_an_impulse_within_5_s():
+    import flow
+    frame, t0 = _card_round()
+    s = flow.master_stages(frame, pl.DataFrame({"ticker": ["R"], "time": [t0], "direction": ["UP"]}))
+    assert s["strong"].to_list() == [True] * 6 + [False] * 4  # the impulse at t0 counts through t0 + 5 s
+    assert s["taker_ev"][0] == pytest.approx(1 - .57 - taker_fee(.57))
+    against = flow.master_stages(frame, pl.DataFrame({"ticker": ["R"], "time": [t0], "direction": ["DOWN"]}))
+    assert not against["agree"].any() and not against["strong"].any()  # opening call disagrees
+    fighting, _ = _card_round(perp_vote=[-1] * 10)
+    assert not flow.master_stages(fighting, pl.DataFrame({"ticker": [], "time": [], "direction": []}, schema={"ticker": pl.String, "time": pl.Int64, "direction": pl.String}))["flow"].any()
+
+
+def test_entries_close_in_the_final_minute_and_makers_fill_only_on_a_trade_through():
+    import flow
+    no_open = pl.DataFrame({"ticker": [], "time": [], "direction": []}, schema={"ticker": pl.String, "time": pl.Int64, "direction": pl.String})
+    late, _ = _card_round(tau=[61, 60, 59, 58, 57, 56, 55, 54, 53, 52])
+    assert flow.master_stages(late, no_open)["live"].to_list() == [True, True] + [False] * 8
+    # Maker rests at 56¢ (a cent above the 55¢ bid); the ask touches 56¢ (no fill), then trades at 55¢ (fill).
+    asks = [.57, .57, .56, .57, .55, .57, .57, .57, .57, .57]
+    filled = flow.master_stages(_card_round(yes_ask=asks, yes_bid=[.55, .55, .54, .55, .54, .55, .55, .55, .55, .55])[0], no_open)
+    assert filled["maker"][0] == pytest.approx(.56) and filled["maker_filled"][0] and not filled["maker_filled"][4]
+
+
+def test_live_call_state_is_carried_through_seconds_the_panel_drops():
+    # The engine flips DOWN at a tick the panel drops (stale book); back inside the band the call must stay DOWN.
+    import flow
+    no_open = pl.DataFrame({"ticker": [], "time": [], "direction": []}, schema={"ticker": pl.String, "time": pl.Int64, "direction": pl.String})
+    frame, t0 = _card_round(4, q=[.6, .45, .49, .51])
+    panel = frame.filter(pl.col("time") != t0 + 1000)
+    assert flow.master_stages(panel, no_open)["live_dir"].to_list() == [1, 1, 1]  # the filtered view alone misses the flip
+    assert flow.master_stages(panel, no_open, frame.select("ticker", "time", "q"))["live_dir"].to_list() == [1, -1, -1]
+
+
+def test_no_flow_confirmed_without_a_current_healthy_pulse():
+    import flow
+    frame, t0 = _card_round(pulse_ok=[True] * 3 + [False] * 7)
+    s = flow.master_stages(frame, pl.DataFrame({"ticker": ["R"], "time": [t0], "direction": ["UP"]}))
+    assert s["flow"].to_list() == [True] * 3 + [False] * 7 and s["strong"].to_list() == [True] * 3 + [False] * 7
+
+
+def test_master_summary_counts_signals_not_seconds():
+    import flow
+    frame, t0 = _card_round()
+    table = flow.master_summary(flow.master_stages(frame, pl.DataFrame({"ticker": ["R"], "time": [t0], "direction": ["UP"]})))
+    strong = table.filter(pl.col("stage") == flow.STAGES["strong"]).row(0, named=True)
+    assert strong["signals"] == 1 and strong["seconds on"] == 6 and strong["win %"] == 100
+
+
+def _flow_seconds(tmp_path, monkeypatch, rows):
+    import sqlite3
+    import data
+    import flow
+    db = sqlite3.connect(tmp_path / "flow.db")
+    cols = ["t"] + [f"{v}_{f}" for v in ("cb", "bn", "by") for f in ("last", "buy", "sell", "n", "lag")] + ["bn_bid", "bn_ask", "bn_mark", "bn_index", "bn_funding"]
+    db.execute(f"CREATE TABLE flow_bars({', '.join(cols)})")
+    for row in rows:
+        db.execute(f"INSERT INTO flow_bars({', '.join(row)}) VALUES({', '.join('?' * len(row))})", list(row.values()))
+    db.commit(); db.close()
+    monkeypatch.setattr(data, "DATA", tmp_path); monkeypatch.setattr(data, "CACHE", tmp_path / "cache"); monkeypatch.delenv("FLOW_DB", raising=False)
+    return flow.seconds()
+
+
+T0 = 1_793_600_000_000
+CB = {"cb_last": 77000.0, "cb_buy": 1.0, "cb_sell": 0.0, "cb_n": 1}
+
+
+def test_a_worker_stall_or_a_silent_perp_gives_no_usable_pulse(tmp_path, monkeypatch):
+    # Bars for [0 s, 400 s), nothing at all for [400 s, 403 s) (the worker stalled), then Coinbase alone (the perps went quiet).
+    rows = [{"t": T0 + i * 250, **CB, "bn_last": 77100.0, "bn_buy": 1.0, "bn_sell": 0.0, "bn_n": 1} for i in range(4 * 400)]
+    rows += [{"t": T0 + i * 250, **CB} for i in range(4 * 403, 4 * 420)]
+    s = _flow_seconds(tmp_path, monkeypatch, rows)
+    at = lambda sec: s.filter(pl.col("time") == T0 + sec * 1000).row(0, named=True)
+    assert at(400)["pulse_ok"] and (at(400)["spot_vote"], at(400)["perp_vote"]) == (1, 1)
+    for sec in (401, 402, 403):  # 95% of the last 60 s of bars is still there, so the old replay kept voting here
+        assert not at(sec)["pulse_ok"] and at(sec)["spot_vote"] is None and at(sec)["perp_vote"] is None
+    assert at(404)["bars"] > 0 and not at(404)["bn_alive"] and not at(404)["pulse_ok"]  # Binance silent > 3 s
+    assert at(410)["impulse"] is None
+
+
+def test_only_healthy_perp_venues_vote(tmp_path, monkeypatch):
+    # Binance buys until 397 s then goes silent; Bybit sells from 300 s. At 400 s only Bybit is healthy, so the perp vote is
+    # a sell, though Binance's buys are still inside the 60 s window (counting them would make it a 49% share: no vote).
+    rows = []
+    for i in range(4 * 400):
+        r = {"t": T0 + i * 250, **CB}
+        if i < 4 * 397:
+            r |= {"bn_last": 77100.0, "bn_buy": 1.0, "bn_sell": 0.0, "bn_n": 1}
+        if i >= 4 * 300:
+            r |= {"by_last": 77100.0, "by_buy": 0.0, "by_sell": 1.0, "by_n": 1}
+        rows.append(r)
+    at400 = _flow_seconds(tmp_path, monkeypatch, rows).filter(pl.col("time") == T0 + 400_000).row(0, named=True)
+    assert not at400["bn_alive"] and at400["by_alive"] and at400["pulse_ok"]
+    assert at400["perp_vote"] == -1
 
 
 def test_flow_db_follows_flow_db_like_the_engine(tmp_path, monkeypatch):

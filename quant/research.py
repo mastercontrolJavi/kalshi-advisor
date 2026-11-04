@@ -165,9 +165,12 @@ def post_mortem() -> tuple[dict, str]:
 def main(parts: list[str]):
     payload, md = {}, ["# Python research", ""]
     if "--refresh" in parts:
-        # The flow bars only start on 2026-11-02, so the cached journal and panel must include the latest seconds.
+        # The flow bars only start on 2026-11-02, so every cache the panel is built from must include the latest
+        # seconds: the panel inner-joins settled results, so a stale outcomes cache silently drops every recent round.
         from features import build_panel
-        load("ticks", refresh=True); build_panel(refresh=True)
+        for name in ("outcomes", "rounds", "brti_1s", "opening_calls", "ticks"):
+            load(name, refresh=True)
+        build_panel(refresh=True)
     if "fills" in parts:
         p, m = post_mortem()
         payload["fills"] = p; md.append(m)

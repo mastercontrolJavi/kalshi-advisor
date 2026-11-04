@@ -209,7 +209,10 @@ def _deciles(frame: pl.DataFrame, feature: str) -> dict:
                 continue
             g = part.drop_nulls(f"{kind}_{side}")["ticker"].to_numpy()
             ci = block_bootstrap(v.to_numpy(), g)
-            out[f"{name}_{kind}"] = {"cents": float(v.mean() * 100), "low": ci[0] * 100, "high": ci[1] * 100, "n": v.len()}
+            # The same trade on every second (not just this decile): what the market's drift alone paid over the sample.
+            baseline = f[f"{kind}_{side}"].drop_nulls().mean() * 100
+            out[f"{name}_{kind}"] = {"cents": float(v.mean() * 100), "low": ci[0] * 100, "high": ci[1] * 100, "n": v.len(),
+                                     "baseline": float(baseline), "excess": float(v.mean() * 100 - baseline)}
     return out
 
 
@@ -230,6 +233,8 @@ def feature_study() -> tuple[dict, str]:
             "rho vs 60s move": dec.get("spearman_dmid60"),
             "top-decile YES hold (c)": dec.get("top_ev", {}).get("cents"),
             "bottom-decile NO hold (c)": dec.get("bottom_ev", {}).get("cents"),
+            "YES vs avg (c)": dec.get("top_ev", {}).get("excess"),
+            "NO vs avg (c)": dec.get("bottom_ev", {}).get("excess"),
             "best scalp (c)": max((dec[k]["cents"] for k in ("top_sc", "bottom_sc") if k in dec), default=None),
         })
     # Is Kalshi's own price biased? EV of buying each side at the ask, by price.

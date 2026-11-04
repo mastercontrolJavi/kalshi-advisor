@@ -170,6 +170,11 @@ def _ticks() -> pl.DataFrame:
     return pl.concat(parts, how="diagonal_relaxed").sort("time")
 
 
+def _opening_calls() -> pl.DataFrame:
+    """The engine's frozen opening call per round (saved once Kalshi publishes K)."""
+    return query("advisor.db", "SELECT ticker, time, direction FROM opening_calls ORDER BY time")
+
+
 def _flow() -> pl.DataFrame:
     """250 ms order-flow bars from the engine's flow worker (src/engine/flow.ts); empty until its database exists."""
     path = flow_db()
@@ -181,6 +186,7 @@ def _flow() -> pl.DataFrame:
 BUILDERS = {
     "fills": _fills, "settlements": _settlements, "rounds": _rounds, "candles": _candles, "spot": _spot,
     "outcomes": _outcomes, "brti_1s": _brti_1s, "brti_5hz": _brti_5hz, "ticks": _ticks, "flow": _flow,
+    "opening_calls": _opening_calls,
 }
 
 
