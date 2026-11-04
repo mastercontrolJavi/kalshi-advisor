@@ -27,3 +27,32 @@ export function addPrice(candles:Candle[],ms:number,p:number,tf:number):Candle|n
 export function kPoints(rounds:Round[],candles:Candle[]):({time:number;value:number}|{time:number})[]{
   return candles.map(c=>{const r=rounds.find(x=>c.time*1000>=x.open&&c.time*1000<x.close);return r?{time:c.time,value:r.k}:{time:c.time};});
 }
+/** A fill to mark on the chart: price is what was paid (buy) or received (sell) per contract of that side. */
+export interface ChartMark {time:number;price:number;side:'yes'|'no';action:'buy'|'sell';contracts?:number}
+/** One real Kalshi fill as the engine sends it (journal RealEvent): side is the direction acquired (yes = buy YES or
+ *  sell NO), price is that side's price, and closedContracts is how much of it netted away a position on the other side. */
+export interface RoundFill {time:number;side:string;price:number;contracts:number;closedContracts?:number}
+const other=(s:'yes'|'no')=>s==='yes'?'no':'yes';
+/** Real fills as buys and sells the way you placed them: acquiring NO while holding YES is selling YES at 1 − the NO price. */
+export function fillMarks(fills:RoundFill[]):ChartMark[]{
+  const out:ChartMark[]=[];
+  for(const f of fills){if(f.side!=='yes'&&f.side!=='no'||!Number.isFinite(f.time)||!Number.isFinite(f.price)||!(f.contracts>0))continue;
+    const closed=Math.min(f.contracts,Math.max(0,f.closedContracts??0)),opened=f.contracts-closed;
+    if(closed>1e-8)out.push({time:f.time,side:other(f.side),action:'sell',price:1-f.price,contracts:closed});
+    if(opened>1e-8)out.push({time:f.time,side:f.side,action:'buy',price:f.price,contracts:opened});}
+  return out;
+}
+/** Marks that fall in the same candle with the same side and action become one (an order often fills in pieces):
+ *  contracts add up and the price is their contract-weighted average. Sorted by time, as the chart requires. */
+export function groupMarks(marks:ChartMark[],tf:number):(ChartMark&{bucket:number})[]{
+  const groups=new Map<string,ChartMark&{bucket:number;w:number;sum:number}>();
+  for(const m of marks){if(!Number.isFinite(m.time)||!Number.isFinite(m.price))continue;const bucket=bucketOf(m.time,tf),key=`${bucket}:${m.action}:${m.side}`,w=m.contracts!=null&&m.contracts>0?m.contracts:1,g=groups.get(key);
+    if(!g){groups.set(key,{...m,bucket,w,sum:m.price*w});continue;}
+    g.w+=w;g.sum+=m.price*w;g.price=g.sum/g.w;g.contracts=g.contracts!=null&&m.contracts!=null?g.contracts+m.contracts:undefined;}
+  return [...groups.values()].map(({w:_w,sum:_s,...m})=>m).sort((a,b)=>a.bucket-b.bucket||a.time-b.time);
+}
+/** "Buy YES 45¢ ×10": the marker text. */
+export function markText(m:ChartMark):string{
+  const n=m.contracts!=null?` ×${Number.isInteger(m.contracts)?m.contracts:+m.contracts.toFixed(2)}`:'';
+  return `${m.action==='buy'?'Buy':'Sell'} ${m.side.toUpperCase()} ${Math.round(m.price*100)}¢${n}`;
+}

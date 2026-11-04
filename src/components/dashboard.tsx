@@ -1,5 +1,5 @@
 'use client';
-import {useState} from 'react';
+import {useMemo,useState} from 'react';
 import dynamic from 'next/dynamic';
 import {ChartCandlestick,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,BellRing,History,Waves} from 'lucide-react';
 import {flowAlignment} from '@/engine/flow';
@@ -19,11 +19,16 @@ import {PanelBoundary} from './panel-boundary';
 import {cn} from '@/lib/utils';
 import {ago,signedDollars} from './format';
 import {finalMinuteEvidence} from '@/backtest/verdict';
+import {fillMarks,type RoundFill} from './candles';
 const PriceChart=dynamic(()=>import('./price-chart'),{ssr:false,loading:()=><div className="chart-tall animate-pulse rounded-xl bg-surface-2"/>});
 
 export default function Dashboard(){
   const {state:s,connected,fresh}=useLive(),markets=useLive('/markets-ws'),[override,setOverride]=useState(''),[error,setError]=useState(''),sound=useSoundAlerts(s,fresh,'15m',{state:markets.state,fresh:markets.fresh});
   async function unlock(){try{const r=await fetch('/api/engine/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:override})});const data=await r.json();if(!r.ok)throw new Error(data.error);setOverride('');}catch(e){setError((e as Error).message);}}
+  // Your real fills this round as buy/sell arrows on the chart; the key keeps the marks from being reset 4 times a second.
+  const fills:RoundFill[]=s?.roundFills??[],fillKey=fills.map(f=>`${f.time}:${f.side}:${f.contracts}:${f.closedContracts}`).join('|');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const marks=useMemo(()=>fillMarks(fills),[fillKey]);
   const action=fresh?s?.evaluation?.action??'NO TRADE':'NO TRADE',tone=actionTone(action),healthy=s?.venues?.filter((v:any)=>v.healthy).length??0;
   const ambient=!fresh?'warn':tone==='yes'||tone==='no'?tone:'none',holding=fresh&&(s?.exits?.length??0)>0;
   return <>
@@ -46,7 +51,7 @@ export default function Dashboard(){
       <div className="grid gap-4 lg:grid-cols-12">
         <Card className="min-w-0 p-0 lg:col-span-8 3xl:col-span-6">
           <div className="flex min-h-12 items-center gap-2 border-b border-line px-4 py-2"><ChartCandlestick aria-hidden className="size-4 text-info"/><h2 className="font-medium">Price action</h2><SectionHelp title="Price action"/><span className="ml-auto hidden text-xs text-muted sm:inline">Live candles</span></div>
-          <div className="p-4"><PanelBoundary name="Price chart"><PriceChart s={s} fresh={fresh}/></PanelBoundary></div>
+          <div className="p-4"><PanelBoundary name="Price chart"><PriceChart s={s} fresh={fresh} marks={marks}/></PanelBoundary></div>
         </Card>
         <div className="relative min-w-0 lg:col-span-4 3xl:col-span-3"><div className="flex flex-col gap-4 lg:absolute lg:inset-0 lg:overflow-y-auto lg:pr-1 lg:[scrollbar-gutter:stable]">
           {holding?<><Positions s={s} fresh={fresh} compact/><SignalPanel s={s} fresh={fresh} compact/></>:<><SignalPanel s={s} fresh={fresh} compact/><Positions s={s} fresh={fresh} compact/></>}</div></div>

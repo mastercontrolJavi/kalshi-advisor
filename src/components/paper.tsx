@@ -56,7 +56,7 @@ export default function Paper(){
   const pnl=account&&sim?.equity!=null?sim.equity-account.bankroll:null;
   const marks=useMemo<ChartMark[]>(()=>{const t=s?.market?.ticker;if(!t||!coach)return [];
     // Fills on the current round only, from the open review (reviews carry no fills; the position does).
-    return (report?.fills??[]).filter((f:any)=>f.ticker===t).map((f:any)=>({time:f.time,price:f.price,side:f.side,action:f.action}));},[s?.market?.ticker,report,coach]);
+    return (report?.fills??[]).filter((f:any)=>f.ticker===t).map((f:any)=>({time:f.time,price:f.price,side:f.side,action:f.action,contracts:f.contracts}));},[s?.market?.ticker,report,coach]);
   return <>
     <div aria-hidden className="ambient" data-tone={!fresh?'warn':'none'}/>
     <SiteHeader current="/paper" bottom={<WindowBar s={s}/>} aside={<span className="num hidden truncate text-xs text-muted xl:inline">{s?.market?.ticker??'waiting for market'}</span>}>
