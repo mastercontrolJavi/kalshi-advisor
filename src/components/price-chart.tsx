@@ -1,8 +1,8 @@
 'use client';
 import {useEffect,useRef,useState} from 'react';
-import {createChart,createSeriesMarkers,CandlestickSeries,LineSeries,LineStyle,LineType,type IChartApi,type ISeriesApi,type ISeriesMarkersPluginApi,type SeriesMarker,type UTCTimestamp,type Time} from 'lightweight-charts';
+import {createChart,createSeriesMarkers,CandlestickSeries,LineSeries,LineStyle,LineType,type IChartApi,type ISeriesApi,type ISeriesMarkersPluginApi,type IPriceLine,type SeriesMarker,type UTCTimestamp,type Time} from 'lightweight-charts';
 import {chartColors as k} from './probability-chart';
-import {aggregate,addPrice,kPoints,bucketOf,mergeSamples,type Candle,type Round} from './candles';
+import {aggregate,addPrice,kPoints,bucketOf,mergeSamples,groupMarks,markText,type Candle,type Round,type ChartMark} from './candles';
 import {cn} from '@/lib/utils';
 import {usableMid} from '@/engine/quant/quote';
 import {LocateFixed} from 'lucide-react';
@@ -27,12 +27,12 @@ const hhmm=(t:Time)=>new Date(Number(t)*1000).toLocaleTimeString([],{hour:'numer
  * round's Kalshi YES price (with the quant forecast and the raw model as lines, which can be hidden). History comes from /api/engine/candles
  * (the last 2 h of 1-s prices) and is refreshed every minute; between those, every 4 Hz state update moves the last candle.
  */
-/** A paper fill to mark on the Kalshi YES candles (Paper trading): price is what was paid for that side. */
-export interface ChartMark {time:number;price:number;side:'yes'|'no';action:'buy'|'sell'}
+/** A fill to mark on the candles (your real fills on the dashboard, paper fills on Paper trading). */
+export type {ChartMark} from './candles';
 export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;marks?:ChartMark[]}){
   const box=useRef<HTMLDivElement>(null),chart=useRef<IChartApi|null>(null),main=useRef<ISeriesApi<'Candlestick'>|null>(null),extra=useRef<ISeriesApi<'Line'>[]>([]);
   const samples=useRef<[number,number][]>([]),rounds=useRef<Round[]>([]),candles=useRef<Candle[]>([]),selection=useRef(''),lastUpdate=useRef(0),previousLoad=useRef(0);
-  const projection=useRef<{lines:ISeriesApi<'Line'>[];band:PriceProjectionBand}|null>(null),markers=useRef<ISeriesMarkersPluginApi<Time>|null>(null);
+  const projection=useRef<{lines:ISeriesApi<'Line'>[];band:PriceProjectionBand}|null>(null),markers=useRef<ISeriesMarkersPluginApi<Time>|null>(null),target=useRef<IPriceLine|null>(null);
   // Last time on each overlay line. History times carry Kalshi's clock offset and the quant line includes seconds with no
   // two-sided book, so a live point can fall behind a line's end; lightweight-charts throws on that, so skip it instead.
   const ends=useRef(new WeakMap<ISeriesApi<'Line'>,number>());
@@ -59,9 +59,9 @@ export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;ma
     if(projection.current){for(const l of projection.current.lines)c.removeSeries(l);projection.current=null;}
     if(main.current)c.removeSeries(main.current);for(const l of extra.current)c.removeSeries(l);extra.current=[];
     const btc=view==='btc',fmt=btc?{type:'price' as const,precision:2,minMove:.01}:{type:'price' as const,precision:1,minMove:.1};
-    const m=c.addSeries(CandlestickSeries,{upColor:k.yes,downColor:k.no,wickUpColor:k.yes,wickDownColor:k.no,borderVisible:false,priceFormat:fmt,priceLineColor:k.muted});main.current=m;markers.current=createSeriesMarkers(m,[]);
+    const m=c.addSeries(CandlestickSeries,{upColor:k.yes,downColor:k.no,wickUpColor:k.yes,wickDownColor:k.no,borderVisible:false,priceFormat:fmt,priceLineColor:k.muted});main.current=m;markers.current=createSeriesMarkers(m,[]);target.current=null;
     if(btc){candles.current=aggregate(samples.current,tf);m.setData(candles.current.map(x=>({...x,time:ts(x.time)})));
-      const kl=c.addSeries(LineSeries,{color:k.warn,lineWidth:1,lineStyle:LineStyle.Dashed,lineType:LineType.WithSteps,priceLineVisible:false,lastValueVisible:true,title:'K',crosshairMarkerVisible:false,priceFormat:fmt});
+      const kl=c.addSeries(LineSeries,{color:k.warn,lineWidth:1,lineStyle:LineStyle.Dashed,lineType:LineType.WithSteps,priceLineVisible:false,lastValueVisible:false,title:'',crosshairMarkerVisible:false,priceFormat:fmt});
       const kp=kPoints(withCurrent(),candles.current);kl.setData(kp.map(p=>({...p,time:ts(p.time)})));ends.current.set(kl,kp.at(-1)?.time??-Infinity);extra.current=[kl];}
     else{const h:any[]=(s?.history??[]).filter((x:any)=>x.market!=null);candles.current=aggregate(h.map(x=>[x.time,x.market*100]),tf);m.setData(candles.current.map(x=>({...x,time:ts(x.time)})));
       m.createPriceLine({price:50,color:k.line,lineWidth:1,lineStyle:LineStyle.Dotted,axisLabelVisible:false,title:''});
@@ -76,11 +76,17 @@ export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;ma
     const n=candles.current.length;if(n){if(same&&timeRange&&!following)c.timeScale().setVisibleRange(timeRange);else {const span=same&&range?range.to-range.from:SHOWN[view]+3;c.timeScale().setVisibleLogicalRange({from:Math.max(0,n+3-span),to:n+3});}}
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[view,tf,loaded,view==='kalshi'?ticker:null]);
-  // Paper fills on the Kalshi candles: buys below the bar, sales above, in the side's colour, at the candle they fell in.
+  // Fills on both charts: buys below the bar, sales above, in the side's colour, at the candle they fell in. Pieces of
+  // one order in the same candle show as one mark with the total contracts and their average price.
   useEffect(()=>{const api=markers.current;if(!api)return;
-    const list:SeriesMarker<Time>[]=view==='kalshi'?(marks??[]).map(x=>({time:ts(bucketOf(x.time,tf)),position:x.action==='buy'?'belowBar' as const:'aboveBar' as const,color:x.side==='yes'?k.yes:k.no,shape:x.action==='buy'?'arrowUp' as const:'arrowDown' as const,text:`${x.action==='buy'?'Buy':'Sell'} ${x.side.toUpperCase()} ${Math.round(x.price*100)}¢`})).sort((a,b)=>Number(a.time)-Number(b.time)):[];
-    api.setMarkers(list);
+    api.setMarkers(groupMarks(marks??[],tf).map(x=>({time:ts(x.bucket),position:x.action==='buy'?'belowBar' as const:'aboveBar' as const,color:x.side==='yes'?k.yes:k.no,shape:x.action==='buy'?'arrowUp' as const:'arrowDown' as const,text:markText(x)})) as SeriesMarker<Time>[]);
   },[marks,view,tf,loaded,view==='kalshi'?ticker:null]);
+  // The round's target (K, the price to beat) as a level across the Bitcoin chart with its price on the axis, as in
+  // Kalshi's app; the dashed step line under it keeps earlier rounds' targets.
+  useEffect(()=>{const m=main.current;if(!m)return;if(target.current){m.removePriceLine(target.current);target.current=null;}
+    if(view==='btc'&&s?.K>0)target.current=m.createPriceLine({price:s.K,color:k.warn,lineWidth:2,lineStyle:LineStyle.Dashed,axisLabelVisible:true,title:'Target'});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[s?.K,view,tf,loaded]);
   // Forecast lines on/off without rebuilding the candles.
   useEffect(()=>{if(view==='kalshi')for(const l of extra.current)l.applyOptions({visible:lines});},[lines,view]);
   // Live: each state update moves the last candle (and the K / forecast lines) without redrawing the history.
@@ -105,7 +111,7 @@ export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;ma
   function latest(){const c=chart.current;if(!c)return;const p:PricePrediction|undefined=view==='btc'&&projection.current?s?.shortTerm?.horizons?.find((p:PricePrediction)=>p.horizon===horizon):undefined;
     const endTime=p?Math.floor(p.targetTime/1000):candles.current.at(-1)?.time;if(endTime===undefined)return;const end=c.timeScale().timeToIndex(ts(endTime),true);if(end!==null)c.timeScale().setVisibleLogicalRange({from:Math.max(0,end-SHOWN[view]),to:end+3});}
   const last=candles.current.at(-1),K=s?.K,diff=view==='btc'&&last&&K>0?last.close-K:null;
-  const label=view==='btc'?`Bitcoin ${tf}-second candles${last?`, last $${last.close.toFixed(2)}`:''}${diff!=null?`, ${diff>=0?'above':'below'} the opening price by $${Math.abs(diff).toFixed(2)}`:''}`:`Kalshi YES price candles this round${last?`, last ${last.close.toFixed(1)} cents`:''}`;
+  const label=view==='btc'?`Bitcoin ${tf}-second candles${last?`, last $${last.close.toFixed(2)}`:''}${diff!=null?`, ${diff>=0?'above':'below'} the target by $${Math.abs(diff).toFixed(2)}`:''}`:`Kalshi YES price candles this round${last?`, last ${last.close.toFixed(1)} cents`:''}`;
   return <div>
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
       <div role="group" aria-label="Chart" className="flex gap-1">{([['btc','Bitcoin'],['kalshi','Kalshi YES']] as [View,string][]).map(([v,l])=><button key={v} type="button" aria-pressed={view===v} onClick={()=>choose(v,TFS[v].some(([x])=>x===tf)?tf:15)} className={cn(chip(view===v),'font-medium')}>{l}</button>)}</div>
@@ -113,18 +119,25 @@ export default function PriceChart({s,fresh=true,marks}:{s:any;fresh?:boolean;ma
       {view==='kalshi'?<button type="button" aria-pressed={lines} onClick={toggleLines} className={chip(lines)}>Forecast lines</button>:null}
       <div className="ml-auto flex flex-wrap items-baseline gap-x-3 text-sm">{view==='btc'?<>
         <span className="num text-lg font-semibold">{last?`$${last.close.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`:'—'}</span>
-        {diff!=null?<span className={cn('num',diff>=0?'text-yes':'text-no')}>{diff>=0?'+':'−'}${Math.abs(diff).toFixed(2)} vs K</span>:null}
-        <span className="flex items-center gap-1.5 text-xs text-muted"><span aria-hidden className="inline-block w-4 border-t border-dashed border-warn"/>K (opening price)</span></>
-        :<><span className="num text-lg font-semibold">{last?`${last.close.toFixed(1)}¢`:'—'}</span>{lines?<ForecastTag s={s} fresh={fresh}/>:null}</>}</div>
+        {diff!=null?<span className={cn('num',diff>=0?'text-yes':'text-no')}>{diff>=0?'+':'−'}${Math.abs(diff).toFixed(2)} vs target</span>:null}
+        <span className="flex items-center gap-1.5 text-xs text-muted"><span aria-hidden className="inline-block w-4 border-t-2 border-dashed border-warn"/>Target{K>0?<span className="num text-fg">${Number(K).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>:null}</span></>
+        :<><span className="num text-lg font-semibold">{last?`${last.close.toFixed(1)}¢`:'—'}</span><TargetTag s={s} fresh={fresh}/>{lines?<ForecastTag s={s} fresh={fresh}/>:null}</>}</div>
     </div>
     <div className="relative"><div ref={box} role="img" aria-label={label} className="chart-tall mt-3"/>
       {!candles.current.length?<div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted">{error?'Waiting for live prices':loaded?(view==='kalshi'?'Waiting for a live two-sided Kalshi book':'Waiting for price samples'):'Loading price history…'}</div>:null}
     </div>
     <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted"><span>{fresh?'Live updates':'Updates paused'} · {candles.current.length} candles</span>{view==='btc'&&fresh&&s?.shortTerm?.ready?<span className="text-info">Dashed + shade: {horizon===30?'30s':horizon===60?'1m':'3m'} estimate · 80% range</span>:null}<button type="button" className="inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 hover:bg-surface-2 hover:text-fg" onClick={latest}><LocateFixed aria-hidden className="size-3.5"/>Latest</button></div>
     {error?<p className="mt-2 text-xs text-warn">Price history unavailable ({error}); showing live prices only.</p>
-      :<p className="mt-2 text-xs text-faint">{view==='btc'?'The model\'s own spot (median of healthy exchange feeds; may differ from official BRTI). Kalshi settles on the last 60 s average against K.':lines?'Candles: Kalshi YES mid. Thick line: the forecast the signals use, green when it sits 2¢+ above Kalshi’s price, pink 2¢+ below, blue in line; dashed: the raw model. Rising/falling fast = the forecast moved 3+ points in 15 s, a cue to look: Kalshi usually catches up within about a second.':'YES mid this round. Gaps are seconds with no two-sided book. Forecast lines are hidden.'}</p>}
+      :<p className="mt-2 text-xs text-faint">{view==='btc'?'The model\'s own spot (median of healthy exchange feeds; may differ from official BRTI). Kalshi settles on the last 60 s average against the target (K). Arrows: your fills this round.':lines?'Candles: Kalshi YES mid. Thick line: the forecast the signals use, green when it sits 2¢+ above Kalshi’s price, pink 2¢+ below, blue in line; dashed: the raw model. Rising/falling fast = the forecast moved 3+ points in 15 s, a cue to look: Kalshi usually catches up within about a second.':'YES mid this round. Gaps are seconds with no two-sided book. Forecast lines are hidden.'}</p>}
     <ShortTermForecast board={s?.shortTerm??null} fresh={fresh} horizon={horizon} onSelect={setHorizon} bitcoin={view==='btc'} k={s?.K}/>
   </div>;
+}
+
+/** On the Kalshi YES chart, where Bitcoin sits against the round's target, since the target is a Bitcoin price. */
+function TargetTag({s,fresh}:{s:any;fresh:boolean}){
+  const K=s?.K,p=fresh?s?.proxy:null;if(!(K>0))return null;const d=p>0?p-K:null;
+  return <span className="flex items-baseline gap-1.5 text-xs text-muted"><span aria-hidden className="inline-block w-4 self-center border-t-2 border-dashed border-warn"/>Target <span className="num text-fg">${Number(K).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+    {d!=null?<span className={cn('num',d>=0?'text-yes':'text-no')}>BTC {d>=0?'+':'−'}${Math.abs(d).toFixed(2)}</span>:null}</span>;
 }
 
 /** The forecast as an indicator: where it sits against Kalshi's price, and whether it is moving fast right now. */

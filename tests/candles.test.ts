@@ -20,3 +20,15 @@ it('rejects invalid times and avoids drawing movement across a missing interval'
   expect(addPrice(c,NaN,12,15)).toBeNull();expect(addPrice(c,2000,12,0)).toBeNull();
   expect(addPrice(c,60000,30,15)).toEqual({time:60,open:30,high:30,low:30,close:30});
 });
+import {fillMarks,groupMarks,markText} from '../src/components/candles';
+it('real fills read as the buys and sells you placed: netting a held side away is a sale of it',()=>{
+  // Bought 10 YES at 40¢, then sold 4 YES at 55¢ (Kalshi records it as acquiring NO at 45¢, closing 4).
+  const m=fillMarks([{time:1000,side:'yes',price:.4,contracts:10,closedContracts:0},{time:5000,side:'no',price:.45,contracts:4,closedContracts:4}]);
+  expect(m).toEqual([{time:1000,side:'yes',action:'buy',price:.4,contracts:10},{time:5000,side:'yes',action:'sell',price:.55,contracts:4}].map(x=>({...x,price:expect.closeTo(x.price,9)})));
+  // A flip: closes 3 NO and opens 2 YES in one fill.
+  expect(fillMarks([{time:0,side:'yes',price:.6,contracts:5,closedContracts:3}]).map(markText)).toEqual(['Sell NO 40¢ ×3','Buy YES 60¢ ×2']);
+  expect(fillMarks([{time:0,side:'maybe',price:.5,contracts:1}])).toEqual([]);});
+it('pieces of one order in a candle become one mark at the contract-weighted price',()=>{
+  const g=groupMarks([{time:16000,side:'yes',action:'buy',price:.5,contracts:3},{time:1000,side:'yes',action:'buy',price:.4,contracts:1},{time:2000,side:'yes',action:'buy',price:.44,contracts:3},{time:3000,side:'no',action:'buy',price:.5}],15);
+  expect(g.map(x=>[x.bucket,x.side,+x.price.toFixed(3),x.contracts])).toEqual([[0,'yes',.43,4],[0,'no',.5,undefined],[15,'yes',.5,3]]);
+  expect(markText(g[0])).toBe('Buy YES 43¢ ×4');expect(markText({time:0,side:'no',action:'sell',price:.551,contracts:1.5})).toBe('Sell NO 55¢ ×1.5');});
