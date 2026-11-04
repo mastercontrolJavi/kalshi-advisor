@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 from scipy.stats import spearmanr
 
-from common import md_table
+from common import block_bootstrap, md_table, taker_fee
 from data import flow_db, load
 from features import _deciles, _ev, _incremental_logloss, build_panel
 
@@ -73,10 +73,161 @@ def seconds() -> pl.DataFrame | None:
     )
     # The dashboard badge's votes (flow.ts): 60 s taker share ≥ 55% / ≤ 45% on enough volume, and a 1-s lead ≥ 2 sd and ≥ $5.
     v = lambda ratio, volume, lo: pl.when(volume < lo).then(0).when(pl.col(ratio) >= .55).then(1).when(pl.col(ratio) <= .45).then(-1).otherwise(0)
-    return s.with_columns(votes=(
-        v("ratio_spot60", roll("spot_buy", 60) + roll("spot_sell", 60), .25) + v("ratio_perp60", roll("perp_buy", 60) + roll("perp_sell", 60), 2)
-        + pl.when((pl.col("lead_z") >= 2) & (pl.col("lead1") >= 5)).then(1).when((pl.col("lead_z") <= -2) & (pl.col("lead1") <= -5)).then(-1).otherwise(0)
-    )).rename({"s": "time"})
+    s = s.with_columns(
+        spot_vote=v("ratio_spot60", roll("spot_buy", 60) + roll("spot_sell", 60), .25),
+        perp_vote=v("ratio_perp60", roll("perp_buy", 60) + roll("perp_sell", 60), 2),
+        impulse=pl.when((pl.col("lead_z") >= 2) & (pl.col("lead1") >= 5)).then(1).when((pl.col("lead_z") <= -2) & (pl.col("lead1") <= -5)).then(-1).otherwise(0),
+    )
+    # The card's impulse memory (master-signal.ts nextImpulse): the last impulse in either direction and when it fired.
+    fired = pl.col("impulse") != 0
+    return s.with_columns(
+        votes=pl.col("spot_vote") + pl.col("perp_vote") + pl.col("impulse"),
+        last_impulse=pl.when(fired).then(pl.col("impulse")).forward_fill(),
+        last_impulse_at=pl.when(fired).then(pl.col("s")).forward_fill(),
+    ).rename({"s": "time"})
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Master Signal replay (src/engine/master-signal.ts, DECISIONS 73)
+# ---------------------------------------------------------------------------------------------------------------------
+
+FLIP_BAND = .02         # live.ts: the live call flips only past 50% ± 2 points
+IMPULSE_HOLD_MS = 5000  # master-signal.ts: a perp impulse counts for 5 s
+MIN_ENTRY_TAU = 60      # config.finalMinuteSignals is off: entries close with 60 s left
+STAGES = {
+    "live": "Follow the live call",
+    "agree": "+ opening call agrees (or none yet)",
+    "flow": "+ FLOW CONFIRMED",
+    "strong": "+ perp impulse ≤ 5 s = STRONG BUY",
+}
+
+
+def live_direction(frame: pl.DataFrame) -> pl.Series:
+    """The engine's live call (index.ts + live.ts nextDirection): q with a ±2-point flip band, reset each round; null with no q."""
+    out, state, ticker = [], None, None
+    for t, q in zip(frame["ticker"], frame["q"]):
+        if t != ticker:
+            state, ticker = None, t
+        if q is None:
+            out.append(None); continue
+        if state is None:
+            state = 1 if q >= .5 else -1
+        elif state == 1 and q <= .5 - FLIP_BAND:
+            state = -1
+        elif state == -1 and q >= .5 + FLIP_BAND:
+            state = 1
+        out.append(state)
+    return pl.Series("live_dir", out, dtype=pl.Int8)
+
+
+def _cents_up(x: pl.Expr) -> pl.Expr:
+    return (x * 100 - 1e-9).ceil() / 100
+
+
+def maker_price(bid: pl.Expr, ask: pl.Expr) -> pl.Expr:
+    """makerEntryPrice on 1¢ ticks: a tick above the bid when that is still below the ask, else the bid; no bid → a tick
+    under the ask; null when nothing legal is below the ask. (The 0.1¢ tail ticks are ignored: those prices are rare here.)"""
+    below = _cents_up(ask) - .01
+    up = (bid * 100 + 1e-9).floor() / 100 + .01
+    price = pl.when(bid.is_null() | (bid <= 0) | (bid >= ask)).then(below).when(up < ask - 1e-9).then(up).otherwise(bid)
+    return pl.when(below > 0).then(price)
+
+
+def master_stages(panel: pl.DataFrame, opening: pl.DataFrame) -> pl.DataFrame:
+    """Per journal second: the side the card would take and how far down its STRONG BUY checklist it gets.
+
+    `panel` needs ticker, time, tau, q, yes_bid, yes_ask, y, spot_vote, perp_vote, last_impulse, last_impulse_at.
+    Not replayed: the stale-book breaker and data-freshness gates (the panel already keeps only fresh, valid books).
+    """
+    p = panel.sort("ticker", "time")
+    p = p.with_columns(live_direction(p)).join(
+        opening.select("ticker", pl.col("time").alias("open_at"),
+                       pl.when(pl.col("direction") == "UP").then(1).otherwise(-1).cast(pl.Int8).alias("open_dir")),
+        on="ticker", how="left",
+    )
+    d = pl.col("live_dir")
+    no_ask = 1 - pl.col("yes_bid")
+    ask = pl.when(d == 1).then(pl.col("yes_ask")).otherwise(no_ask)
+    bid = pl.when(d == 1).then(pl.col("yes_bid")).otherwise(1 - pl.col("yes_ask"))
+    opening_now = pl.when(pl.col("time") >= pl.col("open_at")).then(pl.col("open_dir"))
+    p = p.with_columns(
+        side_ask=ask, side_bid=bid,
+        live=d.is_not_null() & (pl.col("tau") >= MIN_ENTRY_TAU) & ask.is_between(0, 1, closed="none"),
+        agree=opening_now.is_null() | (opening_now == d),
+        flow=(pl.col("spot_vote") == d) & (pl.col("perp_vote") == d) & (pl.col("impulse") != -d),
+        recent=(pl.col("last_impulse") == d) & (pl.col("time") - pl.col("last_impulse_at") <= IMPULSE_HOLD_MS),
+        won=pl.when(d == 1).then(pl.col("y")).otherwise(1 - pl.col("y")),
+    ).with_columns(
+        agree=pl.col("live") & pl.col("agree"),
+    ).with_columns(
+        flow=pl.col("agree") & pl.col("flow").fill_null(False),
+    ).with_columns(
+        strong=pl.col("flow") & pl.col("recent").fill_null(False),
+        maker=maker_price(pl.col("side_bid"), pl.col("side_ask")),
+    )
+    # A resting maker buy fills only if the side's ask later trades through it (strictly below) before the close.
+    yes_later = pl.col("yes_ask").reverse().cum_min().reverse().shift(-1).over("ticker")
+    no_later = (1 - pl.col("yes_bid")).reverse().cum_min().reverse().shift(-1).over("ticker")
+    return p.with_columns(
+        maker_filled=pl.col("maker").is_not_null() & (pl.when(d == 1).then(yes_later).otherwise(no_later) < pl.col("maker") - 1e-9),
+        taker_ev=pl.col("won") - pl.col("side_ask") - taker_fee(pl.col("side_ask")),
+    )
+
+
+def master_summary(stages: pl.DataFrame) -> pl.DataFrame:
+    """Each checklist stage scored at the first second of every run of it (one entry per signal, not one per second)."""
+    rows = []
+    base = None
+    for key, label in STAGES.items():
+        on = stages.with_columns(
+            start=pl.col(key) & ~(pl.col(key).shift(1).fill_null(False) & (pl.col("live_dir").shift(1) == pl.col("live_dir"))).over("ticker")
+        ).filter(pl.col("start"))
+        n = on.height
+        row = {"stage": label, "signals": n, "rounds": on["ticker"].n_unique() if n else 0,
+               "seconds on": int(stages[key].sum())}
+        if n:
+            g = on["ticker"].to_numpy()
+            ev = on["taker_ev"].to_numpy()
+            lo, hi = block_bootstrap(ev, g)
+            filled = on.filter(pl.col("maker_filled"))
+            maker_ev = np.where(on["maker_filled"].to_numpy(), (on["won"] - on["maker"].fill_null(0)).to_numpy(), 0.0)
+            mlo, mhi = block_bootstrap(maker_ev, g)
+            row |= {
+                "win %": float(on["won"].mean() * 100),
+                "taker EV (c)": float(ev.mean() * 100), "taker 95% low": lo * 100, "taker 95% high": hi * 100,
+                "maker fill %": float(on["maker_filled"].mean() * 100),
+                "maker EV if filled (c)": float((filled["won"] - filled["maker"]).mean() * 100) if filled.height else None,
+                "maker EV per signal (c)": float(maker_ev.mean() * 100), "maker 95% low": mlo * 100, "maker 95% high": mhi * 100,
+            }
+            if base is None:
+                base = row["taker EV (c)"]
+            row["taker vs live call (c)"] = row["taker EV (c)"] - base
+        rows.append(row)
+    return pl.DataFrame(rows, infer_schema_length=None)
+
+
+def master_study(panel: pl.DataFrame) -> tuple[dict, str]:
+    stages = master_stages(panel, load("opening_calls"))
+    table = master_summary(stages)
+    strong = table.filter(pl.col("stage") == STAGES["strong"]).row(0, named=True)
+    md = [
+        "### 3b. The Master Signal card, replayed", "",
+        "Every journal second with flow data, run through the card's STRONG BUY checklist in order. Each stage is scored at the "
+        "first second of every run (one entry per signal) on the side the live call names. **Taker**: buy at the ask, hold to "
+        "settlement, after the taker fee. **Maker**: rest the card's maker price (a cent above the bid); it fills only if the "
+        "ask later trades below it before the close, then holds ($0 maker fee on this series), so unfilled signals count 0. "
+        "\"vs live call\" is the stage's taker EV minus simply following the live call: what that layer of the card adds. "
+        "95% ranges resample whole rounds.", "",
+        md_table(table, floats=1), "",
+        f"STRONG BUY fired {strong['signals']} times on {strong['rounds']} rounds. Signals inside one round move together, so "
+        "the sample size is the rounds. "
+        + ("That is far too few to call: a few cents of EV needs ~300+ rounds before it stands out from luck. The win rate is "
+           "not the test either: the card buys favourites at high prices, so it should win often; only EV after the price counts."
+           if strong["rounds"] < 300 else "Judge it by the 95% range: an edge needs the low end above 0."), "",
+        "Replay approximations: the perp impulse is evaluated once a second here (the engine checks it 4× a second), the "
+        "stale-book breaker is replaced by the panel's fresh-book filter, and sub-cent tail ticks are ignored.", "",
+    ]
+    return {"stages": table.to_dicts()}, "\n".join(md)
 
 
 def flow_study() -> tuple[dict, str]:
@@ -84,7 +235,14 @@ def flow_study() -> tuple[dict, str]:
     flow = seconds()
     if flow is None:
         return {"rows": 0}, f"{head}\n\nNo flow data yet: the engine's flow worker writes {flow_db()} (FLOW_DB) while it runs.\n"
-    panel = _ev(build_panel()).join(flow.select("time", *FLOW_FEATURES), on="time", how="inner")
+    card_cols = ["spot_vote", "perp_vote", "impulse", "last_impulse", "last_impulse_at"]
+    panel = _ev(build_panel()).join(flow.select("time", *FLOW_FEATURES, *card_cols), on="time", how="inner")
+    if panel.height == 0:
+        # Say why instead of printing an empty table that reads like "not enough data yet".
+        built_to = int(build_panel()["time"].max())
+        return {"rows": 0, "seconds": flow.height}, (
+            f"{head}\n\n**No overlap:** the flow data starts {int(flow['time'].min())} but the settled journal panel ends "
+            f"{built_to}. Rebuild the caches with `uv run python research.py flow --refresh`.\n")
     sample = panel.filter(pl.col("time") % 5000 == 0)
     payload = {"seconds": flow.height, "panel_rows": panel.height, "rounds": panel["ticker"].n_unique(),
                "from": int(flow["time"].min()), "to": int(flow["time"].max())}
@@ -99,18 +257,23 @@ def flow_study() -> tuple[dict, str]:
             "logloss gain vs Kalshi (x1000)": inc.get("logloss_gain", np.nan) * 1000,
             "95% low": inc.get("low", np.nan) * 1000, "95% high": inc.get("high", np.nan) * 1000,
             "rho vs 30s move": rho30, "rho vs 60s move": dec.get("spearman_dmid60"),
-            "top-decile YES hold (c)": dec.get("top_ev", {}).get("cents"),
-            "bottom-decile NO hold (c)": dec.get("bottom_ev", {}).get("cents"),
+            "top-decile YES hold vs avg (c)": dec.get("top_ev", {}).get("excess"),
+            "bottom-decile NO hold vs avg (c)": dec.get("bottom_ev", {}).get("excess"),
             "best scalp (c)": max((dec[k]["cents"] for k in ("top_sc", "bottom_sc") if k in dec), default=None),
         })
     days = (payload["to"] - payload["from"]) / 86_400_000
+    master_payload, master_md = master_study(panel)
+    payload["master_signal"] = master_payload
     md = [
         head, "",
         f"{flow.height:,} seconds of flow ({days:.1f} days) overlap {payload['panel_rows']:,} journal seconds on "
         f"{payload['rounds']:,} settled rounds; every 5th second is used. Same tests as section 2: walk-forward log-loss gain "
         "over Kalshi's mid (positive = information Kalshi's price does not have; the 95% range resamples whole rounds), and "
-        "decile EVs per contract after the taker fee. rho vs 30 s / 60 s move: does the feature lead Kalshi's own mid?", "",
+        "decile EVs per contract after the taker fee, **minus the same side's average EV over every second** (so a day when "
+        "BTC drifted down does not make every NO decile look like an edge). rho vs 30 s / 60 s move: does the feature lead "
+        "Kalshi's own mid?", "",
         md_table(pl.DataFrame(rows), floats=2), "",
         "Fewer than ~300 rounds is too few to call either way; the plan is to re-run after a few days and at 2–3 weeks.", "",
+        master_md,
     ]
     return payload, "\n".join(md)

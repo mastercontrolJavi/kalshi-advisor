@@ -80,6 +80,61 @@ def test_flow_seconds_use_only_bars_that_finished_before_the_second(tmp_path, mo
     assert at(60)["ratio_spot60"] == 1 and at(60)["cvd_perp60"] == pytest.approx(-240)
     assert at(399)["lead1"] == pytest.approx(0) and at(400)["lead1"] == pytest.approx(30)  # the jump lands in the bars of [399 s, 400 s)
     assert at(400)["votes"] == 1 + -1 + 1  # spot buys, perp sells, perp impulse up
+    assert (at(400)["spot_vote"], at(400)["perp_vote"], at(400)["impulse"]) == (1, -1, 1)
+    assert at(400)["last_impulse"] == 1 and at(400)["last_impulse_at"] == t0 + 400_000 and at(399)["last_impulse"] is None
+
+
+def test_live_call_flips_only_past_the_band_and_resets_each_round():
+    import flow
+    f = pl.DataFrame({"ticker": ["A"] * 5 + ["B"] * 2, "q": [.55, .49, .47, .51, .53, None, .45]})
+    assert flow.live_direction(f).to_list() == [1, 1, -1, -1, 1, None, -1]
+
+
+def test_maker_price_matches_the_card():
+    import flow
+    f = pl.DataFrame({"bid": [.40, .44, None, None], "ask": [.45, .45, .45, .01]}, schema={"bid": pl.Float64, "ask": pl.Float64})
+    got = f.select(flow.maker_price(pl.col("bid"), pl.col("ask")).alias("m"))["m"].to_list()
+    assert got[:3] == pytest.approx([.41, .44, .44]) and got[3] is None  # a tick up; join the bid; under the ask; nothing below 1¢
+
+
+def _card_round(n=10, **over):
+    t0 = 1_793_600_000_000
+    base = {"ticker": ["R"] * n, "time": [t0 + i * 1000 for i in range(n)], "tau": [600 - i for i in range(n)],
+            "q": [.6] * n, "yes_bid": [.55] * n, "yes_ask": [.57] * n, "y": [1] * n,
+            "spot_vote": [1] * n, "perp_vote": [1] * n, "impulse": [0] * n,
+            "last_impulse": [1] * n, "last_impulse_at": [t0] * n}
+    return pl.DataFrame(base | over), t0
+
+
+def test_strong_buy_needs_every_check_and_an_impulse_within_5_s():
+    import flow
+    frame, t0 = _card_round()
+    s = flow.master_stages(frame, pl.DataFrame({"ticker": ["R"], "time": [t0], "direction": ["UP"]}))
+    assert s["strong"].to_list() == [True] * 6 + [False] * 4  # the impulse at t0 counts through t0 + 5 s
+    assert s["taker_ev"][0] == pytest.approx(1 - .57 - taker_fee(.57))
+    against = flow.master_stages(frame, pl.DataFrame({"ticker": ["R"], "time": [t0], "direction": ["DOWN"]}))
+    assert not against["agree"].any() and not against["strong"].any()  # opening call disagrees
+    fighting, _ = _card_round(perp_vote=[-1] * 10)
+    assert not flow.master_stages(fighting, pl.DataFrame({"ticker": [], "time": [], "direction": []}, schema={"ticker": pl.String, "time": pl.Int64, "direction": pl.String}))["flow"].any()
+
+
+def test_entries_close_in_the_final_minute_and_makers_fill_only_on_a_trade_through():
+    import flow
+    no_open = pl.DataFrame({"ticker": [], "time": [], "direction": []}, schema={"ticker": pl.String, "time": pl.Int64, "direction": pl.String})
+    late, _ = _card_round(tau=[61, 60, 59, 58, 57, 56, 55, 54, 53, 52])
+    assert flow.master_stages(late, no_open)["live"].to_list() == [True, True] + [False] * 8
+    # Maker rests at 56¢ (a cent above the 55¢ bid); the ask touches 56¢ (no fill), then trades at 55¢ (fill).
+    asks = [.57, .57, .56, .57, .55, .57, .57, .57, .57, .57]
+    filled = flow.master_stages(_card_round(yes_ask=asks, yes_bid=[.55, .55, .54, .55, .54, .55, .55, .55, .55, .55])[0], no_open)
+    assert filled["maker"][0] == pytest.approx(.56) and filled["maker_filled"][0] and not filled["maker_filled"][4]
+
+
+def test_master_summary_counts_signals_not_seconds():
+    import flow
+    frame, t0 = _card_round()
+    table = flow.master_summary(flow.master_stages(frame, pl.DataFrame({"ticker": ["R"], "time": [t0], "direction": ["UP"]})))
+    strong = table.filter(pl.col("stage") == flow.STAGES["strong"]).row(0, named=True)
+    assert strong["signals"] == 1 and strong["seconds on"] == 6 and strong["win %"] == 100
 
 
 def test_flow_db_follows_flow_db_like_the_engine(tmp_path, monkeypatch):
