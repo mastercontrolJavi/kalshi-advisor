@@ -21,8 +21,15 @@ class Blackout:
     end: float
 
 
+def _ts(value: str) -> float:
+    """ISO time: with an offset (2026-12-09T14:00:00-05:00) it is exact; without one it is read as ET local time."""
+    d = datetime.fromisoformat(value)
+    return d.timestamp() if d.tzinfo is not None else et_to_ts(d)
+
+
 def load_blackouts(path: str) -> List[Blackout]:
-    """blackouts.json: [{"name": "FOMC", "start": "2026-12-09T14:00", "end": "2026-12-09T15:00"}] in ET local time."""
+    """blackouts.json: [{"event": "FOMC decision", "start": "2026-12-09T14:00:00-05:00", "end": "2026-12-09T15:00:00-05:00"}].
+    "name" is accepted for "event"; a time without an offset is ET local time."""
     try:
         rows = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, ValueError):
@@ -30,10 +37,21 @@ def load_blackouts(path: str) -> List[Blackout]:
     out = []
     for r in rows if isinstance(rows, list) else []:
         try:
-            out.append(Blackout(str(r['name']), et_to_ts(datetime.fromisoformat(r['start'])), et_to_ts(datetime.fromisoformat(r['end']))))
-        except (KeyError, TypeError, ValueError):
+            out.append(Blackout(str(r.get('event') or r['name']), _ts(r['start']), _ts(r['end'])))
+        except (KeyError, TypeError, ValueError, AttributeError):
             continue
     return out
+
+
+def blackout_horizon_warning(blackouts: List[Blackout], now: float, days: int = 14) -> Optional[str]:
+    """A reminder to extend blackouts.json when its last entry is less than `days` away (or already past)."""
+    if not blackouts:
+        return 'edge/blackouts.json has no entries: only the US equity-open blackout applies'
+    last = max(blackouts, key=lambda b: b.end)
+    left = (last.end - now) / 86400
+    if left < days:
+        return f'edge/blackouts.json runs out in {max(0.0, left):.1f} days (last: {last.name}); add the next dates (2027 FOMC/CPI/NFP)'
+    return None
 
 
 @dataclass(frozen=True)

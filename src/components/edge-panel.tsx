@@ -14,6 +14,7 @@ function badge(e:any):{tone:Tone;text:string}{
   if(e.status==='IDLE')return {tone:'neutral',text:'Between windows'};
   if(e.action==='TRADE')return {tone:e.side==='no'?'no':'yes',text:`TRADE ${String(e.side).toUpperCase()} ×${e.contracts} @ ${cents(e.ask)} (edge ${signedCents(e.edge)})`};
   if(e.action==='BLOCKED')return {tone:'warn',text:`BLOCKED: ${e.reason}`};
+  if(e.action==='MODEL_DISAGREE')return {tone:'warn',text:`MODEL DISAGREE: ${String(e.reason).split('; gate:')[0]}`};
   return {tone:'neutral',text:'NO EDGE'};
 }
 const Row=({label,children,title}:{label:string;children:React.ReactNode;title?:string})=><div className="flex items-baseline justify-between gap-3 py-1" title={title}><span className="text-sm text-muted">{label}</span><span className="num text-right">{children}</span></div>;

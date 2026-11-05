@@ -11,7 +11,10 @@ from .timeutil import day_key, week_key
 
 SIGNAL_COLUMNS = ('ts', 'ticker', 'kind', 'secs_left', 'spot', 'target', 'sigma', 'regime', 'p_base', 'p_engine', 'p_math', 'q', 'q_raw',
                   'engine_call', 'engine_confidence', 'market_mid', 'yes_ask', 'no_ask', 'action', 'side', 'ask', 'edge', 'contracts', 'reason',
-                  'fill_price', 'fill_ts', 'contracts_filled', 'fee', 'mode', 'degraded', 'source', 'carried', 'outcome', 'pnl')
+                  'fill_price', 'fill_ts', 'contracts_filled', 'fee', 'mode', 'degraded', 'source', 'carried', 'outcome', 'pnl',
+                  'sd_final', 'z', 'sigma_ann', 'tail_mult')
+# Columns added after the first release; created on an existing edge.db at startup.
+ADDED_COLUMNS = {'sd_final': 'REAL', 'z': 'REAL', 'sigma_ann': 'REAL', 'tail_mult': 'REAL'}
 
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS signals(
@@ -36,10 +39,18 @@ class EdgeDB:
         self.db.row_factory = sqlite3.Row
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.executescript(SCHEMA)
+        have = {r[1] for r in self.db.execute('PRAGMA table_info(signals)')}
+        for col, kind in ADDED_COLUMNS.items():
+            if col not in have:
+                self.db.execute(f'ALTER TABLE signals ADD COLUMN {col} {kind}')
+        # Bumped by every write that changes the paper book or the settlement check, so readers can cache in between.
+        self.version = 0
 
     # signals
     def insert_signal(self, row: dict) -> int:
         cols = [c for c in SIGNAL_COLUMNS if c in row]
+        if row.get('kind') == 'trade':
+            self.version += 1
         cur = self.db.execute(f"INSERT INTO signals({','.join(cols)}) VALUES({','.join('?' * len(cols))})", [row[c] for c in cols])
         return int(cur.lastrowid)
 
@@ -48,10 +59,12 @@ class EdgeDB:
 
     def fill(self, signal_id: int, price: float, ts: float, contracts: int) -> float:
         fee = order_fee(price, contracts)
+        self.version += 1
         self.db.execute('UPDATE signals SET fill_price=?, fill_ts=?, contracts_filled=?, fee=? WHERE id=?', (price, ts, contracts, fee, signal_id))
         return fee
 
     def expire_unfilled(self, ticker: str) -> None:
+        self.version += 1
         self.db.execute("UPDATE signals SET reason='unfilled: no ask before close' WHERE ticker=? AND kind='trade' AND fill_price IS NULL", (ticker,))
 
     def shadow_trades(self) -> List[sqlite3.Row]:
@@ -91,6 +104,7 @@ class EdgeDB:
         if result not in ('yes', 'no'):
             raise ValueError('result must be yes or no')
         outcome = 1 if result == 'yes' else 0
+        self.version += 1
         self.db.execute('INSERT OR IGNORE INTO windows(ticker, close_ts) VALUES(?, ?)', (ticker, now))
         w = self.db.execute('SELECT * FROM windows WHERE ticker=?', (ticker,)).fetchone()
         my_avg, target = w['my_avg'], w['target']

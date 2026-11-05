@@ -8,8 +8,10 @@ import {median} from './feeds/proxy';
  */
 export const EDGE_TIMEOUT_MS=300,EDGE_OFFLINE_MS=2000,EDGE_STOP_MAX_AGE_MS=15*60000,EDGE_SERIES='KXBTC15M';
 const ET='America/New_York';
-export interface EdgeReply {action:'TRADE'|'NO_EDGE'|'BLOCKED';side:'yes'|'no'|null;ask:number|null;q:number|null;edge:number|null;contracts:number;reason:string;
+export interface EdgeReply {action:'TRADE'|'NO_EDGE'|'BLOCKED'|'MODEL_DISAGREE';side:'yes'|'no'|null;ask:number|null;q:number|null;edge:number|null;contracts:number;reason:string;
   p_base:number|null;p_engine:number|null;regime:string|null;sigma:number|null;status:string;ticker:string;ts:number;
+  /** The pure EV gate sized on the live Kalshi balance: what the real-order veto reads. A notional EDGE_BANKROLL only
+   * changes shadow_gate and the top-level (paper) decision. */
   gate:{action:string;side:'yes'|'no'|null;ask:number|null;edge:number|null;contracts:number;reason:string};
   real_risk:{allowed:boolean;reason:string;stop_hit:boolean;stop_reason:string|null};unsettled?:string[];[k:string]:unknown}
 /** ageMs: age of the last decision (/tick reply); aliveMs: time since the sidecar last answered anything (tick or health). */

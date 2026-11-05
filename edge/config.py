@@ -17,6 +17,10 @@ class EdgeConfig:
     BLOCK_MID_BAND: bool = True
     MID_BAND_LOW: float = 0.30
     MID_BAND_HIGH: float = 0.70
+    # Never buy a side below 10c: the fee is the largest share of the upside there and longshots lose (favourite-longshot bias).
+    MIN_ASK: float = 0.10
+    # |p - market| above this is MODEL_DISAGREE, never TRADE: large late disagreements are model error until proven otherwise.
+    MAX_DISAGREE: float = 0.08
     KELLY_FRAC: float = 0.25
     MAX_RISK_FRAC: float = 0.01
     # Risk governor (risk.py)
@@ -37,12 +41,18 @@ class EdgeConfig:
     # Proxy-quality banner: fail when fewer than this share of the last 50 settled windows agree with Kalshi.
     PROXY_MIN_AGREE: float = 0.95
     PROXY_MIN_WINDOWS: int = 10
-    # Service
+    # Service. PRIORITY 'low' runs the sidecar below normal CPU priority so it yields to the engine and to your apps
+    # (it needs ~1 ms a second); 'normal' leaves the OS default.
+    PRIORITY: str = 'low'
     HOST: str = '127.0.0.1'
     PORT: int = 3003
     DB_PATH: str = str(ROOT / 'data' / 'edge.db')
 
     def __post_init__(self) -> None:
+        if self.PRIORITY not in ('low', 'normal'):
+            raise ValueError("PRIORITY must be 'low' or 'normal'")
+        if not (0 <= self.MIN_ASK < 1 and 0 < self.MAX_DISAGREE <= 1):
+            raise ValueError('MIN_ASK must be in [0, 1) and MAX_DISAGREE in (0, 1]')
         if self.MODE not in ('shadow', 'live'):
             raise ValueError("MODE must be 'shadow' or 'live'")
         if not (0 < self.MIN_EDGE < 1 and 0 < self.KELLY_FRAC <= 1 and 0 < self.MAX_RISK_FRAC <= 1):

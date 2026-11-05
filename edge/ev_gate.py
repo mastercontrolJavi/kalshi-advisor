@@ -22,7 +22,7 @@ def order_fee(p: float, contracts: int) -> float:
 
 @dataclass(frozen=True)
 class Decision:
-    action: str  # 'TRADE' | 'NO_EDGE' | 'BLOCKED'
+    action: str  # 'TRADE' | 'NO_EDGE' | 'BLOCKED' | 'MODEL_DISAGREE'
     side: Optional[str]  # 'yes' | 'no'
     ask: Optional[float]
     q: Optional[float]
@@ -41,6 +41,8 @@ def _side(name: str, q: float, ask: Optional[float], bankroll: float, cfg: EdgeC
     edge = q - cost
     if edge < cfg.MIN_EDGE:
         return Decision('NO_EDGE', name, ask, q, edge, 0, f'{name.upper()} edge {edge * 100:+.1f}c < {cfg.MIN_EDGE * 100:.1f}c after fee')
+    if ask < cfg.MIN_ASK:
+        return Decision('BLOCKED', name, ask, q, edge, 0, f'longshot: {name.upper()} ask {ask * 100:.1f}c < {cfg.MIN_ASK * 100:.0f}c')
     if cfg.BLOCK_MID_BAND and cfg.MID_BAND_LOW <= ask <= cfg.MID_BAND_HIGH:
         return Decision('BLOCKED', name, ask, q, edge, 0, f'mid band: {name.upper()} ask {ask * 100:.0f}c is within {cfg.MID_BAND_LOW * 100:.0f}-{cfg.MID_BAND_HIGH * 100:.0f}c')
     kelly = (q - cost) / (1 - cost)
@@ -51,11 +53,29 @@ def _side(name: str, q: float, ask: Optional[float], bankroll: float, cfg: EdgeC
     return Decision('TRADE', name, ask, q, edge, contracts, f'{name.upper()} edge {edge * 100:+.1f}c after fee')
 
 
-def evaluate(p_yes: float, yes_ask: Optional[float], no_ask: Optional[float], bankroll: float, cfg: EdgeConfig) -> Decision:
+def market_prob(mid: Optional[float], yes_ask: Optional[float], no_ask: Optional[float]) -> Optional[float]:
+    """The market's YES probability: the mid, else (one-sided book) the YES ask, else 1 - the NO ask."""
+    if mid is not None:
+        return mid
+    if yes_ask is not None:
+        return yes_ask
+    return 1 - no_ask if no_ask is not None else None
+
+
+def evaluate(p_yes: float, yes_ask: Optional[float], no_ask: Optional[float], bankroll: float, cfg: EdgeConfig,
+             market: Optional[float] = None) -> Decision:
+    """Best side. If the model and the market (see market_prob) disagree by more than MAX_DISAGREE the result is
+    MODEL_DISAGREE with what the gate would otherwise have said in the reason; it never trades."""
     sides = [_side('yes', p_yes, yes_ask, bankroll, cfg), _side('no', 1 - p_yes, no_ask, bankroll, cfg)]
     key = lambda d: d.edge if d.edge is not None else -math.inf
+    best = None
     for action in ('TRADE', 'BLOCKED'):
         hits = [d for d in sides if d.action == action]
         if hits:
-            return max(hits, key=key)
-    return max(sides, key=key)
+            best = max(hits, key=key)
+            break
+    best = best or max(sides, key=key)
+    if market is not None and abs(p_yes - market) > cfg.MAX_DISAGREE:
+        return Decision('MODEL_DISAGREE', best.side, best.ask, best.q, best.edge, 0,
+                        f'model {p_yes * 100:.1f}% vs market {market * 100:.1f}% (> {cfg.MAX_DISAGREE * 100:.0f} pts); gate: {best.action} {best.reason}')
+    return best

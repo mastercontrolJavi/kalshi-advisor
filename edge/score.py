@@ -11,7 +11,12 @@ import sqlite3
 import sys
 from typing import Dict, Iterable, List, Optional, Sequence
 
+from statistics import NormalDist
+
 from .config import load_config
+from .ev_gate import market_prob
+
+_N = NormalDist()
 
 BUCKETS = (('0-1', 0, 60), ('1-3', 60, 180), ('3-7', 180, 420), ('7-15', 420, 901))
 MODELS = ('market_mid', 'p_base', 'p_math', 'q', 'q_raw', 'p_engine')
@@ -82,6 +87,49 @@ def engine_verdict(rows: Sequence[dict]) -> tuple:
     return ('ENGINE: ADDS SIGNAL' if adds else 'ENGINE: NOT PROVEN'), windows, raw, base
 
 
+def calibration(rows: Sequence[dict], key: str = 'p_base') -> Dict[str, List[tuple]]:
+    """Per regime, 10-point bins of the prediction: (bin, mean predicted, realised YES rate, n)."""
+    out: Dict[str, List[tuple]] = {}
+    for regime in ('pre_window', 'final_minute'):
+        bins: Dict[int, List[dict]] = {}
+        for r in rows:
+            if r.get('regime') == regime and r.get(key) is not None:
+                bins.setdefault(min(9, int(r[key] * 10)), []).append(r)
+        out[regime] = [(b, sum(r[key] for r in rs) / len(rs), sum(r['outcome'] for r in rs) / len(rs), len(rs)) for b, rs in sorted(bins.items())]
+    return out
+
+
+def disagreements(rows: Sequence[dict]) -> Dict[str, Optional[float]]:
+    """MODEL_DISAGREE rows, one per window per minute left: how often the market's side won."""
+    seen, market_right, model_right = set(), 0, 0
+    for r in rows:
+        if r.get('action') != 'MODEL_DISAGREE' or r.get('secs_left') is None:
+            continue
+        k = (r['ticker'], int(r['secs_left'] // 60))
+        m = market_prob(r.get('market_mid'), r.get('yes_ask'), r.get('no_ask'))
+        p = r.get('p_base')
+        if k in seen or m is None or p is None:
+            continue
+        seen.add(k)
+        market_right += int((m >= 0.5) == (r['outcome'] == 1))
+        model_right += int((p >= 0.5) == (r['outcome'] == 1))
+    n = len(seen)
+    return {'n': n, 'market_side': market_right / n if n else None, 'model_side': model_right / n if n else None}
+
+
+def tail_rescore(r: dict, tail: float = 1.0) -> Optional[float]:
+    """p_base had sigma been scaled by `tail` instead of the row's TAIL_MULT. The mean does not depend on sigma, so
+    z scales by TAIL_MULT/tail exactly: p' = Phi(z * TAIL_MULT / tail)."""
+    used = r.get('tail_mult') or 1.15
+    z = r.get('z')
+    if z is None:
+        p = r.get('p_base')
+        if p is None:
+            return None
+        z = _N.inv_cdf(min(0.999, max(0.001, p)))
+    return min(0.999, max(0.001, _N.cdf(z * used / tail)))
+
+
 def score(db: sqlite3.Connection) -> Dict[str, object]:
     db.row_factory = sqlite3.Row
     settled = [dict(r) for r in db.execute('SELECT * FROM signals WHERE outcome IS NOT NULL ORDER BY ts')]
@@ -92,6 +140,9 @@ def score(db: sqlite3.Connection) -> Dict[str, object]:
     out['brier_by_bucket'] = {name: {m: brier([r for r in settled if r['secs_left'] is not None and bucket_of(r['secs_left']) == name], m) for m in MODELS}
                               for name, _, _ in BUCKETS}
     out['accuracy'] = accuracy(settled)
+    out['calibration'] = calibration(settled)
+    out['disagree'] = disagreements(settled)
+    out['trades_tail'] = [(r['ticker'], r['side'], r['fill_price'], r['p_base'], tail_rescore(r), r['outcome']) for r in fills]
     out['fills'] = fills_report(fills)
     out['verdict'] = verdict(out['fills'])
     out['engine'] = engine_verdict(settled)
@@ -114,6 +165,13 @@ def report(s: Dict[str, object]) -> List[str]:
     lines.append('  note: q (blended) is ~90% Kalshi mid, so q vs market_mid is mostly the market grading itself; use q_raw.')
     a = s['accuracy']
     lines += ['', f"Directional call: {_f(a['engine'], 3)} right on {a['n']} rows; on {a['n_paired']} rows with a mid: engine {_f(a['engine_paired'], 3)} vs market favourite {_f(a['market_favourite'], 3)}"]
+    lines += ['', 'p_base calibration (bin: predicted -> realised YES rate, n)']
+    for regime, bins in s['calibration'].items():
+        lines.append(f'  {regime}: ' + ('; '.join(f'{b * 10}-{b * 10 + 10}%: {pred * 100:.0f}% -> {real * 100:.0f}% ({n})' for b, pred, real, n in bins) or '—'))
+    d = s['disagree']
+    lines.append(f"MODEL_DISAGREE: {d['n']} window-minutes settled; market's side won {_f(d['market_side'], 3)}, model's side {_f(d['model_side'], 3)}")
+    for ticker, side, price, p, p1, y in s['trades_tail']:
+        lines.append(f"  trade {ticker} {str(side).upper()} @ {price * 100:.1f}c: p_base {_f(p, 3)} (tail 1.15) -> {_f(p1, 3)} at tail 1.0; settled {'YES' if y else 'NO'}")
     f = s['fills']
     cents = lambda x: '—' if x is None else f'{x * 100:+.2f}c'
     lines += ['', f"TRADE fills {f['n']}: net {cents(f['mean'])}/contract, SE {cents(f['se'])}, LB90 {cents(f['lb90'])}, halves {cents(f['first_half'])} / {cents(f['second_half'])}, max drawdown ${_f(f['max_drawdown'], 2)}, total ${_f(f['total'], 2)}"]

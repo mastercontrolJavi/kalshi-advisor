@@ -2,15 +2,16 @@
 import math
 import sqlite3
 import unittest
+from statistics import NormalDist
 from dataclasses import replace
 from datetime import datetime, timezone
 
 from edge.config import EdgeConfig, load_config
 from edge.db import EdgeDB
-from edge.ev_gate import evaluate, order_fee, taker_fee
+from edge.ev_gate import evaluate, market_prob, order_fee, taker_fee
 from edge.fair_value import FinalWindowTracker, engine_drift, fair_value
-from edge.risk import Blackout, Book, RiskGovernor
-from edge.score import engine_verdict, fills_report, score, verdict
+from edge.risk import Blackout, Book, RiskGovernor, blackout_horizon_warning, load_blackouts
+from edge.score import calibration, disagreements, engine_verdict, fills_report, score, tail_rescore, verdict
 from edge.service import EdgeService
 from edge.spot import SpotSeries
 from edge.timeutil import et_to_ts, to_et
@@ -120,6 +121,21 @@ class GateTests(unittest.TestCase):
     def test_too_small_bankroll(self):
         self.assertEqual(evaluate(0.99, 0.80, 0.21, 50, CFG).action, 'NO_EDGE')
 
+    def test_longshot_blocked_favourite_allowed(self):
+        d = evaluate(0.30, 0.09, 0.92, 10000, CFG)  # YES at 9c would show +20c edge: still never bought
+        self.assertEqual((d.action, d.side), ('BLOCKED', 'yes'))
+        self.assertIn('longshot', d.reason)
+        self.assertEqual(evaluate(0.999, 0.99, 0.02, 100000, CFG).action, 'NO_EDGE')  # 99c allowed, just no edge after fee
+        self.assertEqual(evaluate(0.999, 0.97, 0.04, 100000, CFG).action, 'TRADE')
+
+    def test_model_disagree(self):
+        d = evaluate(0.99, 0.80, 0.21, 10000, CFG, market=0.80)
+        self.assertEqual((d.action, d.contracts), ('MODEL_DISAGREE', 0))
+        self.assertIn('gate: TRADE', d.reason)
+        self.assertEqual(evaluate(0.87, 0.80, 0.21, 10000, CFG, market=0.80).action, 'TRADE')  # 7 pts: within 8
+        self.assertEqual(market_prob(None, 0.97, None), 0.97)
+        self.assertAlmostEqual(market_prob(None, None, 0.04), 0.96)
+
     def test_no_side(self):
         d = evaluate(0.05, 0.08, 0.90, 10000, CFG)
         self.assertEqual((d.action, d.side), ('TRADE', 'no'))
@@ -150,6 +166,15 @@ class RiskTests(unittest.TestCase):
         fomc = RiskGovernor(CFG, [Blackout('FOMC', et_to_ts(datetime(2026, 12, 9, 14)), et_to_ts(datetime(2026, 12, 9, 15)))])
         self.assertIn('FOMC', fomc.check(et_to_ts(datetime(2026, 12, 9, 14, 30)), self.ok)[1])
         self.assertTrue(fomc.check(et_to_ts(datetime(2026, 12, 9, 15, 0)), self.ok)[0])
+
+    def test_blackouts_file_and_horizon_warning(self):
+        b = load_blackouts('edge/blackouts.json')
+        self.assertEqual(len(b), 5)
+        fomc = [x for x in b if x.name == 'FOMC decision'][0]
+        self.assertEqual(fomc.start, datetime(2026, 12, 9, 19, tzinfo=timezone.utc).timestamp())
+        self.assertIsNone(blackout_horizon_warning(b, datetime(2026, 11, 20, tzinfo=timezone.utc).timestamp()))
+        self.assertIn('runs out', blackout_horizon_warning(b, datetime(2026, 11, 30, tzinfo=timezone.utc).timestamp()))
+        self.assertIn('no entries', blackout_horizon_warning([], 0))
 
     def test_eastern_time_fallback_rule(self):
         # 2026-11-04 17:00 UTC is 12:00 EST (DST ended Nov 1); 2026-07-01 16:00 UTC is 12:00 EDT.
@@ -191,6 +216,22 @@ class ScoreTests(unittest.TestCase):
         self.assertAlmostEqual(f['max_drawdown'], 0.8112)
         self.assertEqual(verdict(f), 'FAIL')
 
+    def test_calibration_disagree_tail(self):
+        rows = [{'regime': 'final_minute', 'p_base': 0.95, 'outcome': 1}, {'regime': 'final_minute', 'p_base': 0.91, 'outcome': 0},
+                {'regime': 'pre_window', 'p_base': 0.15, 'outcome': 0}]
+        cal = calibration(rows)
+        (b, pred, real, n), = cal['final_minute']
+        self.assertEqual((b, real, n), (9, 0.5, 2))
+        self.assertAlmostEqual(pred, 0.93)
+        self.assertEqual(cal['pre_window'][0][3], 1)
+        d = disagreements([{'action': 'MODEL_DISAGREE', 'ticker': 'A', 'secs_left': 30, 'market_mid': 0.9, 'p_base': 0.6, 'outcome': 1},
+                           {'action': 'MODEL_DISAGREE', 'ticker': 'A', 'secs_left': 20, 'market_mid': 0.9, 'p_base': 0.6, 'outcome': 1},
+                           {'action': 'MODEL_DISAGREE', 'ticker': 'B', 'secs_left': 30, 'market_mid': None, 'yes_ask': 0.2, 'p_base': 0.6, 'outcome': 1}])
+        self.assertEqual((d['n'], d['market_side'], d['model_side']), (2, 0.5, 1.0))
+        p1 = tail_rescore({'p_base': 0.165, 'tail_mult': 1.15})
+        self.assertAlmostEqual(p1, NormalDist().cdf(NormalDist().inv_cdf(0.165) * 1.15))
+        self.assertLess(p1, 0.165)
+
     def test_engine_verdict(self):
         self.assertEqual(score(synthetic_db(0, 0, windows=600, raw_better=True))['engine'][0], 'ENGINE: ADDS SIGNAL')
         self.assertEqual(score(synthetic_db(0, 0, windows=600, raw_better=False))['engine'][0], 'ENGINE: NOT PROVEN')
@@ -230,9 +271,9 @@ class ServiceTests(unittest.TestCase):
         for ts in range(100, 950):
             svc.tick(tick(ts, spot=100000, yes_ask=0.5, no_ask=0.5), received=noon)
         # spot far above target in the final minute: YES is near-certain, ask 0.90
-        r1 = svc.tick(tick(950, spot=100400, yes_ask=0.90, no_ask=0.11), received=noon)
+        r1 = svc.tick(tick(950, spot=100400, yes_ask=0.90, no_ask=0.11, mid=0.95), received=noon)
         self.assertEqual(r1['action'], 'TRADE', r1['reason'])
-        r2 = svc.tick(tick(951, spot=100400, yes_ask=0.91, no_ask=0.10), received=noon)
+        r2 = svc.tick(tick(951, spot=100400, yes_ask=0.91, no_ask=0.10, mid=0.95), received=noon)
         self.assertEqual(r2['filled']['price'], 0.91)
         self.assertEqual(r2['action'], 'BLOCKED')
         self.assertIn('no re-entry', r2['reason'])
@@ -254,6 +295,27 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(on.last['p_used'], 'engine')
         self.assertAlmostEqual(on.last['p_engine'], 0.9, places=6)
 
+    def test_shadow_bankroll_never_reaches_real_gate(self):
+        svc = self.make(BANKROLL=1000.0)
+        noon = et_to_ts(datetime(2026, 11, 4, 13))
+        for ts in range(100, 950):
+            svc.tick(tick(ts, spot=100000, yes_ask=0.5, no_ask=0.5, balance=5), received=noon)
+        r = svc.tick(tick(950, spot=100400, yes_ask=0.90, no_ask=0.11, mid=0.95, balance=5), received=noon)
+        self.assertEqual(r['shadow_gate']['action'], 'TRADE')  # $1,000 notional sizes a paper trade
+        self.assertEqual(r['gate']['action'], 'NO_EDGE')  # the veto's gate is sized on the real $5: below one contract
+        self.assertIn('size < 1', r['gate']['reason'])
+
+    def test_disagree_logged_with_diagnostics(self):
+        svc = self.make()
+        for ts in range(100, 400):
+            r = svc.tick(tick(ts, spot=100300, mid=0.5, yes_ask=0.52, no_ask=0.49))
+        self.assertEqual(r['action'], 'MODEL_DISAGREE')
+        rows = svc.db.rows("SELECT * FROM signals WHERE kind='disagree'")
+        self.assertGreaterEqual(len(rows), 1)
+        self.assertIsNotNone(rows[0]['z'])
+        self.assertAlmostEqual(rows[0]['tail_mult'], 1.15)
+        self.assertGreater(rows[0]['sd_final'], 0)
+
     def test_stale_book_blocks(self):
         svc = self.make()
         for ts in range(100, 300):
@@ -271,6 +333,15 @@ class ServiceTests(unittest.TestCase):
     def test_bad_tick_rejected(self):
         with self.assertRaises(ValueError):
             self.make().tick({'ticker': 'X'})
+
+
+class PriorityTests(unittest.TestCase):
+    def test_lower_priority_takes_effect(self):
+        import subprocess
+        import sys
+        code = 'from edge.server import lower_priority; print(lower_priority())'
+        out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=30).stdout.strip()
+        self.assertIn(out, ('below-normal', 'nice +5'))
 
 
 class ConfigTests(unittest.TestCase):

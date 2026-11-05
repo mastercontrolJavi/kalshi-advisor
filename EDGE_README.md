@@ -42,9 +42,9 @@ against the new `p_base`. It becomes a test of the full engine once the stack ad
 | `spot.py` | Exactly one price per second. A skipped second is carried forward and flagged `carried` (and degraded). Gaps over 10 s restart the series. The engine chooses the source: **BRTI** from Kalshi's CF Benchmarks feed when its 1-s print is fresh, otherwise the median of the Coinbase, Kraken and Bitstamp mids (plus the engine's learned proxy basis), flagged `degraded`. |
 | `vol.py` | EWMA of 1-s log returns (half-life 300 s), floor 10% annualised, × `TAIL_MULT` 1.15. Carried seconds, gaps and source switches are not counted as returns. `sigma_usd(price)` is in dollars per √s. It needs 120 returns after a sidecar restart, so the first 2 minutes show `WARMING` and `NO_EDGE`. |
 | `fair_value.py` | Your formulas. Before the final minute: `sd = σ√(secs_left − 40)`. Inside it: `(sum(fixed) + r(spot+drift))/(n+r)` and `sd = (r/(n+r))σ√(r/3)`. Normal CDF, clamped to [0.001, 0.999]. Ties resolve YES. Also contains `FinalWindowTracker` and the adapter. Official BRTI prints sent by the engine replace the sidecar's own prints for the same seconds. |
-| `ev_gate.py` | `taker_fee = 0.07·p(1−p)`. Both sides are priced: `cost = ask + fee`, `edge = q − cost`. Below `MIN_EDGE` → NO_EDGE. An ask in 30–70¢ → BLOCKED. Size = min(quarter-Kelly, 1%) × bankroll / cost, floored. Under 1 contract → NO_EDGE. Recorded fees use Kalshi's whole-order rounding up to $0.0001 (`order_fee`). |
-| `risk.py` | Blackouts: the US equity open 09:30–10:00 ET on weekdays, plus `edge/blackouts.json` (ET local times, maintained by hand). Then the daily stop (−3% of start-of-day bankroll), the weekly stop (−6%, weeks start Monday ET), one position per window, and 10 windows a day. |
-| `db.py` | `data/edge.db`. `signals` stores one snapshot per window per minute-left bucket plus every TRADE. `windows` stores the proxy check: this layer's own 60-s average against Kalshi's settlement value and result. |
+| `ev_gate.py` | `taker_fee = 0.07·p(1−p)`. Both sides are priced: `cost = ask + fee`, `edge = q − cost`. Below `MIN_EDGE` → NO_EDGE. An ask under `MIN_ASK` (10¢) → BLOCKED (longshot): the fee is the largest share of the upside there and longshots lose to the favourite-longshot bias. Favourites up to 99¢ stay allowed. An ask in 30–70¢ → BLOCKED. If \|p − market\| > `MAX_DISAGREE` (8 pts) the action is **MODEL_DISAGREE**, never TRADE, and the reason says what the gate would otherwise have done. Market = the mid, else the YES ask, else 1 − the NO ask (one-sided books). Size = min(quarter-Kelly, 1%) × bankroll / cost, floored. Under 1 contract → NO_EDGE. Recorded fees use Kalshi's whole-order rounding up to $0.0001 (`order_fee`). |
+| `risk.py` | Blackouts: the US equity open 09:30–10:00 ET on weekdays, plus `edge/blackouts.json` (`{"event", "start", "end"}` as ISO times with offset, maintained by hand; the sidecar logs `edge-warning` at startup when the last entry is under 14 days away). Then the daily stop (−3% of start-of-day bankroll), the weekly stop (−6%, weeks start Monday ET), one position per window, and 10 windows a day. |
+| `db.py` | `data/edge.db`. `signals` stores one snapshot per window per minute-left bucket, every TRADE, and one `disagree` row per window per minute while the model disagrees. Every row has `sd_final`, `z = (mean_final − target)/sd_final`, `sigma_ann` and `tail_mult`, so σ can be diagnosed later. `windows` stores the proxy check: this layer's own 60-s average against Kalshi's settlement value and result. |
 | `service.py` | The per-second pipeline. In shadow mode a TRADE is paper-filled at the **next** observed ask (the next tick) with the exact fee. A trade with no ask before close is marked `unfilled`. |
 | `server.py`, `__main__.py` | `POST /tick`, `POST /settle`, `GET /health`, `GET /state`. Binds to loopback only. |
 | `score.py` | The go/no-go CLI (below). |
@@ -81,15 +81,17 @@ The existing guardrails (`guardrails: false`, Oct 28) are untouched. This govern
 
 ## Config knobs (defaults)
 
-`MIN_EDGE=0.01 BLOCK_MID_BAND=true (MID_BAND_LOW=0.30 MID_BAND_HIGH=0.70) KELLY_FRAC=0.25 MAX_RISK_FRAC=0.01
+`MIN_EDGE=0.01 MIN_ASK=0.10 MAX_DISAGREE=0.08 BLOCK_MID_BAND=true (MID_BAND_LOW=0.30 MID_BAND_HIGH=0.70) KELLY_FRAC=0.25 MAX_RISK_FRAC=0.01
 DAILY_STOP=-0.03 WEEKLY_STOP=-0.06 MAX_WINDOWS=10 EQUITY_OPEN_BLACKOUT=true VOL_HALFLIFE_S=300 VOL_FLOOR_ANN=0.10
 VOL_MIN_SAMPLES=120 TAIL_MULT=1.15 ENGINE_VALIDATED=false MODE=shadow BANKROLL=<Kalshi account value>
-PROXY_MIN_AGREE=0.95 PROXY_MIN_WINDOWS=10 PORT=3003 DB_PATH=data/edge.db`
+PROXY_MIN_AGREE=0.95 PROXY_MIN_WINDOWS=10 PRIORITY=low PORT=3003 DB_PATH=data/edge.db`
 
 - `MODE=shadow` records paper fills and runs the governor on the paper book.
 - `MODE=live` records decisions only and runs the governor on your real book.
 - `ENGINE_VALIDATED=true` switches the gate from `p_base` to `p_engine`. Set it by hand, and only after the scorer
   prints `ENGINE: ADDS SIGNAL`.
+- `EDGE_BANKROLL` sizes **shadow** trades only. The reply's `gate`, which the real-order veto reads, is always evaluated on the live Kalshi account value sent by the engine (`shadow_gate` holds the notional one), and nothing in the engine reads `EDGE_BANKROLL`. Real copy-order size still comes from the Kalshi balance and the Settings cap. It is set to 1000 in `.env.local` (2026-11-04).
+- `PRIORITY=low` (default) runs the sidecar at below-normal CPU priority so the engine and your foreground apps always come first. It is not Windows efficiency mode (EcoQoS), which throttles the clock and could push a tick past the 300 ms timeout. `GET /health` reports `tick_ms` (p50/p95/max over the last ~600 ticks).
 - With a small account the 1% cap can't buy one contract, so shadow mode will show `NO_EDGE (size < 1 contract)`.
   To collect paper fills, set `EDGE_BANKROLL=1000` (or any notional amount) in `.env.local`. It affects shadow sizing
   only.
@@ -105,6 +107,9 @@ PROXY_MIN_AGREE=0.95 PROXY_MIN_WINDOWS=10 PORT=3003 DB_PATH=data/edge.db`
   Otherwise **`FAIL`**.
 - **`ENGINE: ADDS SIGNAL`** only if the Brier of `q_raw` is below `p_base` on ≥ 500 settled windows. Otherwise
   `NOT PROVEN`. The blended `q` is reported but never used for this verdict, because it is mostly Kalshi's own price.
+- p_base calibration by regime (pre-window / final minute) in 10-point bins: predicted against realised YES rate, with counts.
+- MODEL_DISAGREE: one per window per minute left; how often the market's side won, and how often the model's side did.
+- Each TRADE re-scored at `tail_mult = 1.0`: the mean doesn't depend on σ, so `p' = Φ(z·TAIL_MULT)` exactly.
 - Proxy check: the share of windows where this layer's 60-s average lands on the same side of the target as Kalshi's
   result, plus the mean and max |average − Kalshi value|. Only windows with at least 55 of 60 prints count. The banner
   turns on below 95% over the last 50 windows (once there are at least 10).

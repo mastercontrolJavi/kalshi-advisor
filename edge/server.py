@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
 from .config import EdgeConfig, load_config
+from .risk import blackout_horizon_warning
 from .service import EdgeService
 
 MAX_BODY = 64 * 1024
@@ -17,6 +18,29 @@ MAX_BODY = 64 * 1024
 
 def log_json(data: dict) -> None:
     print(json.dumps({'time': time.strftime('%Y-%m-%dT%H:%M:%S'), **data}, default=str), flush=True)
+
+
+def lower_priority() -> str:
+    """Below-normal CPU priority (Windows BELOW_NORMAL_PRIORITY_CLASS, POSIX nice +5): the sidecar gets the CPU only
+    after the engine and your foreground apps. Deliberately not EcoQoS / efficiency mode: that throttles the clock and
+    could push a tick past the engine's 300 ms timeout."""
+    try:
+        if sys.platform == 'win32':
+            import ctypes
+            from ctypes import wintypes as w
+            k = ctypes.WinDLL('kernel32', use_last_error=True)
+            # Typed: untyped ctypes truncates the 64-bit process handle and the call silently fails.
+            k.GetCurrentProcess.restype = w.HANDLE
+            k.SetPriorityClass.argtypes, k.SetPriorityClass.restype = [w.HANDLE, w.DWORD], w.BOOL
+            k.GetPriorityClass.argtypes, k.GetPriorityClass.restype = [w.HANDLE], w.DWORD
+            h = k.GetCurrentProcess()
+            ok = k.SetPriorityClass(h, 0x00004000) and k.GetPriorityClass(h) == 0x00004000
+            return 'below-normal' if ok else f'unchanged (SetPriorityClass error {ctypes.get_last_error()})'
+        import os
+        os.nice(5)
+        return 'nice +5'
+    except Exception as e:  # never fail startup over priority
+        return f'unchanged ({e!r})'
 
 
 def make_handler(service: EdgeService, lock: threading.Lock):
@@ -53,7 +77,10 @@ def make_handler(service: EdgeService, lock: threading.Lock):
                 body = self._body()
                 with lock:
                     if self.path == '/tick':
-                        return self._send(200, service.tick(body))
+                        started = time.perf_counter()
+                        reply = service.tick(body)
+                        service.record_ms((time.perf_counter() - started) * 1000)
+                        return self._send(200, reply)
                     if self.path == '/settle':
                         return self._send(200, service.settle(body))
                 self._send(404, {'error': 'not found'})
@@ -73,10 +100,15 @@ def make_handler(service: EdgeService, lock: threading.Lock):
 
 def serve(cfg: Optional[EdgeConfig] = None) -> None:
     cfg = cfg or load_config()
+    priority = lower_priority() if cfg.PRIORITY == 'low' else 'normal'
     service = EdgeService(cfg, log=log_json)
     server = ThreadingHTTPServer((cfg.HOST, cfg.PORT), make_handler(service, threading.Lock()))
     log_json({'event': 'edge-start', 'host': cfg.HOST, 'port': cfg.PORT, 'db': cfg.DB_PATH, 'mode': cfg.MODE,
-              'engine_validated': cfg.ENGINE_VALIDATED, 'blackouts': len(service.governor.blackouts), 'python': sys.version.split()[0]})
+              'engine_validated': cfg.ENGINE_VALIDATED, 'blackouts': len(service.governor.blackouts), 'python': sys.version.split()[0],
+              'priority': priority, 'bankroll': cfg.BANKROLL})
+    warning = blackout_horizon_warning(service.governor.blackouts, time.time())
+    if warning:
+        log_json({'event': 'edge-warning', 'message': warning})
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

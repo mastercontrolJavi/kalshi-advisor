@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from .config import EdgeConfig
 from .db import EdgeDB
-from .ev_gate import Decision, evaluate
+from .ev_gate import Decision, evaluate, market_prob
 from .fair_value import FinalWindowTracker, engine_drift, fair_value
 from .risk import Book, RiskGovernor
 from .spot import SpotSeries
@@ -47,10 +47,16 @@ class EdgeService:
         self.tracker: Optional[FinalWindowTracker] = None
         self.target: Optional[float] = None
         self.logged_minutes: set = set()
+        self.disagree_minutes: set = set()
+        # Slow-changing reads, refreshed at most every 30 s (or when a trade/settlement changes them): per-tick cost stays ~1 ms.
+        self._slow_at = -1e18
+        self._slow: Dict[str, Any] = {}
+        self._book_cache: Optional[tuple] = None
         self.last_tick_ts: Optional[float] = None
         self.last_received: Optional[float] = None
         self.last_response: Optional[dict] = None
         self.ticks = 0
+        self._tick_ms: list = []  # last 600 handling times, for /health
         self.errors = 0
 
     # window bookkeeping
@@ -62,6 +68,7 @@ class EdgeService:
             self.db.expire_unfilled(self.ticker)
         self.ticker, self.tracker, self.target = ticker, FinalWindowTracker(close_ts), None
         self.logged_minutes = set()
+        self.disagree_minutes = set()
 
     def _save_window(self) -> None:
         if self.ticker is None or self.tracker is None:
@@ -146,18 +153,28 @@ class EdgeService:
         use_engine = self.cfg.ENGINE_VALIDATED and p_engine is not None
         p_use = p_engine if use_engine else p_base
 
-        if p_use is None:
-            gate = Decision('NO_EDGE', None, None, None, None, 0, reason or 'no fair value')
-        elif t.get('book_stale'):
-            gate = Decision('BLOCKED', None, None, p_use, None, 0, f"stale book: {t.get('stale_reason') or 'Kalshi book or BRTI behind'}")
-        elif secs_left < 1:
-            gate = Decision('NO_EDGE', None, None, p_use, None, 0, 'market closing')
-        else:
-            gate = evaluate(p_use, yes_ask, no_ask, bankroll, self.cfg)
+        market = market_prob(mid, yes_ask, no_ask)
+
+        def gate_for(capital: float) -> Decision:
+            if p_use is None:
+                return Decision('NO_EDGE', None, None, None, None, 0, reason or 'no fair value')
+            if t.get('book_stale'):
+                return Decision('BLOCKED', None, None, p_use, None, 0, f"stale book: {t.get('stale_reason') or 'Kalshi book or BRTI behind'}")
+            if secs_left < 1:
+                return Decision('NO_EDGE', None, None, p_use, None, 0, 'market closing')
+            return evaluate(p_use, yes_ask, no_ask, capital, self.cfg, market)
+
+        gate = gate_for(bankroll)
+        # The real-order veto reads `gate` in the reply: it is always sized on the live Kalshi account value, so a
+        # notional EDGE_BANKROLL (shadow sizing) can never turn a real order's NO_EDGE into a TRADE.
+        real_gate = gate if self.cfg.BANKROLL is None else gate_for(balance or 0.0)
 
         # Governor on the book this mode trades: the paper book (shadow) or your real fills (live).
         now_s = ts_ms / 1000
-        sd, sw, before_day, before_week, s_windows, s_in = self.db.shadow_book(now_s, ticker)
+        key = (int(now_s // 60), ticker, self.db.version)
+        if self._book_cache is None or self._book_cache[0] != key:
+            self._book_cache = (key, self.db.shadow_book(now_s, ticker))
+        sd, sw, before_day, before_week, s_windows, s_in = self._book_cache[1]
         base = bankroll
         shadow_book = Book(sd, sw, base + before_day, base + before_week, s_windows, s_in)
         real_book = self._real_book(t.get('real') or {})
@@ -175,7 +192,8 @@ class EdgeService:
 
         # Logging: one snapshot per window per minute-left bucket, plus every TRADE.
         minute = int(max(0.0, secs_left) // 60)
-        row = {'ts': now_s, 'ticker': ticker, 'secs_left': secs_left, 'spot': spot_now, 'target': self.target, 'sigma': sigma,
+        z = (fv.mean_final - self.target) / fv.sd_final if fv and fv.sd_final > 1e-9 else None
+        row = {'ts': now_s, 'sd_final': fv.sd_final if fv else None, 'z': z, 'sigma_ann': self.vol.sigma_ann, 'tail_mult': self.cfg.TAIL_MULT, 'ticker': ticker, 'secs_left': secs_left, 'spot': spot_now, 'target': self.target, 'sigma': sigma,
                'regime': fv.regime if fv else None, 'p_base': p_base, 'p_engine': p_engine, 'p_math': p_math, 'q': q, 'q_raw': q_raw,
                'engine_call': engine_call, 'engine_confidence': engine_conf, 'market_mid': mid, 'yes_ask': yes_ask, 'no_ask': no_ask,
                'action': decision.action, 'side': decision.side, 'ask': decision.ask, 'edge': decision.edge, 'contracts': decision.contracts,
@@ -184,6 +202,10 @@ class EdgeService:
         if decision.action == 'TRADE':
             logged = self.db.insert_signal({**row, 'kind': 'trade'})
             self.log({'event': 'edge-trade', 'id': logged, 'ticker': ticker, 'side': decision.side, 'ask': decision.ask, 'edge': decision.edge, 'contracts': decision.contracts, 'mode': self.cfg.MODE})
+        elif decision.action == 'MODEL_DISAGREE' and minute not in self.disagree_minutes:
+            logged = self.db.insert_signal({**row, 'kind': 'disagree'})  # one per window per minute, for diagnosis
+            self.disagree_minutes.add(minute)
+            self.logged_minutes.add(minute)
         elif minute not in self.logged_minutes and status != 'NO_DATA':
             logged = self.db.insert_signal({**row, 'kind': 'snapshot'})
         if logged is not None:
@@ -191,7 +213,10 @@ class EdgeService:
         if secs_left <= 61:
             self._save_window()
 
-        n_proxy, agree, mean_abs = self.db.proxy_check()
+        if received - self._slow_at >= 30 or self._slow.get('version') != self.db.version:
+            self._slow = {'version': self.db.version, 'proxy': self.db.proxy_check(), 'unsettled': self.db.unsettled(now_s - 120)}
+            self._slow_at = received
+        n_proxy, agree, mean_abs = self._slow['proxy']
         response = {
             **decision.as_dict(), 'p_base': p_base, 'p_engine': p_engine, 'p_math': p_math, 'q_raw': q_raw, 'q_blend': q,
             'p_used': 'engine' if use_engine else 'base', 'regime': fv.regime if fv else None, 'sigma': sigma,
@@ -200,7 +225,7 @@ class EdgeService:
             'final_avg': self.tracker.average(), 'final_n': self.tracker.n, 'degraded': degraded, 'carried': carried,
             'source': last.source if last else None, 'market_mid': mid, 'yes_ask': yes_ask, 'no_ask': no_ask,
             'engine': {'call': engine_call, 'confidence': engine_conf},
-            'gate': gate.as_dict(),
+            'gate': real_gate.as_dict(), 'shadow_gate': gate.as_dict(),
             'risk': {'allowed': allowed, 'reason': risk_reason, 'book': self.cfg.MODE if self.cfg.MODE == 'shadow' or real_book is None else 'real',
                      'day_pnl': book.day_pnl, 'daily_stop_usd': self.cfg.DAILY_STOP * book.start_day_bankroll, 'week_pnl': book.week_pnl,
                      'weekly_stop_usd': self.cfg.WEEKLY_STOP * book.start_week_bankroll, 'windows_used': book.windows_today,
@@ -208,13 +233,18 @@ class EdgeService:
             'real_risk': {'allowed': real_allowed, 'reason': real_reason, 'stop_hit': real_stop is not None, 'stop_reason': real_stop},
             'proxy_check': {'windows': n_proxy, 'agree': agree, 'mean_abs_usd': mean_abs,
                             'failing': n_proxy >= self.cfg.PROXY_MIN_WINDOWS and agree is not None and agree < self.cfg.PROXY_MIN_AGREE},
-            'unsettled': self.db.unsettled(now_s - 120),
+            'unsettled': self._slow['unsettled'], 'z': z,
             'filled': filled, 'logged': logged,
             'config': {'mode': self.cfg.MODE, 'engine_validated': self.cfg.ENGINE_VALIDATED, 'min_edge': self.cfg.MIN_EDGE,
                        'block_mid_band': self.cfg.BLOCK_MID_BAND, 'bankroll': bankroll},
         }
         self.last_response = response
         return response
+
+    def record_ms(self, ms: float) -> None:
+        self._tick_ms.append(ms)
+        if len(self._tick_ms) > 600:
+            del self._tick_ms[:100]
 
     def settle(self, s: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
         ticker, result = s.get('ticker'), s.get('result')
@@ -231,4 +261,10 @@ class EdgeService:
         age = None if self.last_received is None else now - self.last_received
         return {'status': 'OK' if age is not None and age <= 2 else 'IDLE', 'last_tick_ts': self.last_tick_ts, 'last_tick_age_s': age,
                 'ticks': self.ticks, 'errors': self.errors, 'ticker': self.ticker, 'vol_samples': self.vol.count, 'mode': self.cfg.MODE,
-                'engine_validated': self.cfg.ENGINE_VALIDATED}
+                'engine_validated': self.cfg.ENGINE_VALIDATED, 'tick_ms': self._timing()}
+
+    def _timing(self) -> Optional[Dict[str, float]]:
+        xs = sorted(self._tick_ms)
+        if not xs:
+            return None
+        return {'n': len(xs), 'p50': round(xs[len(xs) // 2], 2), 'p95': round(xs[int(len(xs) * 0.95)], 2), 'max': round(xs[-1], 2)}
