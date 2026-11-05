@@ -54,6 +54,7 @@ import {RealCopy,orderBody,describeFill,newClientOrderId} from './real-copy';
 import {Orderbook} from './feeds/orderbook';
 import {effectiveFees} from './feeds/kalshi';
 import {baseFees} from './model/fees';
+import {EdgeLink,edgeSpot,realBook,realOrderVeto} from './edge-link';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
 const priceJournal=new PriceForecastJournal(journal.db);
@@ -61,6 +62,15 @@ const priceJournal=new PriceForecastJournal(journal.db);
 const desk=new PaperDesk(journal);
 // Real copy orders (real-copy.ts): confirmed quotes only, capped, off until switched on in Settings.
 const realCopy=new RealCopy();
+// Edge sidecar (edge/, Python; DECISIONS 75): settlement-aware fair value, fee-aware gate, risk governor, data/edge.db.
+// One fire-and-forget POST a second; replies cached on state.edge. It vetoes real KXBTC15M orders (fail closed).
+let edgeBackfillAt=0;
+const edgeLink=new EdgeLink(process.env.EDGE_URL??`http://127.0.0.1:${process.env.EDGE_PORT??3003}`,(event,data)=>log(event,data),reply=>{
+  // Windows the sidecar never saw settle (it was down): resend Kalshi's result from the journal, at most every 30 s.
+  if(!reply.unsettled?.length||Date.now()-edgeBackfillAt<30000)return;edgeBackfillAt=Date.now();
+  for(const ticker of reply.unsettled){const o=journal.db.prepare('SELECT result,actual_average,proxy_average FROM outcomes WHERE ticker=?').get(ticker) as {result:'yes'|'no';actual_average:number|null;proxy_average:number|null}|undefined;
+    if(o)edgeLink.settle({ticker,result:o.result,expiration_value:o.actual_average,proxy_avg:o.proxy_average});}
+});
 {const stored=journal.get<any>('config',null);
   if(stored&&!journal.get('migration:2026-10-07b',false)){
     // Move settings still at their old defaults to the evidence-backed ones (DECISIONS 31); values the user changed are kept.
@@ -149,6 +159,7 @@ async function settlements(){
       if(m.result==='yes'||m.result==='no'){
         const px=journal.get<number|null>('closing-average:'+m.ticker,null),actual=m.expiration_value!==''&&m.expiration_value!==undefined&&Number.isFinite(Number(m.expiration_value))?Number(m.expiration_value):null;
         journal.settle(m.ticker,m.result,now,actual,px,Number.isFinite(m.floor_strike)?m.floor_strike:null,m);desk.invalidate();
+        edgeLink.settle({ticker:m.ticker,result:m.result,expiration_value:actual,proxy_avg:px});
       }
     }
     settledOnce=true;
@@ -223,10 +234,13 @@ const server=createServer(async(req,res)=>{
       if(path==='/real/quote'){const lock=state.guards?.locked?String(state.guards.reason??'guardrail lock'):null;
         const q=realCopy.quote(await paperMarket(typeof data.ticker==='string'?data.ticker:undefined,copyContext(data.copy)),data.side,data.dollars===undefined?undefined:Number(data.dollars),
           {enabled:config.realCopyEnabled,cap:config.realCopyMaxDollars,balance:account.balance,lock,now:Date.now()});
+        const veto=realOrderVeto(q.ticker,q.side,edgeLink.view());if(veto){log('real-order-vetoed',{stage:'quote',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
         const {context:_c,...quote}=q;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,quote,balance:account.balance}));return;}
       if(path==='/real/order'){const q=realCopy.take(data.token,Date.now());
         // Checked again at the moment of sending: the switch or a lock may have changed during the 30 s.
         if(!config.realCopyEnabled)throw new Error('Real copy orders were switched off');if(state.guards?.locked)throw new Error(`Real orders are paused: ${state.guards.reason??'guardrail lock'}`);
+        // Edge veto (DECISIONS 75), checked again at the moment of sending: gate TRADE on this side + governor + sidecar online.
+        const veto=realOrderVeto(q.ticker,q.side,edgeLink.view());if(veto){log('real-order-vetoed',{stage:'order',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
         const body=orderBody(q,newClientOrderId());log('real-order-sent',{...body,cost:q.cost,cap:q.cap,copy:q.context.copy??null});
         let r:any;try{r=await client.post('/portfolio/events/orders',body);}catch(e){log('real-order-error',{client_order_id:body.client_order_id,message:(e as Error).message});throw e;}
         const result=describeFill(q,r);log('real-order-result',{client_order_id:body.client_order_id,order_id:r.order_id,fill_count:r.fill_count,remaining_count:r.remaining_count,average_fill_price:r.average_fill_price,average_fee_paid:r.average_fee_paid});
@@ -490,6 +504,15 @@ const loop=setInterval(()=>{
       const shown=breakerView.stale?{...gated,action:'STALE BOOK',reason:`STALE BOOK — DO NOT TRADE · ${breakerView.reasons.join(' · ')}`,idea:null,makers:[],firm:null,forming:null,edges:{yes:null,no:null},
         gates:[{key:'breaker',label:'Stale book',ok:false,detail:breakerView.reasons.join(' · ')},...(gated.gates??[])]}:gated;
       const tactics=gateTactics(tacticIdeas,dipState.watch,calibration,config.provenSignalsOnly);
+      // Edge sidecar tick: once per new second, never awaited. q_raw = the stack with Kalshi's mid taken out (mid:null makes
+      // the kalshiShift feature 0), so the scorer can grade the engine without the market grading itself.
+      if(newSecond){const brti=brtiHistory.at(-1)??null,sp=edgeSpot(brti,venueStates,time,basis);
+        edgeLink.tick({ts_ms:time,ticker:market.ticker,close_ms:close,secs_left:actualTau,spot:sp.spot,source:sp.source,degraded:sp.degraded,carried:sp.carried,venues:sp.venues,
+          target:confirmed?market.floor_strike:null,yes_ask:bv.yesAsk,no_ask:bv.noAsk,mid,q,q_raw:stackInputs?predict(forecast,{...stackInputs,mid:null}).p:null,p_math:model?.p??null,
+          engine_call:liveCall?.direction??null,engine_confidence:liveCall?.confidence??null,
+          final_prints:actualTau<=61?brtiHistory.filter(p=>p.time>=close-60000&&p.time<close).map(p=>[p.time,p.price]):null,
+          book_stale:breakerView.stale||delayed,stale_reason:breakerView.stale?breakerView.reasons.join(' · '):delayed?`Kalshi book ${Math.round(delayMs)} ms behind`:null,
+          balance:accountValue,real:realBook(events,accountValue,market.ticker,now)});}
       state={...common,...tick,market,evaluation:shown,exits,liveCall,nextCall,quality,openingCall:journal.openingCall(market.ticker),
         quant:{p:q,model:model?.p??null,mid,active:forecast.active,markets:forecast.markets,reason:forecast.reason,late:{active:lateStack.active,markets:lateStack.markets,inUse:forecast===lateStack,cv:lateStack.cv},basis,autoBasis:basisState,signalSource:config.useQuantForSignals&&q!==null?'quant':'model'},
         tactics:{live:tacticsLive,ideas:tactics.ideas,dips:tactics.watch,hidden:tactics.hidden},lockedCount:locked?.length??0,lockedImputed:lockedFill?.imputed??0,distance:spot!==null&&K!==null?spot-K:null,
@@ -498,6 +521,7 @@ const loop=setInterval(()=>{
     // Hourly board: recomputed once per second, reused between the faster publishes.
     if(newSecond){try{hourlyState=computeHourly(time,now,spot,vol,venueStates,guards);}catch(e){log('hourly-error',{message:(e as Error).message});}}
     state.hourly=hourlyState;
+    if(!market&&newSecond)edgeLink.ping();state.edge=edgeLink.view(now);
     state.shortTerm=priceState;
     state.flowPulse=flowOn?flowLatest?{...flowLatest.pulse,db:flowLatest.db,ageMs:now-flowLatest.received,path:flowPath}:{starting:true,path:flowPath}:null;
     state.research={orderFlow,flow:flowState,recorder:{...researchJournal.stats,error:researchFailure?.message??null},calibration:{state:benchmarkCalibration.state,markets:benchmarkCalibration.markets,reason:benchmarkCalibration.reason}};
