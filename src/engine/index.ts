@@ -57,6 +57,16 @@ import {baseFees} from './model/fees';
 import {EdgeLink,edgeSpot,realBook,realOrderVeto} from './edge-link';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
+// WAL checkpoints on their own thread (checkpoint-worker.ts): inline they cost the 4 Hz loop 37–75 ms every 15–25 s.
+// If that thread ever stops, SQLite's own auto-checkpoint comes back so the WAL cannot grow without bound.
+let checkpointWorker:Worker|null=null;
+function startCheckpoints(){
+  const worker=new Worker(new URL('./checkpoint-worker.ts',import.meta.url),{workerData:{path:process.env.ADVISOR_DB??'./data/advisor.db',everyMs:5000}});
+  journal.db.pragma('wal_autocheckpoint = 0');checkpointWorker=worker;
+  const fallback=(why:string)=>{if(checkpointWorker!==worker)return;checkpointWorker=null;journal.db.pragma('wal_autocheckpoint = 1000');log('checkpoint-worker-stopped',{why});};
+  worker.on('message',(m:any)=>{if(m.error)log('checkpoint-error',{message:m.error});else if(m.ms>500)log('checkpoint-slow',{ms:Math.round(m.ms),log:m.log,checkpointed:m.checkpointed});});
+  worker.on('error',e=>fallback(e.message));worker.on('exit',code=>fallback(`exit ${code}`));
+}
 const priceJournal=new PriceForecastJournal(journal.db);
 // Paper trading on the live round (paper.ts): its own account in the journal, settled by the same results.
 const desk=new PaperDesk(journal);
@@ -97,7 +107,7 @@ const basisErrors=()=>(journal.db.prepare('SELECT basis_error FROM outcomes WHER
 let stack:StackFit=fitStack(stackSamples(journal.db)),basisState=autoBasis(basisErrors());
 let benchmarkCalibration=fitBenchmarkCalibration([],Date.now());
 let calibration=buildCalibration(journal,stack,basisState);
-const log=(event:string,data:unknown)=>{journal.log(event,data);console.log(JSON.stringify({time:new Date().toISOString(),event,data}));};
+const log=(event:string,data:unknown)=>{journal.log(event,data);console.log(JSON.stringify({time:new Date().toISOString(),event,data}));};startCheckpoints();
 // Full speed on battery too (power.ts): Windows throttled this windowless process 3.5–7× and the book fell behind.
 fullSpeed(log);
 const proxy=new ProxyFeed(log);proxy.history=journal.restoreHistory();const loopLag=new LoopLag();loopLag.start();let lastDelaySide:DelaySide|null=null;
@@ -541,6 +551,6 @@ const loop=setInterval(()=>{
 },100);
 // The flow worker writes its last bars and closes its database on 'stop', then exits itself; it gets 2 s before the process
 // ends without it. The journal stays open until then, since the worker's log messages are written to it.
-const shutdown=()=>{if(stopping)process.exit(0);stopping=true;refresher.stop();loopLag.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();if(orderFlow)microstructure.stop();recordResearch(()=>researchJournal.flush());kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();
+const shutdown=()=>{if(stopping)process.exit(0);stopping=true;refresher.stop();loopLag.stop();void calWorker.terminate();void priceWorker?.terminate();{const w=checkpointWorker;checkpointWorker=null;void w?.terminate();}for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();if(orderFlow)microstructure.stop();recordResearch(()=>researchJournal.flush());kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();
   const exit=()=>{journal.db.close();process.exit(0);},w=flowWorker;if(!w)return exit();w.once('exit',exit);setTimeout(exit,2000);w.postMessage({kind:'stop'});};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
