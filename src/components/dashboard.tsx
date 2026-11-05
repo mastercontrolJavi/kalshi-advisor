@@ -1,7 +1,7 @@
 'use client';
 import {useMemo,useState} from 'react';
 import dynamic from 'next/dynamic';
-import {ChartCandlestick,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,BellRing,History,Waves} from 'lucide-react';
+import {ChartCandlestick,BookOpen,Layers,Activity,ShieldCheck,SlidersHorizontal,BellRing,History,Waves,Scale} from 'lucide-react';
 import {flowAlignment} from '@/engine/flow';
 import {useSoundAlerts} from './use-sound-alerts';
 import {SoundPanel,SoundToggle} from './sound-panel';
@@ -14,6 +14,7 @@ import {SignalPanel,ForecastPanel,Instruments,Positions,BookLadder,MakerIdeas,Se
 import {SiteHeader} from './site-header';
 import {SectionHelp} from './section-help';
 import {FlowPulse} from './flow-pulse';
+import {EdgePanel,EdgeBanner} from './edge-panel';
 import {MasterSignal} from './master-signal';
 import {PanelBoundary} from './panel-boundary';
 import {cn} from '@/lib/utils';
@@ -43,6 +44,7 @@ export default function Dashboard(){
       <PanelBoundary name="Master signal"><MasterSignal s={s} fresh={fresh}/></PanelBoundary>
       <DataUpdate s={s}/>
       {fresh?<StaleBanner s={s}/>:null}
+      <EdgeBanner s={s} fresh={fresh}/>
       <Instruments s={s}/>
       {!fresh?<div role="status" className="rounded-xl border border-warn/40 bg-warn-dim/30 px-4 py-2 text-sm text-warn">{connected?'Updates are stale':'Reconnecting to the engine'} · entry and exit advice paused. Chart history remains available.</div>:null}
       {/* One grid, three working areas. From 1024 px the chart sets the row height and the decision/positions column
@@ -58,6 +60,7 @@ export default function Dashboard(){
         <div className="relative min-w-0 lg:col-span-12 3xl:col-span-3"><div className="grid gap-4 lg:grid-cols-12 3xl:absolute 3xl:inset-0 3xl:flex 3xl:flex-col 3xl:overflow-y-auto 3xl:pr-1 3xl:[scrollbar-gutter:stable]">
           <div className="min-w-0 lg:col-span-8"><ForecastPanel s={s} fresh={fresh}/></div>
           <div className="min-w-0 lg:col-span-4"><Collapsible open remember="order-book" title="Order book" icon={<BookOpen aria-hidden className="size-4 text-info"/>} aside="top 10 bids"><BookLadder s={s}/></Collapsible></div>
+          <div className="min-w-0 lg:col-span-12"><Collapsible open remember="edge-layer" title="Edge layer" icon={<Scale aria-hidden className="size-4 text-info"/>} aside={fresh&&s?.edge?s.edge.status==='OFFLINE'?'offline':s.edge.action==='TRADE'?`TRADE ${String(s.edge.side).toUpperCase()}`:s.edge.action==='BLOCKED'?'blocked':s.edge.status==='IDLE'?'between windows':'no edge':'—'}><PanelBoundary name="Edge layer"><EdgePanel s={s} fresh={fresh}/></PanelBoundary></Collapsible></div>
           <div className="min-w-0 lg:col-span-12"><Collapsible open remember="flow-pulse" title="Order flow & futures pulse" icon={<Waves aria-hidden className="size-4 text-info"/>} aside={fresh&&s?.liveCall?.direction&&s?.flowPulse?.healthy?`live call: ${flowAlignment(s.liveCall.direction,s.flowPulse).label.toLowerCase()}`:'untested · recording'}><PanelBoundary name="Order flow"><FlowPulse s={s} fresh={fresh}/></PanelBoundary></Collapsible></div>
         </div></div>
       </div>
