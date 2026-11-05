@@ -38,6 +38,9 @@ export function normalizeAccount(fills:any[],settlements:any[],series:string[]|(
   }return events.sort((a,b)=>a.time-b.time);
 }
 export class Account {
+  /** Realized P&L events on EVERY market (copied sports, politics…), for the edge layer's real daily/weekly stop only;
+   * the journal, analytics and guardrails stay KXBTC15M. Null until the first sync, or if a market's records can't be read. */
+  allMarketEvents:RealEvent[]|null=null;private allMarketsKey='';
   balance:number|null=null;portfolioValue:number|null=null;ready=false;updated=0;error='Credentials unavailable';positions:unknown[]=[];openCosts=new Map<string,OpenCost>();positionsUpdated=0;private busy=false;private again=false;
   // Fill warnings never change once computed; recomputing ~400 of them every sync stalled the engine loop ~300 ms.
   private warnings=new Map<string,string[]>();
@@ -67,6 +70,13 @@ export class Account {
       const raw=this.journal.db.prepare('SELECT type,context FROM account_raw ORDER BY time').all() as {type:string;context:string}[];
       const rawFills=raw.filter(r=>r.type==='fill').map(r=>JSON.parse(r.context)),rawSettlements=raw.filter(r=>r.type==='settlement').map(r=>JSON.parse(r.context));
       const events=normalizeAccount(rawFills,rawSettlements);
+      // A loss on any market counts toward the real loss stop (PR #9 review). Separate from the Bitcoin-only events so
+      // one unreadable non-Bitcoin record cannot break the sync; the stop then falls back to Bitcoin P&L, logged.
+      // ~17 ms over ~2,000 records: redone only when the stored records change (count or content size).
+      const allKey=`${raw.length}:${raw.reduce((n,r)=>n+r.context.length,0)}`;
+      if(allKey!==this.allMarketsKey){this.allMarketsKey=allKey;
+        try{this.allMarketEvents=normalizeAccount(rawFills,rawSettlements,()=>true);}
+        catch(e){this.allMarketEvents=null;this.journal.log('account-all-markets-error',{message:(e as Error).message});}}
       // Open-position costs (with actual fees) for every Bitcoin market, hourly included; P&L and guardrails stay 15-minute only.
       const openCosts=new Map<string,OpenCost>();normalizeAccount(rawFills,rawSettlements,['KXBTC15M','KXBTCD'],openCosts);this.openCosts=openCosts;
       const config=this.journal.config();
