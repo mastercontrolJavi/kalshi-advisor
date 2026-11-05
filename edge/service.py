@@ -58,6 +58,8 @@ class EdgeService:
         self.ticks = 0
         self._tick_ms: list = []  # last 600 handling times, for /health
         self.errors = 0
+        self.aborted = 0  # replies the engine stopped waiting for (300 ms timeout)
+        self.recent_errors: list = []
 
     # window bookkeeping
     def _roll(self, ticker: str, close_ts: int) -> None:
@@ -241,6 +243,12 @@ class EdgeService:
         self.last_response = response
         return response
 
+    def note_error(self, path: str, code: int, message: str) -> None:
+        """Counted and kept (last 10) so GET /health shows what went wrong without the sidecar's console."""
+        self.errors += 1
+        self.recent_errors = (self.recent_errors + [{'time': _time.strftime('%Y-%m-%dT%H:%M:%S'), 'path': path, 'code': code, 'message': message[:300]}])[-10:]
+        self.log({'event': 'edge-request-error', 'path': path, 'code': code, 'message': message[:300]})
+
     def record_ms(self, ms: float) -> None:
         self._tick_ms.append(ms)
         if len(self._tick_ms) > 600:
@@ -261,7 +269,8 @@ class EdgeService:
         age = None if self.last_received is None else now - self.last_received
         return {'status': 'OK' if age is not None and age <= 2 else 'IDLE', 'last_tick_ts': self.last_tick_ts, 'last_tick_age_s': age,
                 'ticks': self.ticks, 'errors': self.errors, 'ticker': self.ticker, 'vol_samples': self.vol.count, 'mode': self.cfg.MODE,
-                'engine_validated': self.cfg.ENGINE_VALIDATED, 'tick_ms': self._timing()}
+                'engine_validated': self.cfg.ENGINE_VALIDATED, 'tick_ms': self._timing(),
+                'aborted': self.aborted, 'recent_errors': self.recent_errors}
 
     def _timing(self) -> Optional[Dict[str, float]]:
         xs = sorted(self._tick_ms)

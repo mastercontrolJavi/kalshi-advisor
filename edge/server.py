@@ -84,13 +84,23 @@ def make_handler(service: EdgeService, lock: threading.Lock):
                     if self.path == '/settle':
                         return self._send(200, service.settle(body))
                 self._send(404, {'error': 'not found'})
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                # The engine gave up waiting (its 300 ms timeout) and closed the connection: a dropped reply, not a fault.
+                service.aborted += 1
             except (ValueError, KeyError, TypeError) as e:
-                service.errors += 1
+                service.note_error(self.path, 400, str(e))
                 self._send(400, {'error': str(e)})
             except Exception as e:  # never let one bad tick kill the sidecar
-                service.errors += 1
+                service.note_error(self.path, 500, repr(e))
                 log_json({'event': 'edge-error', 'path': self.path, 'message': repr(e)})
                 self._send(500, {'error': repr(e)})
+
+        def handle(self) -> None:
+            # The engine closes kept-alive connections when it times out or restarts; that reset is expected, not a fault.
+            try:
+                super().handle()
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                service.aborted += 1
 
         def log_message(self, *args) -> None:  # silence per-request access logs
             pass
