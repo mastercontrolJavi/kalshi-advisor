@@ -44,6 +44,15 @@ describe('window reservations (review: two quick confirmations)',()=>{
     r.release(T);expect(r.reserve(T,20)).toBe(true);
     expect(r.has(T,20+RESERVATION_MS+1)).toBe(false);
   });
+  it('survives a restart through its store (PR #10 review) and saves only on change',()=>{
+    let saved:Record<string,number>={};let saves=0;const store={load:()=>({...saved}),save:(h:Record<string,number>)=>{saved=h;saves++;}};
+    const a=new WindowReservations(store);a.reserve(T,1000);expect(saved).toEqual({[T]:1000});
+    const restarted=new WindowReservations(store);expect(restarted.reserve(T,2000)).toBe(false);
+    const n=saves;restarted.has(T,3000);restarted.tickers(3000);expect(saves).toBe(n);
+    restarted.release(T);expect(saved).toEqual({});
+    new WindowReservations(store).reserve('KXBTC15M-OLD',0);expect(new WindowReservations(store).has('KXBTC15M-OLD',RESERVATION_MS+1)).toBe(false);
+    expect(saved).toEqual({});
+  });
   it('a reserved window counts as in-window and toward the window cap',()=>{
     const b=realBook([],100,T,Date.parse('2026-11-04T18:00:00Z'),[T,'KXBTC15M-OTHER']);
     expect(b.in_window).toBe(true);expect(b.windows_today).toBe(2);

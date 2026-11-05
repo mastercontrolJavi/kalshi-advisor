@@ -96,16 +96,24 @@ export function realOrderVeto(ticker:string,side:'yes'|'no',v:EdgeView,now=Date.
  * reports it and the account syncs, so two quick confirmations could both pass the veto. A window is reserved
  * synchronously between the veto and the send; it is released only when Kalshi answers that nothing filled, and kept
  * (until the window is long closed) when anything filled or the send failed, since a timed-out order may still exist.
+ * Reservations are persisted (PR #10 review) so an engine restart between Kalshi accepting an order and the fill
+ * syncing cannot forget one; the engine also refuses KXBTC15M real orders until its first account sync after start.
  */
 export const RESERVATION_MS=20*60000;
+export interface ReservationStore {load():Record<string,number>;save(held:Record<string,number>):void}
 export class WindowReservations {
   private held=new Map<string,number>();
+  constructor(private store?:ReservationStore){
+    const saved=store?.load()??{};
+    for(const [t,at] of Object.entries(saved))if(typeof t==='string'&&Number.isFinite(at))this.held.set(t,at);
+  }
   has(ticker:string,now=Date.now()){this.prune(now);return this.held.has(ticker);}
-  /** False if the window is already reserved. */
-  reserve(ticker:string,now=Date.now()){this.prune(now);if(this.held.has(ticker))return false;this.held.set(ticker,now);return true;}
-  release(ticker:string){this.held.delete(ticker);}
+  /** False if the window is already reserved. Saved before returning, so the reservation survives a crash mid-send. */
+  reserve(ticker:string,now=Date.now()){this.prune(now);if(this.held.has(ticker))return false;this.held.set(ticker,now);this.save();return true;}
+  release(ticker:string){if(this.held.delete(ticker))this.save();}
   tickers(now=Date.now()){this.prune(now);return [...this.held.keys()];}
-  private prune(now:number){for(const [t,at] of this.held)if(now-at>RESERVATION_MS)this.held.delete(t);}
+  private prune(now:number){let changed=false;for(const [t,at] of this.held)if(now-at>RESERVATION_MS){this.held.delete(t);changed=true;}if(changed)this.save();}
+  private save(){this.store?.save(Object.fromEntries(this.held));}
 }
 
 /**

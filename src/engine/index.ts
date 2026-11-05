@@ -65,7 +65,11 @@ const realCopy=new RealCopy();
 // Edge sidecar (edge/, Python; DECISIONS 75): settlement-aware fair value, fee-aware gate, risk governor, data/edge.db.
 // One fire-and-forget POST a second; replies cached on state.edge. It vetoes real KXBTC15M orders (fail closed).
 let edgeBackfillAt=0;
-const reservations=new WindowReservations(),realBookMemo=new RealBookMemo();
+const reservations=new WindowReservations({load:()=>journal.get<Record<string,number>>('edge:reservations',{}),save:held=>journal.set('edge:reservations',held)}),realBookMemo=new RealBookMemo();
+const engineStartedAt=Date.now();
+/** KXBTC15M real orders wait for the first Kalshi account sync after start: fills made just before a restart are then known. */
+const windowLocalVeto=(ticker:string)=>!ticker.startsWith(EDGE_SERIES)?null:reservations.has(ticker)?'A real order for this window is already in flight or filled (one position per window)'
+  :!(account.ready&&account.updated>=engineStartedAt)?'Waiting for the first Kalshi account sync since the engine started':null;
 const edgeLink=new EdgeLink(process.env.EDGE_URL??`http://127.0.0.1:${process.env.EDGE_PORT??3003}`,(event,data)=>log(event,data),reply=>{
   // Windows the sidecar never saw settle (it was down): resend Kalshi's result from the journal, at most every 30 s.
   if(!reply.unsettled?.length||Date.now()-edgeBackfillAt<30000)return;edgeBackfillAt=Date.now();
@@ -235,13 +239,13 @@ const server=createServer(async(req,res)=>{
       if(path==='/real/quote'){const lock=state.guards?.locked?String(state.guards.reason??'guardrail lock'):null;
         const q=realCopy.quote(await paperMarket(typeof data.ticker==='string'?data.ticker:undefined,copyContext(data.copy)),data.side,data.dollars===undefined?undefined:Number(data.dollars),
           {enabled:config.realCopyEnabled,cap:config.realCopyMaxDollars,balance:account.balance,lock,now:Date.now()});
-        const veto=reservations.has(q.ticker)?'A real order for this window is already in flight or filled (one position per window)':realOrderVeto(q.ticker,q.side,edgeLink.view());if(veto){log('real-order-vetoed',{stage:'quote',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
+        const veto=windowLocalVeto(q.ticker)??realOrderVeto(q.ticker,q.side,edgeLink.view());if(veto){log('real-order-vetoed',{stage:'quote',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
         const {context:_c,...quote}=q;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,quote,balance:account.balance}));return;}
       if(path==='/real/order'){const q=realCopy.take(data.token,Date.now());
         // Checked again at the moment of sending: the switch or a lock may have changed during the 30 s.
         if(!config.realCopyEnabled)throw new Error('Real copy orders were switched off');if(state.guards?.locked)throw new Error(`Real orders are paused: ${state.guards.reason??'guardrail lock'}`);
         // Edge veto (DECISIONS 75), checked again at the moment of sending: gate TRADE on this side + governor + sidecar online.
-        const veto=realOrderVeto(q.ticker,q.side,edgeLink.view());if(veto){log('real-order-vetoed',{stage:'order',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
+        const veto=windowLocalVeto(q.ticker)??realOrderVeto(q.ticker,q.side,edgeLink.view());if(veto){log('real-order-vetoed',{stage:'order',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
         // Reserve the window before any await, so a second confirmation for the same window cannot also reach Kalshi.
         const window=q.ticker.startsWith(EDGE_SERIES);
         if(window&&!reservations.reserve(q.ticker)){const reason='A real order for this window is already in flight or filled (one position per window)';log('real-order-vetoed',{stage:'order',ticker:q.ticker,side:q.side,reason});throw new Error(reason);}
