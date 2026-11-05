@@ -1,5 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
-import {EdgeLink,edgeSpot,realBook,realOrderVeto,EDGE_OFFLINE_MS,type EdgeView} from '../src/engine/edge-link';
+import {EdgeLink,edgeSpot,realBook,RealBookMemo,realOrderVeto,WindowReservations,RESERVATION_MS,EDGE_OFFLINE_MS,type EdgeView} from '../src/engine/edge-link';
+import {normalizeAccount} from '../src/engine/account';
 
 const v=(o:Partial<EdgeView>={}):EdgeView=>({status:'OK',receivedAt:1000,ageMs:200,aliveMs:200,error:null,sent:1,failures:0,ticker:'KXBTC15M-26NOV041215-15',
   gate:{action:'TRADE',side:'yes',ask:.9,edge:.03,contracts:3,reason:'ok'},real_risk:{allowed:true,reason:'ok',stop_hit:false,stop_reason:null},...o});
@@ -21,6 +22,41 @@ describe('real book',()=>{
   it('sums ET day and Monday-start week, counts windows, sees this window',()=>{
     const b=realBook(ev,100,T,now);
     expect(b).toEqual({day_pnl:-5,week_pnl:-7,start_day:105,start_week:107,windows_today:1,in_window:true});
+  });
+});
+
+describe('real stop counts every market (review: copied-market losses were missing)',()=>{
+  it('a sports loss today moves the day P&L but is not a Bitcoin window',()=>{
+    const now=Date.parse('2026-11-04T18:00:00Z');
+    const fill=(ticker:string,id:string,price:number)=>({ticker,fill_id:id,created_time:new Date(now-3600000).toISOString(),outcome_side:'yes',action:'buy',yes_price_dollars:String(price),count_fp:'10',fee_cost:'0.10'});
+    const settle=(ticker:string)=>({ticker,revenue:0,yes_total_cost_dollars:'5',no_total_cost_dollars:'0',fee_cost:'0.10',settled_time:new Date(now-1800000).toISOString(),yes_count_fp:'10',no_count_fp:'0'});
+    const fills=[fill('KXNFLGAME-26NOV04-X','a',.5),fill('KXBTC15M-26NOV041215-15','b',.5)],settlements=[settle('KXNFLGAME-26NOV04-X'),settle('KXBTC15M-26NOV041215-15')];
+    const btcOnly=realBook(normalizeAccount(fills,settlements),100,null,now),all=realBook(normalizeAccount(fills,settlements,()=>true),100,null,now);
+    expect(btcOnly.day_pnl).toBeCloseTo(-5.1);expect(all.day_pnl).toBeCloseTo(-10.2);
+    expect(all.windows_today).toBe(1);
+  });
+});
+
+describe('window reservations (review: two quick confirmations)',()=>{
+  it('second reservation of the same window fails until released; expires after the window',()=>{
+    const r=new WindowReservations();
+    expect(r.reserve(T,0)).toBe(true);expect(r.reserve(T,10)).toBe(false);expect(r.has(T,10)).toBe(true);
+    r.release(T);expect(r.reserve(T,20)).toBe(true);
+    expect(r.has(T,20+RESERVATION_MS+1)).toBe(false);
+  });
+  it('a reserved window counts as in-window and toward the window cap',()=>{
+    const b=realBook([],100,T,Date.parse('2026-11-04T18:00:00Z'),[T,'KXBTC15M-OTHER']);
+    expect(b.in_window).toBe(true);expect(b.windows_today).toBe(2);
+  });
+});
+
+describe('real book memo',()=>{
+  it('reuses the result until events, minute, window, value or reservations change',()=>{
+    const now=Date.parse('2026-11-04T18:00:00Z'),m=new RealBookMemo(),ev:any[]=[{id:'a',time:now-1000,ticker:'X',type:'settlement',pnl:-1,contracts:1}];
+    const a=m.get(ev,100,T,now);expect(m.get(ev,100,T,now+30000)).toBe(a);
+    expect(m.get(ev,100,T,now+60000)).not.toBe(a);
+    const b=m.get(ev,100,T,now+60000);expect(m.get([...ev],100,T,now+60000)).not.toBe(b);
+    expect(m.get(ev,100,T,now+60000,[T]).in_window).toBe(true);
   });
 });
 

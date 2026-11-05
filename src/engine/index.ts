@@ -54,7 +54,7 @@ import {RealCopy,orderBody,describeFill,newClientOrderId} from './real-copy';
 import {Orderbook} from './feeds/orderbook';
 import {effectiveFees} from './feeds/kalshi';
 import {baseFees} from './model/fees';
-import {EdgeLink,edgeSpot,realBook,realOrderVeto} from './edge-link';
+import {EdgeLink,edgeSpot,RealBookMemo,realOrderVeto,WindowReservations,EDGE_SERIES} from './edge-link';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
 const priceJournal=new PriceForecastJournal(journal.db);
@@ -65,6 +65,7 @@ const realCopy=new RealCopy();
 // Edge sidecar (edge/, Python; DECISIONS 75): settlement-aware fair value, fee-aware gate, risk governor, data/edge.db.
 // One fire-and-forget POST a second; replies cached on state.edge. It vetoes real KXBTC15M orders (fail closed).
 let edgeBackfillAt=0;
+const reservations=new WindowReservations(),realBookMemo=new RealBookMemo();
 const edgeLink=new EdgeLink(process.env.EDGE_URL??`http://127.0.0.1:${process.env.EDGE_PORT??3003}`,(event,data)=>log(event,data),reply=>{
   // Windows the sidecar never saw settle (it was down): resend Kalshi's result from the journal, at most every 30 s.
   if(!reply.unsettled?.length||Date.now()-edgeBackfillAt<30000)return;edgeBackfillAt=Date.now();
@@ -234,16 +235,19 @@ const server=createServer(async(req,res)=>{
       if(path==='/real/quote'){const lock=state.guards?.locked?String(state.guards.reason??'guardrail lock'):null;
         const q=realCopy.quote(await paperMarket(typeof data.ticker==='string'?data.ticker:undefined,copyContext(data.copy)),data.side,data.dollars===undefined?undefined:Number(data.dollars),
           {enabled:config.realCopyEnabled,cap:config.realCopyMaxDollars,balance:account.balance,lock,now:Date.now()});
-        const veto=realOrderVeto(q.ticker,q.side,edgeLink.view());if(veto){log('real-order-vetoed',{stage:'quote',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
+        const veto=reservations.has(q.ticker)?'A real order for this window is already in flight or filled (one position per window)':realOrderVeto(q.ticker,q.side,edgeLink.view());if(veto){log('real-order-vetoed',{stage:'quote',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
         const {context:_c,...quote}=q;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,quote,balance:account.balance}));return;}
       if(path==='/real/order'){const q=realCopy.take(data.token,Date.now());
         // Checked again at the moment of sending: the switch or a lock may have changed during the 30 s.
         if(!config.realCopyEnabled)throw new Error('Real copy orders were switched off');if(state.guards?.locked)throw new Error(`Real orders are paused: ${state.guards.reason??'guardrail lock'}`);
         // Edge veto (DECISIONS 75), checked again at the moment of sending: gate TRADE on this side + governor + sidecar online.
         const veto=realOrderVeto(q.ticker,q.side,edgeLink.view());if(veto){log('real-order-vetoed',{stage:'order',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
+        // Reserve the window before any await, so a second confirmation for the same window cannot also reach Kalshi.
+        const window=q.ticker.startsWith(EDGE_SERIES);
+        if(window&&!reservations.reserve(q.ticker)){const reason='A real order for this window is already in flight or filled (one position per window)';log('real-order-vetoed',{stage:'order',ticker:q.ticker,side:q.side,reason});throw new Error(reason);}
         const body=orderBody(q,newClientOrderId());log('real-order-sent',{...body,cost:q.cost,cap:q.cap,copy:q.context.copy??null});
-        let r:any;try{r=await client.post('/portfolio/events/orders',body);}catch(e){log('real-order-error',{client_order_id:body.client_order_id,message:(e as Error).message});throw e;}
-        const result=describeFill(q,r);log('real-order-result',{client_order_id:body.client_order_id,order_id:r.order_id,fill_count:r.fill_count,remaining_count:r.remaining_count,average_fill_price:r.average_fill_price,average_fee_paid:r.average_fee_paid});
+        let r:any;try{r=await client.post('/portfolio/events/orders',body);}catch(e){/* kept reserved: a timeout may still have placed the order */log('real-order-error',{client_order_id:body.client_order_id,message:(e as Error).message});throw e;}
+        const result=describeFill(q,r);if(window&&!(result.filled>0))reservations.release(q.ticker);log('real-order-result',{client_order_id:body.client_order_id,order_id:r.order_id,fill_count:r.fill_count,remaining_count:r.remaining_count,average_fill_price:r.average_fill_price,average_fee_paid:r.average_fee_paid});
         void account.onFill();res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,order_id:r.order_id,...result}));return;}
       if(path==='/sim/reset'){const account=desk.reset(Number(data.bankroll));log('paper-account',account);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,account}));return;}
       if(path==='/sim/order'){const result=desk.order({side:data.side,action:data.action,contracts:data.contracts===undefined?undefined:Number(data.contracts),dollars:data.dollars===undefined?undefined:Number(data.dollars)},await paperMarket(typeof data.ticker==='string'?data.ticker:undefined,copyContext(data.copy)));
@@ -512,7 +516,7 @@ const loop=setInterval(()=>{
           engine_call:liveCall?.direction??null,engine_confidence:liveCall?.confidence??null,
           final_prints:actualTau<=61?brtiHistory.filter(p=>p.time>=close-60000&&p.time<close).map(p=>[p.time,p.price]):null,
           book_stale:breakerView.stale||delayed,stale_reason:breakerView.stale?breakerView.reasons.join(' · '):delayed?`Kalshi book ${Math.round(delayMs)} ms behind`:null,
-          balance:accountValue,real:realBook(events,accountValue,market.ticker,now)});}
+          balance:accountValue,real:realBookMemo.get(account.allMarketEvents??events,accountValue,market.ticker,now,reservations.tickers(now))});}
       state={...common,...tick,market,evaluation:shown,exits,liveCall,nextCall,quality,openingCall:journal.openingCall(market.ticker),
         quant:{p:q,model:model?.p??null,mid,active:forecast.active,markets:forecast.markets,reason:forecast.reason,late:{active:lateStack.active,markets:lateStack.markets,inUse:forecast===lateStack,cv:lateStack.cv},basis,autoBasis:basisState,signalSource:config.useQuantForSignals&&q!==null?'quant':'model'},
         tactics:{live:tacticsLive,ideas:tactics.ideas,dips:tactics.watch,hidden:tactics.hidden},lockedCount:locked?.length??0,lockedImputed:lockedFill?.imputed??0,distance:spot!==null&&K!==null?spot-K:null,

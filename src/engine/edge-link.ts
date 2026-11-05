@@ -25,13 +25,19 @@ export function edgeSpot(brti:{time:number;price:number}|null,venues:{name:strin
 }
 
 /** Monday of the ET week containing `day` (YYYY-MM-DD). */
-const weekOf=(day:string)=>{const d=new Date(day+'T12:00:00Z'),dow=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-dow);return d.toISOString().slice(0,10);};
-/** Your real book for the governor, in US Eastern days/weeks: P&L, start-of-day/week account value, KXBTC15M windows traded. */
-export function realBook(events:RealEvent[],accountValue:number|null,ticker:string|null,now:number){
+const weeks=new Map<string,string>();
+const weekOf=(day:string)=>{let w=weeks.get(day);if(w===undefined){const d=new Date(day+'T12:00:00Z'),dow=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-dow);w=d.toISOString().slice(0,10);if(weeks.size>5000)weeks.clear();weeks.set(day,w);}return w;};
+/**
+ * Your real book for the governor, in US Eastern days/weeks: P&L, start-of-day/week account value, KXBTC15M windows
+ * traded. `events` should be every market's P&L (Account.allMarketEvents) so a copied sports loss counts toward the stop.
+ * `reserved`: KXBTC15M windows with a real order in flight or filled but not yet synced from Kalshi (WindowReservations).
+ */
+export function realBook(events:RealEvent[],accountValue:number|null,ticker:string|null,now:number,reserved:Iterable<string>=[]){
   const today=dayKey(now,ET),week=weekOf(today);let day=0,wk=0;const windows=new Set<string>();let inWindow=false;
   for(const e of events){const d=dayKey(e.time,ET);
     if(d===today)day+=e.pnl;if(weekOf(d)===week)wk+=e.pnl;
     if(e.type==='fill'&&(e.action??'buy')==='buy'&&e.ticker.startsWith(EDGE_SERIES)){if(d===today)windows.add(e.ticker);if(e.ticker===ticker)inWindow=true;}}
+  for(const t of reserved){windows.add(t);if(t===ticker)inWindow=true;}
   const value=accountValue??0;
   return {day_pnl:day,week_pnl:wk,start_day:value-day,start_week:value-wk,windows_today:windows.size,in_window:inWindow};
 }
@@ -83,4 +89,35 @@ export function realOrderVeto(ticker:string,side:'yes'|'no',v:EdgeView,now=Date.
   }
   if(v.real_risk?.stop_hit&&v.receivedAt!==null&&now-v.receivedAt<=EDGE_STOP_MAX_AGE_MS)return `Risk governor: ${v.real_risk.stop_reason}`;
   return null;
+}
+
+/**
+ * One real order per KXBTC15M window, enforced locally (PR #9 review): the governor learns of a fill only after Kalshi
+ * reports it and the account syncs, so two quick confirmations could both pass the veto. A window is reserved
+ * synchronously between the veto and the send; it is released only when Kalshi answers that nothing filled, and kept
+ * (until the window is long closed) when anything filled or the send failed, since a timed-out order may still exist.
+ */
+export const RESERVATION_MS=20*60000;
+export class WindowReservations {
+  private held=new Map<string,number>();
+  has(ticker:string,now=Date.now()){this.prune(now);return this.held.has(ticker);}
+  /** False if the window is already reserved. */
+  reserve(ticker:string,now=Date.now()){this.prune(now);if(this.held.has(ticker))return false;this.held.set(ticker,now);return true;}
+  release(ticker:string){this.held.delete(ticker);}
+  tickers(now=Date.now()){this.prune(now);return [...this.held.keys()];}
+  private prune(now:number){for(const [t,at] of this.held)if(now-at>RESERVATION_MS)this.held.delete(t);}
+}
+
+/**
+ * realBook costs ~3 ms over ~2,000 account events, too much for every second of the engine loop. Its inputs change
+ * only when the account syncs (a new events array), the minute turns (day/week boundaries fall on minutes), the window
+ * changes, the account value moves, or a reservation is made, so the result is reused until one of those does.
+ */
+export class RealBookMemo {
+  private events:RealEvent[]|null=null;private key='';private value:ReturnType<typeof realBook>|null=null;
+  get(events:RealEvent[],accountValue:number|null,ticker:string|null,now:number,reserved:string[]=[]){
+    const key=`${accountValue}|${ticker}|${Math.floor(now/60000)}|${reserved.join(',')}`;
+    if(this.value===null||events!==this.events||key!==this.key){this.value=realBook(events,accountValue,ticker,now,reserved);this.events=events;this.key=key;}
+    return this.value;
+  }
 }
