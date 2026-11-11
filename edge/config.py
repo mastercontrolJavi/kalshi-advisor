@@ -13,7 +13,11 @@ ROOT = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class EdgeConfig:
     # EV gate (ev_gate.py)
-    MIN_EDGE: float = 0.01
+    # 3c. No bar is distinguishable from zero. Replayed on ~1,000 rounds of real asks (quant/edge_calibration.py,
+    # 2026-11-10): 3c makes +1.3c per contract if filled 1 s after the decision, +0.2c at 3 s and -0.4c at 5 s, each
+    # +/- 2.6c; 1c, 2c and 5c are negative at every delay. The earlier "+2.3c at 3c" filled in the same second as a
+    # BRTI print the engine often had not received yet. 3c stays because it trades least inside the calibration noise.
+    MIN_EDGE: float = 0.03
     BLOCK_MID_BAND: bool = True
     MID_BAND_LOW: float = 0.30
     MID_BAND_HIGH: float = 0.70
@@ -33,9 +37,19 @@ class EdgeConfig:
     VOL_HALFLIFE_S: float = 300.0
     VOL_FLOOR_ANN: float = 0.10
     VOL_MIN_SAMPLES: int = 120
-    TAIL_MULT: float = 1.15
+    # Residual sigma scale on top of fair_value's exact variance. 1.0 since 2026-11-10: the old 1.15 (before the final
+    # minute) and 0.90 (inside it) compensated for the continuous-time shortcut and the missing variance ratio that
+    # fair_value.py now computes exactly. On 8,518 held-out virtual rounds the exact formula at 1.0 beat the shortcut with
+    # its multipliers (log loss +0.54e-3, 95% +0.19..+0.86); a scale or fat-tail mixture fitted on the first half of the
+    # calendar did not beat 1.0 on the second (quant/edge_calibration.py). Change only with that report in hand.
+    TAIL_MULT: float = 1.0
+    TAIL_MULT_FINAL: float = 1.0  # inside the final minute (secs_left <= 60)
     # Decisions use p_engine only when this is set by hand after `python -m edge.score` says ENGINE: ADDS SIGNAL.
     ENGINE_VALIDATED: bool = False
+    # Paper fills use the first live ask at least this many seconds after the signal. 3 s is a person reading the signal
+    # and confirming an order; the model's disagreement with the market fades over ~1-5 s, so a 1 s fill (what an automated
+    # taker would get) flatters a hand-traded record. Set 1 only if orders are sent by a program.
+    SHADOW_FILL_DELAY_S: float = 3.0
     MODE: str = 'shadow'  # 'shadow' records paper fills; 'live' records decisions only (real fills come from Kalshi)
     BANKROLL: Optional[float] = None  # None: the Kalshi account value sent by the engine
     # Proxy-quality banner: fail when fewer than this share of the last 50 settled windows agree with Kalshi.
@@ -59,7 +73,9 @@ class EdgeConfig:
             raise ValueError('MIN_EDGE, KELLY_FRAC and MAX_RISK_FRAC must be in (0, 1]')
         if not (self.DAILY_STOP < 0 and self.WEEKLY_STOP < 0):
             raise ValueError('DAILY_STOP and WEEKLY_STOP must be negative fractions')
-        if self.MAX_WINDOWS < 1 or self.VOL_HALFLIFE_S <= 0 or self.TAIL_MULT <= 0 or self.VOL_MIN_SAMPLES < 2:
+        if self.SHADOW_FILL_DELAY_S < 0:
+            raise ValueError('SHADOW_FILL_DELAY_S must be >= 0')
+        if self.MAX_WINDOWS < 1 or self.VOL_HALFLIFE_S <= 0 or self.TAIL_MULT <= 0 or self.TAIL_MULT_FINAL <= 0 or self.VOL_MIN_SAMPLES < 2:
             raise ValueError('Invalid window cap or volatility setting')
 
 

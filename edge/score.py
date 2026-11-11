@@ -1,6 +1,6 @@
 """Go/no-go scorer for the edge layer:  python -m edge.score [--db data/edge.db]
 
-Brier scores (market_mid, p_base, p_math, q blended, q_raw, p_engine) overall and by minutes left; the directional
+Brier scores (market_mid, p_base, p_math, q blended, q_raw, p_engine) overall and by minutes left, all on the same rows; the directional
 call's hit rate against the "side the market favours" baseline; net P&L of TRADE fills with SE, 90% lower bound,
 halves and drawdown; the PASS verdict; the ENGINE verdict (q_raw only); and the settlement proxy check."""
 from __future__ import annotations
@@ -78,13 +78,31 @@ def verdict(f: Dict[str, Optional[float]]) -> str:
     return 'PASS' if ok else 'FAIL'
 
 
+def paired(rows: Sequence[dict], keys: Sequence[str] = MODELS) -> List[dict]:
+    """Snapshot rows on which every model in `keys` that was logged at all has a value, so the Brier columns are
+    compared on the same rows. TRADE rows are left out: they are picked for an extreme p_base, which is not a fair sample."""
+    snaps = [r for r in rows if r.get('kind') != 'trade']
+    cols = [k for k in keys if any(r.get(k) is not None for r in snaps)]
+    return [r for r in snaps if all(r.get(k) is not None for k in cols)]
+
+
 def engine_verdict(rows: Sequence[dict]) -> tuple:
-    """ENGINE: ADDS SIGNAL only if q_raw (the stack before Kalshi's mid is blended in) beats p_base on >= 500 windows."""
-    paired = [r for r in rows if r.get('q_raw') is not None and r.get('p_base') is not None]
-    windows = len({r['ticker'] for r in paired})
-    raw, base = brier(paired, 'q_raw'), brier(paired, 'p_base')
-    adds = windows >= ENGINE_MIN_WINDOWS and raw is not None and base is not None and raw[0] < base[0]
-    return ('ENGINE: ADDS SIGNAL' if adds else 'ENGINE: NOT PROVEN'), windows, raw, base
+    """ENGINE: ADDS SIGNAL only if q_raw (the stack before the Kalshi mid is blended in) beats p_base on >= 500 windows
+    with the one-sided 95% bound of the Brier difference below zero. The bound treats each window as one observation:
+    the snapshots inside a window share one outcome, so they are not independent evidence."""
+    rows = [r for r in rows if r.get('kind') != 'trade' and r.get('q_raw') is not None and r.get('p_base') is not None]
+    by_window: Dict[str, List[float]] = {}
+    for r in rows:
+        by_window.setdefault(r['ticker'], []).append((r['q_raw'] - r['outcome']) ** 2 - (r['p_base'] - r['outcome']) ** 2)
+    diffs = [sum(v) / len(v) for v in by_window.values()]
+    windows = len(diffs)
+    raw, base = brier(rows, 'q_raw'), brier(rows, 'p_base')
+    mean = sum(diffs) / windows if windows else None
+    upper = None
+    if windows > 1:
+        upper = mean + 1.645 * math.sqrt(sum((d - mean) ** 2 for d in diffs) / (windows - 1) / windows)
+    adds = windows >= ENGINE_MIN_WINDOWS and upper is not None and upper < 0
+    return ('ENGINE: ADDS SIGNAL' if adds else 'ENGINE: NOT PROVEN'), windows, raw, base, mean, upper
 
 
 def calibration(rows: Sequence[dict], key: str = 'p_base') -> Dict[str, List[tuple]]:
@@ -136,13 +154,14 @@ def score(db: sqlite3.Connection) -> Dict[str, object]:
     fills = [dict(r) for r in db.execute("SELECT * FROM signals WHERE kind='trade' AND fill_price IS NOT NULL AND outcome IS NOT NULL ORDER BY fill_ts")]
     windows = [dict(r) for r in db.execute('SELECT * FROM windows WHERE result IS NOT NULL')]
     out: Dict[str, object] = {'rows': len(settled), 'windows': len({r['ticker'] for r in settled})}
-    out['brier'] = {m: brier(settled, m) for m in MODELS}
-    out['brier_by_bucket'] = {name: {m: brier([r for r in settled if r['secs_left'] is not None and bucket_of(r['secs_left']) == name], m) for m in MODELS}
+    same = paired(settled)
+    out['brier'] = {m: brier(same, m) for m in MODELS}
+    out['brier_by_bucket'] = {name: {m: brier([r for r in same if r['secs_left'] is not None and bucket_of(r['secs_left']) == name], m) for m in MODELS}
                               for name, _, _ in BUCKETS}
     out['accuracy'] = accuracy(settled)
     out['calibration'] = calibration(settled)
     out['disagree'] = disagreements(settled)
-    out['trades_tail'] = [(r['ticker'], r['side'], r['fill_price'], r['p_base'], tail_rescore(r), r['outcome']) for r in fills]
+    out['trades_tail'] = [(r['ticker'], r['side'], r['fill_price'], r['p_base'], r.get('tail_mult') or 1.15, tail_rescore(r), r['outcome']) for r in fills]
     out['fills'] = fills_report(fills)
     out['verdict'] = verdict(out['fills'])
     out['engine'] = engine_verdict(settled)
@@ -163,6 +182,7 @@ def report(s: Dict[str, object]) -> List[str]:
     for name, scores in [('all', s['brier'])] + list(s['brier_by_bucket'].items()):
         lines.append(f'  {name:<8} ' + ''.join(f"{(_f(v[0]) + f' [{v[1]}]') if v else '—':>18}" for v in (scores[m] for m in MODELS)))
     lines.append('  note: q (blended) is ~90% Kalshi mid, so q vs market_mid is mostly the market grading itself; use q_raw.')
+    lines.append('  every column is scored on the same rows (snapshots where all logged models have a value); TRADE rows are excluded.')
     a = s['accuracy']
     lines += ['', f"Directional call: {_f(a['engine'], 3)} right on {a['n']} rows; on {a['n_paired']} rows with a mid: engine {_f(a['engine_paired'], 3)} vs market favourite {_f(a['market_favourite'], 3)}"]
     lines += ['', 'p_base calibration (bin: predicted -> realised YES rate, n)']
@@ -170,14 +190,15 @@ def report(s: Dict[str, object]) -> List[str]:
         lines.append(f'  {regime}: ' + ('; '.join(f'{b * 10}-{b * 10 + 10}%: {pred * 100:.0f}% -> {real * 100:.0f}% ({n})' for b, pred, real, n in bins) or '—'))
     d = s['disagree']
     lines.append(f"MODEL_DISAGREE: {d['n']} window-minutes settled; market's side won {_f(d['market_side'], 3)}, model's side {_f(d['model_side'], 3)}")
-    for ticker, side, price, p, p1, y in s['trades_tail']:
-        lines.append(f"  trade {ticker} {str(side).upper()} @ {price * 100:.1f}c: p_base {_f(p, 3)} (tail 1.15) -> {_f(p1, 3)} at tail 1.0; settled {'YES' if y else 'NO'}")
+    for ticker, side, price, p, tail, p1, y in s['trades_tail']:
+        lines.append(f"  trade {ticker} {str(side).upper()} @ {price * 100:.1f}c: p_base {_f(p, 3)} (tail {tail:g}) -> {_f(p1, 3)} at tail 1.0; settled {'YES' if y else 'NO'}")
     f = s['fills']
     cents = lambda x: '—' if x is None else f'{x * 100:+.2f}c'
     lines += ['', f"TRADE fills {f['n']}: net {cents(f['mean'])}/contract, SE {cents(f['se'])}, LB90 {cents(f['lb90'])}, halves {cents(f['first_half'])} / {cents(f['second_half'])}, max drawdown ${_f(f['max_drawdown'], 2)}, total ${_f(f['total'], 2)}"]
     lines.append(f"VERDICT: {s['verdict']}  (needs >= {PASS_MIN_FILLS} fills, net >= +1.0c, LB90 > 0, both halves > 0)")
-    label, windows, raw, base = s['engine']
-    lines.append(f"{label}  (q_raw {_f(raw[0]) if raw else '—'} vs p_base {_f(base[0]) if base else '—'} on {windows} windows; needs >= {ENGINE_MIN_WINDOWS})")
+    label, windows, raw, base, diff, upper = s['engine']
+    lines.append(f"{label}  (q_raw {_f(raw[0]) if raw else '—'} vs p_base {_f(base[0]) if base else '—'} on {windows} windows; difference per window {_f(diff)}, "
+                 f"95% upper bound {_f(upper)}; needs >= {ENGINE_MIN_WINDOWS} windows and an upper bound below 0)")
     p = s['proxy']
     agree = '—' if p['agree'] is None else '%.1f%%' % (p['agree'] * 100)
     lines.append(f"Proxy check: {agree} of {p['windows']} windows agree with Kalshi's settlement; mean |avg − Kalshi| ${_f(p['mean_abs_usd'], 2)}, max ${_f(p['max_abs_usd'], 2)}")

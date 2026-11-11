@@ -1,7 +1,8 @@
 """The edge layer's per-second decision: spot -> vol -> fair value (p_base, p_engine) -> EV gate -> risk governor -> log.
 
 Advisory only. The engine uses `gate` and `real_risk` from the response to veto real KXBTC15M orders; nothing here
-places an order. In shadow mode a TRADE is paper-filled at the next observed ask (the next tick) with the exact fee."""
+places an order. In shadow mode a TRADE is paper-filled with the exact fee at the first live ask SHADOW_FILL_DELAY_S
+(3 s) or more after the signal: the price a person acting on the signal could actually get."""
 from __future__ import annotations
 
 import math
@@ -124,10 +125,11 @@ class EdgeService:
         balance = _num(t.get('balance'))
         bankroll = self.cfg.BANKROLL if self.cfg.BANKROLL is not None else (balance or 0.0)
 
-        # Paper fill of the previous TRADE at the ask observed now (the next tick after the signal).
+        # Paper fill of the pending TRADE at the ask observed now, once SHADOW_FILL_DELAY_S has passed since the signal.
         filled = None
         pending = self.db.pending_fill(ticker)
-        if pending is not None and secs_left > 0:
+        # Never against a stale book: that ask was not available, and these fills are what the PASS verdict is scored on.
+        if pending is not None and secs_left > 0 and not t.get('book_stale') and ts_ms / 1000 - pending['ts'] >= self.cfg.SHADOW_FILL_DELAY_S - 1e-9:
             ask_now = yes_ask if pending['side'] == 'yes' else no_ask
             if ask_now is not None:
                 fee = self.db.fill(pending['id'], ask_now, ts_ms / 1000, pending['contracts'])
@@ -135,7 +137,8 @@ class EdgeService:
                 self.log({'event': 'shadow-fill', **filled, 'ticker': ticker})
 
         fv = fv_engine = None
-        sigma = self.vol.sigma_usd(spot_now) if spot_now else None
+        tail = self.cfg.TAIL_MULT_FINAL if secs_left <= 60 else self.cfg.TAIL_MULT
+        sigma = self.vol.sigma_usd(spot_now) * tail / self.vol.tail_mult if spot_now else None
         status, reason = 'OK', None
         if spot_now is None:
             status, reason = 'NO_DATA', 'no spot price this second'
@@ -195,7 +198,7 @@ class EdgeService:
         # Logging: one snapshot per window per minute-left bucket, plus every TRADE.
         minute = int(max(0.0, secs_left) // 60)
         z = (fv.mean_final - self.target) / fv.sd_final if fv and fv.sd_final > 1e-9 else None
-        row = {'ts': now_s, 'sd_final': fv.sd_final if fv else None, 'z': z, 'sigma_ann': self.vol.sigma_ann, 'tail_mult': self.cfg.TAIL_MULT, 'ticker': ticker, 'secs_left': secs_left, 'spot': spot_now, 'target': self.target, 'sigma': sigma,
+        row = {'ts': now_s, 'sd_final': fv.sd_final if fv else None, 'z': z, 'sigma_ann': self.vol.sigma_ann, 'tail_mult': tail, 'ticker': ticker, 'secs_left': secs_left, 'spot': spot_now, 'target': self.target, 'sigma': sigma,
                'regime': fv.regime if fv else None, 'p_base': p_base, 'p_engine': p_engine, 'p_math': p_math, 'q': q, 'q_raw': q_raw,
                'engine_call': engine_call, 'engine_confidence': engine_conf, 'market_mid': mid, 'yes_ask': yes_ask, 'no_ask': no_ask,
                'action': decision.action, 'side': decision.side, 'ask': decision.ask, 'edge': decision.edge, 'contracts': decision.contracts,

@@ -111,6 +111,8 @@ const benchmarkJournal=new BenchmarkJournal(journal.db),benchmark=new BenchmarkF
 const researchJournal=new ResearchJournal(journal.db);
 // Execution guardrails (execution-guard.ts, DECISIONS 70): the 500 ms stale-book breaker and the final-minute lock shadow log.
 const breaker=new StaleBreaker(),lockShadow=new LockShadow(journal.db);let lockShadowState=lockShadowScores(journal.db),lockShadowAt=0,lastBreaker=false;
+/** Real KXBTC15M orders only (these routes also serve sports): refused while the engine's own stale-book/BRTI breaker is on. */
+const staleVeto=(ticker:string)=>ticker.startsWith(EDGE_SERIES)&&breaker.stale?`Real KXBTC15M orders are paused: Kalshi book or BRTI feed is stale${breaker.reasons.length?` (${breaker.reasons.join(' · ')})`:''}`:null;
 // Your real fills in the current round, for the chart's buy/sell marks. Rebuilt only when the journal's events or the round change.
 let roundFillCache:{events:unknown;ticker:string|null;fills:{time:number;side:string;price:number;contracts:number;closedContracts:number}[]}={events:null,ticker:null,fills:[]};
 const roundFills=(events:ReturnType<typeof journal.realEvents>,ticker:string|null)=>{if(roundFillCache.events!==events||roundFillCache.ticker!==ticker)roundFillCache={events,ticker,fills:ticker?events.filter(e=>e.type==='fill'&&e.ticker===ticker&&e.side!=null&&e.price!=null).map(e=>({time:e.time,side:e.side!,price:e.price!,contracts:e.contracts,closedContracts:e.closedContracts??0})):[]};return roundFillCache.fills;};
@@ -239,19 +241,19 @@ const server=createServer(async(req,res)=>{
       if(path==='/real/quote'){const lock=state.guards?.locked?String(state.guards.reason??'guardrail lock'):null;
         const q=realCopy.quote(await paperMarket(typeof data.ticker==='string'?data.ticker:undefined,copyContext(data.copy)),data.side,data.dollars===undefined?undefined:Number(data.dollars),
           {enabled:config.realCopyEnabled,cap:config.realCopyMaxDollars,balance:account.balance,lock,now:Date.now()});
-        const veto=windowLocalVeto(q.ticker)??realOrderVeto(q.ticker,q.side,edgeLink.view());if(veto){log('real-order-vetoed',{stage:'quote',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
+        const veto=windowLocalVeto(q.ticker)??realOrderVeto(q.ticker,q.side,edgeLink.view(),undefined,{limit:q.limit,count:q.count})??staleVeto(q.ticker);if(veto){log('real-order-vetoed',{stage:'quote',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
         const {context:_c,...quote}=q;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,quote,balance:account.balance}));return;}
       if(path==='/real/order'){const q=realCopy.take(data.token,Date.now());
         // Checked again at the moment of sending: the switch or a lock may have changed during the 30 s.
         if(!config.realCopyEnabled)throw new Error('Real copy orders were switched off');if(state.guards?.locked)throw new Error(`Real orders are paused: ${state.guards.reason??'guardrail lock'}`);
         // Edge veto (DECISIONS 75), checked again at the moment of sending: gate TRADE on this side + governor + sidecar online.
-        const veto=windowLocalVeto(q.ticker)??realOrderVeto(q.ticker,q.side,edgeLink.view());if(veto){log('real-order-vetoed',{stage:'order',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
+        const veto=windowLocalVeto(q.ticker)??realOrderVeto(q.ticker,q.side,edgeLink.view(),undefined,{limit:q.limit,count:q.count})??staleVeto(q.ticker);if(veto){log('real-order-vetoed',{stage:'order',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
         // Reserve the window before any await, so a second confirmation for the same window cannot also reach Kalshi.
         const window=q.ticker.startsWith(EDGE_SERIES);
         if(window&&!reservations.reserve(q.ticker)){const reason='A real order for this window is already in flight or filled (one position per window)';log('real-order-vetoed',{stage:'order',ticker:q.ticker,side:q.side,reason});throw new Error(reason);}
         const body=orderBody(q,newClientOrderId());log('real-order-sent',{...body,cost:q.cost,cap:q.cap,copy:q.context.copy??null});
         let r:any;try{r=await client.post('/portfolio/events/orders',body);}catch(e){/* kept reserved: a timeout may still have placed the order */log('real-order-error',{client_order_id:body.client_order_id,message:(e as Error).message});throw e;}
-        const result=describeFill(q,r);if(window&&!(result.filled>0))reservations.release(q.ticker);log('real-order-result',{client_order_id:body.client_order_id,order_id:r.order_id,fill_count:r.fill_count,remaining_count:r.remaining_count,average_fill_price:r.average_fill_price,average_fee_paid:r.average_fee_paid});
+        const result=describeFill(q,r);if(window&&r.fill_count!=null&&Number.isFinite(Number(r.fill_count))&&Number(r.fill_count)===0)reservations.release(q.ticker);log('real-order-result',{client_order_id:body.client_order_id,order_id:r.order_id,fill_count:r.fill_count,remaining_count:r.remaining_count,average_fill_price:r.average_fill_price,average_fee_paid:r.average_fee_paid});
         void account.onFill();res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,order_id:r.order_id,...result}));return;}
       if(path==='/sim/reset'){const account=desk.reset(Number(data.bankroll));log('paper-account',account);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,account}));return;}
       if(path==='/sim/order'){const result=desk.order({side:data.side,action:data.action,contracts:data.contracts===undefined?undefined:Number(data.contracts),dollars:data.dollars===undefined?undefined:Number(data.dollars)},await paperMarket(typeof data.ticker==='string'?data.ticker:undefined,copyContext(data.copy)));
@@ -328,12 +330,16 @@ async function settleHours(){
 // (before the loop runs); after that refits and the calibration report run on a worker thread (calibration-worker.ts):
 // on this thread they froze the 4 Hz loop for 2–7 s several times a round and the dashboard went stale (2026-10-11).
 let lateStack:StackFit=fitStack(lateSamples(journal.db,new Map<string,StackSample[]>()));
-const calWorker=new Worker(new URL('./calibration-worker.ts',import.meta.url),{workerData:{path:process.env.ADVISOR_DB??'./data/advisor.db'}});
-let calBusy=false;
-calWorker.on('message',(m:any)=>{calBusy=false;for(const [e,d] of m.logs??[])log(e,d);if(m.error){log('calibration-error',{message:m.error});return;}
-  if(m.stack)stack=m.stack;if(m.lateStack)lateStack=m.lateStack;if(m.basis)basisState=m.basis;if(m.calibration)calibration=m.calibration;if(m.benchmarkCalibration)benchmarkCalibration=m.benchmarkCalibration;});
-calWorker.on('error',e=>{calBusy=false;log('calibration-worker-error',{message:e.message});});
-const calibrationTimer=setInterval(()=>{loadVerdict();if(!calBusy){calBusy=true;calWorker.postMessage({kind:'tick',clockOffset:client.clockOffset});}},30000);
+let calWorker:Worker|null=null,calBusy=false,calRestarts=0;
+function startCal(){
+  if(stopping)return;const worker=new Worker(new URL('./calibration-worker.ts',import.meta.url),{workerData:{path:process.env.ADVISOR_DB??'./data/advisor.db'}});calWorker=worker;calBusy=false;
+  worker.on('message',(m:any)=>{calBusy=false;calRestarts=0;for(const [e,d] of m.logs??[])log(e,d);if(m.error){log('calibration-error',{message:m.error});return;}
+    if(m.stack)stack=m.stack;if(m.lateStack)lateStack=m.lateStack;if(m.basis)basisState=m.basis;if(m.calibration)calibration=m.calibration;if(m.benchmarkCalibration)benchmarkCalibration=m.benchmarkCalibration;});
+  worker.on('error',e=>{calBusy=false;log('calibration-worker-error',{message:e.message});});
+  worker.on('exit',code=>{if(calWorker!==worker)return;calWorker=null;calBusy=false;if(stopping)return;const wait=Math.min(60000,5000*2**Math.min(calRestarts++,4));log('calibration-worker-exit',{code,restartInMs:wait});setTimeout(startCal,wait);});
+}
+startCal();
+const calibrationTimer=setInterval(()=>{loadVerdict();if(calWorker&&!calBusy){calBusy=true;calWorker.postMessage({kind:'tick',clockOffset:client.clockOffset});}},30000);
 let priceFits:PriceFit[]=PRICE_HORIZONS.map(h=>emptyPriceFit(h)),priceScores:ReturnType<PriceForecastJournal['scores']>={},priceState:any=null;
 const savedPriceFits=journal.get<PriceFit[]>('shortTermFit:v1',[]);
 for(const saved of savedPriceFits)if(saved.version===PRICE_VERSION&&PRICE_HORIZONS.includes(saved.horizon as 30|60|180)&&saved.weights?.length===8&&saved.weights.every(Number.isFinite)&&Number.isFinite(saved.noise))priceFits=priceFits.map(f=>f.horizon===saved.horizon?saved:f);
@@ -549,6 +555,6 @@ const loop=setInterval(()=>{
 },100);
 // The flow worker writes its last bars and closes its database on 'stop', then exits itself; it gets 2 s before the process
 // ends without it. The journal stays open until then, since the worker's log messages are written to it.
-const shutdown=()=>{if(stopping)process.exit(0);stopping=true;refresher.stop();loopLag.stop();void calWorker.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();if(orderFlow)microstructure.stop();recordResearch(()=>researchJournal.flush());kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();
+const shutdown=()=>{if(stopping)process.exit(0);stopping=true;refresher.stop();loopLag.stop();void calWorker?.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();if(orderFlow)microstructure.stop();recordResearch(()=>researchJournal.flush());kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();
   const exit=()=>{journal.db.close();process.exit(0);},w=flowWorker;if(!w)return exit();w.once('exit',exit);setTimeout(exit,2000);w.postMessage({kind:'stop'});};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
