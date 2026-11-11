@@ -9,6 +9,11 @@ const T='KXBTC15M-26NOV041215-15';
 describe('edge spot',()=>{
   const venues=[{name:'Coinbase',mid:100,healthy:true},{name:'Kraken',mid:102,healthy:true},{name:'Bitstamp',mid:110,healthy:false},{name:'Gemini',mid:999,healthy:true}];
   it('uses a fresh BRTI print',()=>expect(edgeSpot({time:5000,price:101},venues,5000)).toMatchObject({spot:101,source:'brti',degraded:false,carried:false}));
+  it('reports which second the print belongs to, so the sidecar never counts a print that has not arrived as known',()=>{
+    expect(edgeSpot({time:5000,price:101},venues,5040).spotTime).toBe(5000);  // this second's print
+    expect(edgeSpot({time:4000,price:101},venues,5040).spotTime).toBe(4000);  // still last second's print: fresh enough to use, but one second behind
+    expect(edgeSpot({time:1000,price:101},venues,5000,1).spotTime).toBeNull();  // the proxy is not a settlement print at all
+  });
   it('treats a 1-s-old print as normal publish lag and a 2-s-old one as carried',()=>{expect(edgeSpot({time:4000,price:101},venues,5000).carried).toBe(false);expect(edgeSpot({time:3000,price:101},venues,5000).carried).toBe(true);});
   it('falls back to the Coinbase/Kraken/Bitstamp median, degraded, Gemini excluded',()=>expect(edgeSpot({time:1000,price:101},venues,5000,1)).toMatchObject({spot:102,source:'proxy',degraded:true,venues:2}));
 });

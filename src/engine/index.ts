@@ -521,7 +521,7 @@ const loop=setInterval(()=>{
       // Edge sidecar tick: once per new second, never awaited. q_raw = the stack with Kalshi's mid taken out (mid:null makes
       // the kalshiShift feature 0), so the scorer can grade the engine without the market grading itself.
       if(newSecond){const brti=brtiHistory.at(-1)??null,sp=edgeSpot(brti,venueStates,time,basis);
-        edgeLink.tick({ts_ms:time,ticker:market.ticker,close_ms:close,secs_left:actualTau,spot:sp.spot,source:sp.source,degraded:sp.degraded,carried:sp.carried,venues:sp.venues,
+        edgeLink.tick({ts_ms:time,ticker:market.ticker,close_ms:close,secs_left:actualTau,spot:sp.spot,spot_ts_ms:sp.spotTime,source:sp.source,degraded:sp.degraded,carried:sp.carried,venues:sp.venues,
           target:confirmed?market.floor_strike:null,yes_ask:bv.yesAsk,no_ask:bv.noAsk,mid,q,q_raw:stackInputs?predict(forecast,{...stackInputs,mid:null}).p:null,p_math:model?.p??null,
           engine_call:liveCall?.direction??null,engine_confidence:liveCall?.confidence??null,
           final_prints:actualTau<=61?brtiHistory.filter(p=>p.time>=close-60000&&p.time<close).map(p=>[p.time,p.price]):null,
