@@ -136,8 +136,23 @@ class EdgeService:
                 filled = {'id': pending['id'], 'side': pending['side'], 'price': ask_now, 'contracts': pending['contracts'], 'fee': fee}
                 self.log({'event': 'shadow-fill', **filled, 'ticker': ticker})
 
+        # The model is priced as of the second the spot print belongs to, not the tick's second. The print for the
+        # current second has not arrived at about a third of ticks: the newest print is then last second's, and the
+        # current settlement slot is still unknown. Pricing from the tick's second would count that slot as already
+        # printed and drop its variance (at 1 s left: all of it). The proxy is never a settlement print, so with it
+        # the current slot always counts as unseen. Without spot_ts_ms (an older engine) the carried flag decides.
+        spot_ts = _num(t.get('spot_ts_ms'))
+        if source != 'brti':
+            print_s = ts - 1
+        elif spot_ts is not None:
+            print_s = min(ts, int(spot_ts // 1000))
+        else:
+            print_s = ts - 1 if carried_in else ts
+        spot_age = ts - print_s
+        left_model = max(0.0, float(close_ts - print_s)) if spot_age > 0 else secs_left
+
         fv = fv_engine = None
-        tail = self.cfg.TAIL_MULT_FINAL if secs_left <= 60 else self.cfg.TAIL_MULT
+        tail = self.cfg.TAIL_MULT_FINAL if left_model <= 60 else self.cfg.TAIL_MULT
         sigma = self.vol.sigma_usd(spot_now) * tail / self.vol.tail_mult if spot_now else None
         status, reason = 'OK', None
         if spot_now is None:
@@ -147,11 +162,11 @@ class EdgeService:
         elif not self.vol.ready:
             status, reason = 'WARMING', f'volatility warming ({self.vol.count}/{self.vol.min_samples} s)'
         else:
-            fixed = self.tracker.fixed_before(ts) if secs_left <= 60 else []
-            fv = fair_value(spot_now, self.target, secs_left, sigma, fixed, 0.0)
+            fixed = self.tracker.fixed_before(print_s) if left_model <= 60 else []
+            fv = fair_value(spot_now, self.target, left_model, sigma, fixed, 0.0)
             if q_raw is not None:
-                drift = engine_drift(q_raw, spot_now, self.target, secs_left, sigma, fixed)
-                fv_engine = fair_value(spot_now, self.target, secs_left, sigma, fixed, drift)
+                drift = engine_drift(q_raw, spot_now, self.target, left_model, sigma, fixed)
+                fv_engine = fair_value(spot_now, self.target, left_model, sigma, fixed, drift)
 
         p_base = fv.p_yes if fv else None
         p_engine = fv_engine.p_yes if fv_engine else None
@@ -227,7 +242,7 @@ class EdgeService:
             'p_used': 'engine' if use_engine else 'base', 'regime': fv.regime if fv else None, 'sigma': sigma,
             'sigma_ann': self.vol.sigma_ann, 'status': status, 'ticker': ticker, 'ts': now_s, 'secs_left': secs_left,
             'spot': spot_now, 'target': self.target, 'mean_final': fv.mean_final if fv else None, 'sd_final': fv.sd_final if fv else None,
-            'final_avg': self.tracker.average(), 'final_n': self.tracker.n, 'degraded': degraded, 'carried': carried,
+            'final_avg': self.tracker.average(), 'final_n': self.tracker.n, 'degraded': degraded, 'carried': carried, 'spot_age_s': spot_age,
             'source': last.source if last else None, 'market_mid': mid, 'yes_ask': yes_ask, 'no_ask': no_ask,
             'engine': {'call': engine_call, 'confidence': engine_conf},
             'gate': real_gate.as_dict(), 'shadow_gate': gate.as_dict(),

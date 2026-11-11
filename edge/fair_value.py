@@ -9,9 +9,13 @@ h-second BRTI move in units of the 1-second variance. VR(h) is the measured vari
 returns are slightly positively autocorrelated, so a 5-minute move is ~23% more variable than 300 one-second moves.
 
   secs_left > 60:  mean = spot + drift; the 60 prints are (secs_left - 60) .. (secs_left - 1) seconds away
-  secs_left <= 60: n fixed prints, m = ceil(secs_left) slots left. The print for the current second IS the spot, so it
-                   is known; only the m - 1 later prints carry variance.
+  secs_left <= 60: n fixed prints, m = ceil(secs_left) slots left. The spot IS the print for the first of those slots,
+                   so it is known; only the m - 1 later prints carry variance.
                    mean = (sum(fixed) + m*(spot + drift)) / (n + m)
+
+secs_left is therefore measured from the second the spot print belongs to. When the newest print is last second's (the
+current one has not arrived, about a third of ticks), the caller must pass the time left from THAT print and the prints
+before it; service.py does. Passing the tick's own second instead would treat a print that has not happened as known.
 
 History (quant/edge_calibration.py, 2026-11-10): the old shortcut sd = (r/60)*sigma*sqrt(r/3) counted the current print
 as unknown, overstating the final-minute variance by 2.5% at 60 s left, 10% at 15 s, 28% at 5 s and 100% at 1 s, and it
@@ -108,8 +112,8 @@ class FairValue:
 
 def fair_value(spot: float, target: float, secs_left: float, sigma: float, fixed_prints: Sequence[float] = (), drift_usd: float = 0.0,
                variogram: Variogram = VARIOGRAM) -> FairValue:
-    """sigma is dollars per sqrt(second) at the 1-second scale. Inside the final minute `spot` must be the print for the
-    current second and `fixed_prints` the prints of the window's earlier seconds."""
+    """sigma is dollars per sqrt(second) at the 1-second scale. `secs_left` runs from the second the spot print belongs
+    to; inside the final minute `fixed_prints` are the window's prints from before that second."""
     if not (spot > 0 and target > 0 and sigma >= 0 and math.isfinite(secs_left)):
         raise ValueError('invalid fair-value inputs')
     secs_left = max(0.0, secs_left)

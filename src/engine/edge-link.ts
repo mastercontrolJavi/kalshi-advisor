@@ -17,11 +17,16 @@ export interface EdgeReply {action:'TRADE'|'NO_EDGE'|'BLOCKED'|'MODEL_DISAGREE';
 /** ageMs: age of the last decision (/tick reply); aliveMs: time since the sidecar last answered anything (tick or health). */
 export interface EdgeView extends Partial<EdgeReply> {status:string;receivedAt:number|null;ageMs:number|null;aliveMs:number|null;error:string|null;sent:number;failures:number}
 
-/** Spot for the edge layer: Kalshi's BRTI 1-s print when fresh, else the median of Coinbase/Kraken/Bitstamp (degraded). */
+/**
+ * Spot for the edge layer: Kalshi's BRTI 1-s print when fresh, else the median of Coinbase/Kraken/Bitstamp (degraded).
+ * spotTime is the print's own timestamp. About a third of the time the print for the current second has not arrived
+ * when the tick goes out, so the newest print is last second's: the sidecar must know that, or it would treat a print
+ * that has not happened yet as already known (PR #12 review). null for the proxy, which is never a settlement print.
+ */
 export function edgeSpot(brti:{time:number;price:number}|null,venues:{name:string;mid:number|null;healthy:boolean}[],time:number,basis=0){
-  if(brti&&brti.price>0&&time-brti.time<=2000)return {spot:brti.price,source:'brti' as const,degraded:false,carried:brti.time<time-1000,venues:null as number|null};
+  if(brti&&brti.price>0&&time-brti.time<=2000)return {spot:brti.price,source:'brti' as const,degraded:false,carried:brti.time<time-1000,venues:null as number|null,spotTime:brti.time as number|null};
   const mids=venues.filter(v=>v.healthy&&v.mid!==null&&['Coinbase','Kraken','Bitstamp'].includes(v.name)).map(v=>v.mid!),m=median(mids);
-  return {spot:m===null?null:m+basis,source:'proxy' as const,degraded:true,carried:false,venues:mids.length};
+  return {spot:m===null?null:m+basis,source:'proxy' as const,degraded:true,carried:false,venues:mids.length,spotTime:null as number|null};
 }
 
 /** Monday of the ET week containing `day` (YYYY-MM-DD). */

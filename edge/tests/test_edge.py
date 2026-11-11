@@ -394,6 +394,47 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(live['filled']['price'], 0.91)
         self.assertEqual(CFG.SHADOW_FILL_DELAY_S, 3.0)  # shipped default; the other tests use 1 s to stay short
 
+    def test_a_print_that_has_not_arrived_stays_uncertain(self):
+        # 5 s left. Same prices, same tick second; the only difference is which second the newest BRTI print belongs to.
+        def at_five_seconds(**last):
+            svc = self.make()
+            for ts in range(100, 995):
+                svc.tick(tick(ts, spot=100000, spot_ts_ms=ts * 1000))
+            return svc.tick(tick(995, spot=100000, **last))
+        current = at_five_seconds(spot_ts_ms=995_000)   # this second's print: 4 prints still to come
+        behind = at_five_seconds(spot_ts_ms=994_000)    # last second's print: this second's and 4 more still to come
+        self.assertEqual((current['spot_age_s'], behind['spot_age_s']), (0, 1))
+        flat = current['sigma']
+        self.assertAlmostEqual(current['sd_final'], flat * math.sqrt(VARIOGRAM.final_sum(5)) / 60)
+        self.assertAlmostEqual(behind['sd_final'], flat * math.sqrt(VARIOGRAM.final_sum(6)) / 60)
+        self.assertGreater(behind['sd_final'], current['sd_final'] * 1.3)
+        self.assertEqual(behind['mean_final'], current['mean_final'])  # the expectation does not move, only the doubt
+        # the proxy is never a settlement print, and an engine that sends no timestamp is judged by its carried flag
+        self.assertEqual(at_five_seconds(source='proxy', degraded=True)['spot_age_s'], 1)
+        self.assertEqual(at_five_seconds(carried=True)['spot_age_s'], 1)
+        self.assertEqual(at_five_seconds()['spot_age_s'], 0)
+
+    def test_one_second_left_is_not_decided_by_a_print_that_has_not_happened(self):
+        def last_second(spot_ts_ms):
+            svc = self.make()
+            for ts in range(100, 999):
+                svc.tick(tick(ts, spot=100000, spot_ts_ms=ts * 1000))
+            # every print so far is 100,000.00 and the target is one cent higher: YES needs the last print at 100,000.60+
+            return svc.tick(tick(999, spot=100000, spot_ts_ms=spot_ts_ms, target=100000.01, yes_ask=0.04, no_ask=0.97, mid=0.035))
+        known = last_second(999_000)
+        self.assertEqual((known['sd_final'], known['p_base']), (0.0, 0.001))  # the last print is in: settled NO by a cent
+        unseen = last_second(998_000)  # the same price, but it is still the print for the second before
+        self.assertGreater(unseen['sd_final'], 0)
+        self.assertTrue(0.2 < unseen['p_base'] < 0.5, unseen['p_base'])  # one print to come and 60c to make up: open
+
+    def test_a_late_print_just_before_the_window_is_priced_as_before_the_window(self):
+        svc = self.make()
+        for ts in range(100, 940):
+            svc.tick(tick(ts, spot=100000, spot_ts_ms=ts * 1000))
+        r = svc.tick(tick(940, spot=100000, spot_ts_ms=939_000))  # 60 s left on the clock, but no window print seen yet
+        self.assertEqual(r['regime'], 'pre_window')
+        self.assertAlmostEqual(r['sd_final'], r['sigma'] * math.sqrt(VARIOGRAM.pre_window(1)))
+
     def test_stale_book_blocks(self):
         svc = self.make()
         for ts in range(100, 300):
