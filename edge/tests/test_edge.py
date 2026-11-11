@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from edge.config import EdgeConfig, load_config
 from edge.db import EdgeDB
 from edge.ev_gate import evaluate, market_prob, order_fee, taker_fee
-from edge.fair_value import FinalWindowTracker, engine_drift, fair_value
+from edge.fair_value import VARIOGRAM, FinalWindowTracker, Variogram, engine_drift, fair_value
 from edge.risk import Blackout, Book, RiskGovernor, blackout_horizon_warning, load_blackouts
 from edge.score import calibration, disagreements, engine_verdict, fills_report, score, tail_rescore, verdict
 from edge.service import EdgeService
@@ -42,8 +42,36 @@ class FairValueTests(unittest.TestCase):
 
     def test_pre_window_formula(self):
         fv = fair_value(100100, 100000, 360, 2.0)
-        self.assertAlmostEqual(fv.sd_final, 2.0 * math.sqrt(320))
         self.assertEqual(fv.regime, 'pre_window')
+        # exact double sum over the 60 prints, 300..359 s away, with the measured variance ratio
+        v, offs = VARIOGRAM.v, range(300, 360)
+        brute = sum((v(i) + v(j) - v(abs(i - j))) / 2 for i in offs for j in offs) / 3600
+        self.assertAlmostEqual(fv.sd_final, 2.0 * math.sqrt(brute), places=6)
+        # with independent seconds (ratio 1) it is the textbook discrete result: lead + 59*119/360
+        flat = Variogram(((1, 1.0), (900, 1.0)))
+        self.assertAlmostEqual(fair_value(100100, 100000, 360, 2.0, variogram=flat).sd_final, 2.0 * math.sqrt(300 + 59 * 119 / 360))
+        self.assertGreater(fv.sd_final, 2.0 * math.sqrt(320))  # wider than the old shortcut: 5-minute moves vary ~23% more
+
+    def test_final_minute_counts_the_current_print_as_known(self):
+        flat = Variogram(((1, 1.0), (900, 1.0)))
+        for m in (2, 5, 15, 30, 60):
+            fv = fair_value(100000, 100000, m, 3.0, [100000.0] * (60 - m), variogram=flat)
+            self.assertAlmostEqual(fv.sd_final, 3.0 * math.sqrt((m - 1) * m * (2 * m - 1) / 6) / 60)  # sum of min(i, j), i, j = 1..m-1
+        # one second left: the last print is the spot itself, so the average is already decided
+        self.assertEqual(fair_value(100010, 100000, 1, 5.0, [100000.0] * 59).sd_final, 0.0)
+        self.assertEqual(fair_value(99990, 100000, 1, 5.0, [100000.0] * 59).p_yes, 0.001)
+        # a fraction of a second into second 15-before-close is still 15 slots (the print for this second plus 14 to come)
+        a, b = fair_value(100020, 100000, 14.3, 4.0, [100000.0] * 45), fair_value(100020, 100000, 15, 4.0, [100000.0] * 45)
+        self.assertEqual((a.mean_final, a.sd_final), (b.mean_final, b.sd_final))
+        self.assertAlmostEqual(a.mean_final, (45 * 100000 + 15 * 100020) / 60)
+
+    def test_variogram_rejects_bad_knots(self):
+        for knots in ((), ((5, 1.0), (1, 1.1)), ((1, 0.0),), ((0, 1.0),)):
+            with self.assertRaises(ValueError):
+                Variogram(knots)
+        self.assertEqual(VARIOGRAM.ratio(1), 1.0)
+        self.assertEqual(VARIOGRAM.ratio(5000), VARIOGRAM.ratio(900))
+        self.assertLess(VARIOGRAM.ratio(10), VARIOGRAM.ratio(100))
 
     def test_zero_sd_and_clamp(self):
         self.assertEqual(fair_value(100000, 100000, 0, 5.0, [100000.0] * 60).p_yes, 0.999)  # tie resolves YES
@@ -106,9 +134,9 @@ class GateTests(unittest.TestCase):
         self.assertEqual(evaluate(0.80, 0.55, 0.47, 1000, replace(CFG, BLOCK_MID_BAND=False)).action, 'TRADE')
 
     def test_no_trade_below_min_edge(self):
-        # q 0.90 vs ask 0.88 + fee 0.0074 -> edge 0.0126; q 0.895 -> 0.0076 < 0.01
-        self.assertEqual(evaluate(0.90, 0.88, 0.13, 1000, CFG).action, 'TRADE')
-        d = evaluate(0.895, 0.88, 0.13, 1000, CFG)
+        # q 0.92 vs ask 0.88 + fee 0.0074 -> edge 0.0326; q 0.91 -> 0.0226 < 0.03
+        self.assertEqual(evaluate(0.92, 0.88, 0.13, 1000, CFG).action, 'TRADE')
+        d = evaluate(0.91, 0.88, 0.13, 1000, CFG)
         self.assertEqual(d.action, 'NO_EDGE')
 
     def test_size_capped_at_one_percent(self):
@@ -126,7 +154,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual((d.action, d.side), ('BLOCKED', 'yes'))
         self.assertIn('longshot', d.reason)
         self.assertEqual(evaluate(0.999, 0.99, 0.02, 100000, CFG).action, 'NO_EDGE')  # 99c allowed, just no edge after fee
-        self.assertEqual(evaluate(0.999, 0.97, 0.04, 100000, CFG).action, 'TRADE')
+        self.assertEqual(evaluate(0.999, 0.96, 0.05, 100000, CFG).action, 'TRADE')
 
     def test_model_disagree(self):
         d = evaluate(0.99, 0.80, 0.21, 10000, CFG, market=0.80)
@@ -237,6 +265,29 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual(score(synthetic_db(0, 0, windows=600, raw_better=False))['engine'][0], 'ENGINE: NOT PROVEN')
         self.assertEqual(score(synthetic_db(0, 0, windows=400, raw_better=True))['engine'][0], 'ENGINE: NOT PROVEN')
 
+    def test_engine_verdict_needs_a_confident_margin(self):
+        # q_raw ahead on average (Brier 0.244 vs 0.250), but by less than its window-to-window noise over 600 windows:
+        # right by a lot on 43% of windows, wrong by a little on 57%.
+        db = EdgeDB(':memory:')
+        for i in range(600):
+            y, good = i % 2, i % 100 < 43
+            db.insert_signal({'ts': i, 'ticker': f'W{i}', 'kind': 'snapshot', 'action': 'NO_EDGE', 'mode': 'shadow', 'secs_left': 300,
+                              'p_base': 0.5, 'q_raw': (0.7 if y else 0.3) if good else (0.4 if y else 0.6), 'outcome': y})
+        label, windows, raw, base, diff, upper = score(db.db)['engine']
+        self.assertLess(raw[0], base[0])  # the old rule (any strict improvement) would have said ADDS SIGNAL
+        self.assertEqual((label, windows), ('ENGINE: NOT PROVEN', 600))
+        self.assertGreater(upper, 0)
+
+    def test_brier_columns_share_rows_and_skip_trades(self):
+        db = EdgeDB(':memory:')
+        base = {'action': 'NO_EDGE', 'mode': 'shadow', 'secs_left': 300, 'outcome': 1}
+        db.insert_signal({**base, 'ts': 1, 'ticker': 'A', 'kind': 'snapshot', 'market_mid': 0.6, 'p_base': 0.7})
+        db.insert_signal({**base, 'ts': 2, 'ticker': 'B', 'kind': 'snapshot', 'market_mid': None, 'p_base': 0.999})  # one-sided book: no mid
+        db.insert_signal({**base, 'ts': 3, 'ticker': 'C', 'kind': 'trade', 'action': 'TRADE', 'market_mid': 0.9, 'p_base': 0.99})
+        b = score(db.db)['brier']
+        self.assertEqual((b['market_mid'][1], b['p_base'][1]), (1, 1))
+        self.assertAlmostEqual(b['p_base'][0], 0.09)
+
 
 def tick(ts, **kw):
     base = {'ts_ms': ts * 1000, 'ticker': 'KXBTC15M-TEST', 'close_ms': 1000 * 1000, 'secs_left': 1000 - ts, 'spot': 100000 + (ts % 7),
@@ -249,7 +300,7 @@ def tick(ts, **kw):
 
 class ServiceTests(unittest.TestCase):
     def make(self, **cfg):
-        return EdgeService(replace(CFG, VOL_MIN_SAMPLES=5, **cfg), EdgeDB(':memory:'), RiskGovernor(CFG, []), log=lambda *_: None)
+        return EdgeService(replace(CFG, **{'VOL_MIN_SAMPLES': 5, 'SHADOW_FILL_DELAY_S': 1.0, **cfg}), EdgeDB(':memory:'), RiskGovernor(CFG, []), log=lambda *_: None)
 
     def test_window_logging_and_settle(self):
         svc = self.make()
@@ -313,8 +364,35 @@ class ServiceTests(unittest.TestCase):
         rows = svc.db.rows("SELECT * FROM signals WHERE kind='disagree'")
         self.assertGreaterEqual(len(rows), 1)
         self.assertIsNotNone(rows[0]['z'])
-        self.assertAlmostEqual(rows[0]['tail_mult'], 1.15)
+        self.assertAlmostEqual(rows[0]['tail_mult'], CFG.TAIL_MULT)
         self.assertGreater(rows[0]['sd_final'], 0)
+
+    def test_final_minute_uses_its_own_tail(self):
+        svc = self.make(TAIL_MULT=1.2, TAIL_MULT_FINAL=0.9)
+        for ts in range(100, 939):
+            before = svc.tick(tick(ts))
+        inside = svc.tick(tick(941))  # 59 s left
+        self.assertAlmostEqual(inside['sigma'] / before['sigma'], 0.9 / 1.2, places=2)
+        rows = svc.db.rows("SELECT * FROM signals ORDER BY ts")
+        self.assertAlmostEqual(rows[0]['tail_mult'], 1.2)
+        self.assertAlmostEqual(rows[-1]['tail_mult'], 0.9)
+        self.assertEqual((CFG.TAIL_MULT, CFG.TAIL_MULT_FINAL), (1.0, 1.0))  # shipped: no multiplier at any horizon
+
+    def test_shadow_fill_waits_for_the_delay_and_a_live_book(self):
+        svc = self.make(BANKROLL=1000.0, SHADOW_FILL_DELAY_S=3.0)
+        noon = et_to_ts(datetime(2026, 11, 4, 13))
+        for ts in range(100, 950):
+            svc.tick(tick(ts, spot=100000, yes_ask=0.5, no_ask=0.5), received=noon)
+        r = svc.tick(tick(950, spot=100400, yes_ask=0.90, no_ask=0.11, mid=0.95), received=noon)
+        self.assertEqual(r['action'], 'TRADE')
+        early = svc.tick(tick(951, spot=100400, yes_ask=0.89, no_ask=0.12, mid=0.95), received=noon)
+        self.assertIsNone(early['filled'])  # 1 s after the signal: nobody acting on it by hand has an order in yet
+        svc.tick(tick(952, spot=100400, yes_ask=0.89, no_ask=0.12, mid=0.95), received=noon)
+        stale = svc.tick(tick(953, spot=100400, yes_ask=0.60, no_ask=0.41, mid=0.95, book_stale=True, stale_reason='Kalshi book 20 s behind'), received=noon)
+        self.assertIsNone(stale['filled'])  # 3 s have passed, but 60c was not a price anyone could buy at
+        live = svc.tick(tick(954, spot=100400, yes_ask=0.91, no_ask=0.10, mid=0.95), received=noon)
+        self.assertEqual(live['filled']['price'], 0.91)
+        self.assertEqual(CFG.SHADOW_FILL_DELAY_S, 3.0)  # shipped default; the other tests use 1 s to stay short
 
     def test_stale_book_blocks(self):
         svc = self.make()

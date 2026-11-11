@@ -8,6 +8,6 @@ Verified command against [Tailscale Serve reference](https://tailscale.com/docs/
 4. Run `tailscale serve status`, then open its `https://<computer>.<tailnet>.ts.net` URL on the phone while Tailscale is connected. Enter the same dashboard Basic-auth login. Save it to the home screen if desired.
 5. The same HTTPS origin proxies `/ws`, so live updates use WSS without exposing a second port. Auth remains required on static assets, API and WS. No Funnel is needed.
 
-Stop sharing with `tailscale serve reset`. The laptop must remain powered, awake, connected and running the app; keep-awake does not guarantee operation with the lid closed. The launcher requests Windows system/display wake locks, or runs macOS `caffeinate -dimsu`. Network outages still suppress advice.
+Stop sharing with `tailscale serve reset`. The laptop must remain powered, awake, connected and running the app; keep-awake does not guarantee operation with the lid closed. The launcher requests a Windows system wake lock (the display may still turn off), or runs macOS `caffeinate -dimsu`. Network outages still suppress advice.
 
 Phone notifications and audio depend on browser permission and platform support. Tap Enable browser audio and enable the desired settings while the page is open; iOS background delivery is not promised by a local foreground WebSocket app.

@@ -70,6 +70,14 @@ describe('real book memo',()=>{
 });
 
 describe('real order veto',()=>{
+  it('refuses a real KXBTC15M order that is worse or bigger than the gate approved',()=>{
+    expect(realOrderVeto(T,'yes',v(),undefined,{limit:.9,count:3})).toBeNull();
+    expect(realOrderVeto(T,'yes',v(),undefined,{limit:.85,count:1})).toBeNull();
+    expect(realOrderVeto(T,'yes',v(),undefined,{limit:.93,count:3})).toMatch(/priced YES at 90\.0¢.*up to 93\.0¢/);
+    expect(realOrderVeto(T,'yes',v(),undefined,{limit:.9,count:4})).toMatch(/sized this at 3 contracts; this order is 4/);
+    expect(realOrderVeto(T,'yes',v({gate:{action:'TRADE',side:'yes',ask:null,edge:.03,contracts:3,reason:'ok'}}),undefined,{limit:.9,count:3})).toMatch(/priced YES/);
+    expect(realOrderVeto('KXNFLGAME-X','yes',v(),undefined,{limit:.99,count:99})).toBeNull();
+  });
   it('allows KXBTC15M only on gate TRADE, same side, governor ok, online',()=>{
     expect(realOrderVeto(T,'yes',v())).toBeNull();
     expect(realOrderVeto(T,'no',v())).toMatch(/favours YES/);

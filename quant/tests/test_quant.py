@@ -210,3 +210,76 @@ def test_flow_db_follows_flow_db_like_the_engine(tmp_path, monkeypatch):
     assert data.flow_db() == (tmp_path / "data" / "other-flow.db").resolve()  # .env.local, relative to the repo root
     monkeypatch.setenv("FLOW_DB", str(tmp_path / "elsewhere.db"))
     assert data.flow_db() == tmp_path / "elsewhere.db"  # the environment wins, as with dotenv
+
+
+# ---- maker_study.py: resting-order fills against the trade tape
+CLOSE = 1_800_000_000_000
+
+
+def _book(overrides=None):
+    """A flat book, YES 50c bid / 51c ask with 100 contracts resting at each best price, for every second of a round."""
+    import json
+    rows = []
+    for tau in range(0, 901):
+        r = {"tau": float(tau), "yes_bid": 0.50, "yes_ask": 0.51, "valid": 1, "book_delay": 0,
+             "book_yes": json.dumps([[0.50, 100.0], [0.49, 500.0]]), "book_no": json.dumps([[0.49, 100.0], [0.48, 500.0]])}
+        r.update((overrides or {}).get(tau, {}))
+        rows.append(r)
+    return pl.DataFrame(rows)
+
+
+def _tape(*trades):
+    """(ms after the 840-s-left snapshot, yes_price, taker_side, count)"""
+    t0 = CLOSE - 840_000
+    return pl.DataFrame([(t0 + ms, px, side, float(n)) for ms, px, side, n in trades],
+                        schema={"time": pl.Int64, "yes_price": pl.Float64, "taker_side": pl.String, "count": pl.Float64}, orient="row").sort("time")
+
+
+def _order(rows, side, tau=840):
+    return next(r for r in rows if r["tau"] == tau and r["side"] == side)
+
+
+def test_a_print_through_the_bid_fills_it_and_only_on_that_side():
+    from maker_study import simulate_round
+    rows = simulate_round("T", CLOSE, True, _book(), _tape((5000, 0.49, "no", 5)), {})
+    yes, no = _order(rows, "yes"), _order(rows, "no")
+    assert yes["limit"] == 0.50 and yes["posted"]
+    assert yes["t_through"] == yes["t_queue"] == yes["t_queue+"] == CLOSE - 840_000 + 5000
+    assert yes["m60_through"] - yes["limit"] == pytest.approx(0.005)  # the mid is 50.5c a minute later
+    assert np.isnan(no["t_queue+"])  # nobody bought YES, so the NO bid (a YES offer at 51c) never traded
+
+
+def test_the_queue_ahead_must_trade_first_and_early_prints_do_not_count():
+    from maker_study import simulate_round
+    tape = _tape((500, 0.50, "no", 500),   # before the order is live (1 s after the snapshot): ignored
+                 (2000, 0.50, "no", 60), (4000, 0.50, "no", 60))  # 120 at our price: more than the 100 ahead of us
+    yes = _order(simulate_round("T", CLOSE, True, _book(), tape, {}), "yes")
+    assert np.isnan(yes["t_through"])
+    assert yes["t_queue"] == CLOSE - 840_000 + 4000
+
+
+def test_queue_plus_moves_up_when_the_size_ahead_is_cancelled():
+    from maker_study import simulate_round
+    import json
+    thin = {tau: {"book_yes": json.dumps([[0.50, 10.0], [0.49, 500.0]])} for tau in range(700, 839)}  # from 2 s after placement
+    yes = _order(simulate_round("T", CLOSE, True, _book(thin), _tape((3500, 0.50, "no", 20)), {}), "yes")
+    assert np.isnan(yes["t_queue"])                      # 20 traded, 100 were ahead and "nobody cancels"
+    assert yes["t_queue+"] == CLOSE - 840_000 + 3500     # but only 10 were still ahead by then
+
+
+def test_a_no_bid_is_a_yes_offer_filled_by_yes_buyers():
+    from maker_study import simulate_round
+    rows = simulate_round("T", CLOSE, False, _book(), _tape((5000, 0.52, "yes", 5)), {})
+    no = _order(rows, "no")
+    assert no["limit"] == pytest.approx(0.49) and no["win"] == 1.0
+    assert no["t_through"] == CLOSE - 840_000 + 5000
+    assert np.isnan(_order(rows, "yes")["t_queue+"])
+
+
+def test_a_bid_the_ask_has_already_reached_is_a_take_not_a_resting_fill():
+    from maker_study import simulate_round
+    import json
+    moved = {839: {"yes_bid": 0.48, "yes_ask": 0.50, "book_yes": json.dumps([[0.48, 100.0]]), "book_no": json.dumps([[0.50, 100.0]])}}
+    yes = _order(simulate_round("T", CLOSE, True, _book(moved), _tape((5000, 0.49, "no", 5)), {}), "yes")
+    assert not yes["posted"] and np.isnan(yes["t_through"])
+    assert yes["taker_cost"] == pytest.approx(0.50 + 0.07 * 0.25)  # what it really costs: the ask plus the taker fee

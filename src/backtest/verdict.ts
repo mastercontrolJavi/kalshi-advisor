@@ -57,7 +57,8 @@ export function finalMinuteEvidence(v:Verdict|null):{status:'collecting'|'proven
  * alone forecast best out of sample, and the model's disagreements with it lost after fees.
  */
 export function ruleProven(r:RuleResult|null|undefined):boolean{return !!r&&r.n>=FINAL_MIN_TRADES&&r.ci[0]>0&&r.early>0&&r.late>0;}
-export function signalEvidence(v:Verdict|null,which:'15m'|'hourly',source:'quant'|'model'='quant'):{proven:boolean;text:string}{
+export function signalEvidence(v:Verdict|null,which:'15m'|'hourly',source:'quant'|'model'='quant',now=Date.now()):{proven:boolean;text:string}{
+  if(v&&stale(v,now))return {proven:false,text:'Hidden: the backtest verdict is out of date, so BUY signals stay hidden until it refreshes (npm run backtest).'};
   const r=which==='15m'?source==='model'?v?.buy15Model:v?.buy15:v?.buyHourly;
   if(ruleProven(r))return {proven:true,text:''};
   if(!r||!r.n)return {proven:false,text:`Hidden until the ${which==='15m'?'15-minute':'hourly'} BUY rule has been backtested.`};

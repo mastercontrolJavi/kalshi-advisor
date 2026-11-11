@@ -64,7 +64,7 @@ it('bankroll: staking everything is wiped out by the first loss; a small stake s
   const trades=[t(.4825),t(.4825),t(-.5175)];
   expect(bankroll(trades,1,40,50,500).ruined).toBe(1);const small=bankroll(trades,.02,40,50,500);expect(small.ruined).toBe(0);expect(small.median).toBeGreaterThan(40);});
 import {ruleVerdict,exitVerdict,type Verdict} from '../src/backtest/verdict';
-import {finalMinuteStudy} from '../src/backtest/live';
+import {finalMinuteStudy,finalMinuteRows} from '../src/backtest/live';
 import {Journal} from '../src/engine/journal';
 const verdict=(o:Partial<Verdict>={}):Verdict=>({generated:new Date().toISOString(),from:Date.parse('2026-07-10')/1000,to:Date.parse('2026-10-08')/1000,rounds:8529,hours:1407,
   buy15:{n:2483,mean:-.0064,ci:[-.0218,.0086],early:-.002,late:-.012},buyHourly:null,exits:{fixed:{mean:-.0128,ci:[-.0246,-.0009]},trailing:{mean:-.009,ci:[-.019,.0007]}},
@@ -88,6 +88,11 @@ it('final-minute study reads settled rounds from the live journal, one entry per
   // A: buy YES at 86¢ and win; B: buy YES at 86¢ and lose.
   expect(f.model.mean).toBeCloseTo(((1-.86-fee(.86))+(-.86-fee(.86)))/2,9);expect(f.accuracy.length).toBeGreaterThan(0);
   expect(finalMinuteStudy(new Journal(':memory:').db)).toBeNull();});
+it('final-minute rows skip seconds where the Kalshi book was running behind, and keep ticks without the field',()=>{
+  const j=new Journal(':memory:'),close=Date.parse('2026-10-08T00:30:00Z');
+  for(const [tau,bookDelay] of [[50,20000],[40,300],[30,undefined]] as const)j.tick({time:close-tau*1000,ticker:'A',proxy:100,K:99,tau,sigma:1e-5,p:.9,q:.9,mid:.85,regime:'calm',bookDelay,book:{yesBid:.84,yesAsk:.86}});
+  j.db.prepare('INSERT INTO outcomes VALUES(?,?,?,?,?,?,?,?)').run('A',close,'yes',null,null,null,null,'{}');
+  expect(finalMinuteRows(j.db).map(r=>r.tau)).toEqual([40,30]);});
 it('the backtest refresh runs once the verdict is a day old, never right after startup and at most hourly',async()=>{
   const {refreshDue,REFRESH_EVERY_MS,STARTUP_GRACE_MS}=await import('../src/engine/refresh');const now=Date.parse('2026-10-08T12:00:00Z'),up={running:false,lastAttempt:0,started:now-STARTUP_GRACE_MS-1};
   expect(refreshDue(now-REFRESH_EVERY_MS-1,now,up)).toBe(true);expect(refreshDue(null,now,up)).toBe(true);expect(refreshDue(now-3600000,now,up)).toBe(false);

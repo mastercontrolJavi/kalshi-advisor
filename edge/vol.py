@@ -1,5 +1,6 @@
-"""EWMA volatility of 1-second log returns (half-life VOL_HALFLIFE_S), floored at VOL_FLOOR_ANN annualised, with a
-TAIL_MULT inflation for fat tails. Carried (filled) seconds, gaps and source switches are not returns and are skipped."""
+"""EWMA volatility of 1-second log returns (half-life VOL_HALFLIFE_S), floored at VOL_FLOOR_ANN annualised, times a
+residual scale (TAIL_MULT, 1.0 by default: horizon scaling lives in fair_value.py's variance ratio). Carried (filled)
+seconds, gaps and source switches are not returns and are skipped."""
 from __future__ import annotations
 
 import math
@@ -9,7 +10,7 @@ SECONDS_PER_YEAR = 365.0 * 24 * 3600
 
 
 class EwmaVol:
-    def __init__(self, halflife_s: float = 300.0, floor_ann: float = 0.10, tail_mult: float = 1.15, min_samples: int = 120):
+    def __init__(self, halflife_s: float = 300.0, floor_ann: float = 0.10, tail_mult: float = 1.0, min_samples: int = 120):
         self.alpha = 1.0 - 0.5 ** (1.0 / halflife_s)
         self.floor_var = floor_ann ** 2 / SECONDS_PER_YEAR
         self.tail_mult = tail_mult

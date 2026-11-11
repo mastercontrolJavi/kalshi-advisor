@@ -2,7 +2,7 @@ import {it,expect} from 'vitest';
 import {gateEvaluation,gateHourly,gateTactics,paperProven} from '../src/engine/evidence';
 import {ruleProven,signalEvidence,type Verdict,type RuleResult} from '../src/backtest/verdict';
 const rule=(over:Partial<RuleResult>={}):RuleResult=>({n:2661,mean:-.004,ci:[-.02,.011],early:-.004,late:-.005,...over});
-const verdict=(buy15:RuleResult,buyHourly:RuleResult|null=rule({n:698})):Verdict=>({generated:'2026-10-14T00:00:00Z',from:0,to:1,rounds:9182,hours:1569,buy15,buyHourly,
+const verdict=(buy15:RuleResult,buyHourly:RuleResult|null=rule({n:698})):Verdict=>({generated:new Date().toISOString(),from:0,to:1,rounds:9182,hours:1569,buy15,buyHourly,
   exits:{fixed:{mean:0,ci:[0,0]},trailing:{mean:0,ci:[0,0]}},kalshiBetter:{fifteen:13,fifteenOf:14,hourly:7,hourlyOf:7},profitable:[],strategies:32,ruin:[],longshot:{fifteen:null,hourly:null},finalMinute:null});
 const proven=rule({mean:.02,ci:[.005,.035],early:.02,late:.018});
 const firm={action:'BUY YES',reason:'Buy YES at 52¢ or less',idea:{side:'yes',kind:'taker',price:.5,fee:.0175,edge:.05,contracts:3,cost:1.5,maxLoss:1.55,queue:0,reason:''},makers:[],edges:{yes:.05,no:-.1},
@@ -15,7 +15,11 @@ it('a rule is proven only with 100+ trades, a 95% range above zero and a profit 
   expect(ruleProven({...proven,late:-.001})).toBe(false);
   expect(ruleProven(null)).toBe(false);
   expect(signalEvidence(verdict(rule()),'15m').text).toContain('2,661 past rounds');
-  expect(signalEvidence(null,'15m').text).toContain('backtested');});
+  expect(signalEvidence(null,'15m').text).toContain('backtested');
+  // A stale verdict never counts as proof, even for a rule that cleared the bar.
+  const old=Date.parse(verdict(proven).generated)+15*86400000;
+  expect(signalEvidence(verdict(proven),'15m','quant').proven).toBe(true);
+  expect(signalEvidence(verdict(proven),'15m','quant',old)).toEqual({proven:false,text:expect.stringContaining('out of date')});});
 
 it('an unproven firm BUY is hidden from the dashboard with the evidence; a proven one, or the gate off, passes through',()=>{
   const hidden=gateEvaluation(firm,verdict(rule()),'quant',true);

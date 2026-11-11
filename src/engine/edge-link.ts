@@ -78,12 +78,16 @@ export class EdgeLink {
  * its EV gate must say TRADE on the same side, and the governor must allow your real book. Other markets: only the
  * daily/weekly stop on your real P&L. Returns the reason to refuse, or null.
  */
-export function realOrderVeto(ticker:string,side:'yes'|'no',v:EdgeView,now=Date.now()):string|null{
+export function realOrderVeto(ticker:string,side:'yes'|'no',v:EdgeView,now=Date.now(),order?:{limit:number;count:number}):string|null{
   if(ticker.startsWith(EDGE_SERIES)){
     if(v.status==='OFFLINE')return `Edge layer offline${v.error?` (${v.error})`:''}: real KXBTC15M orders are blocked`;
     if(v.ticker!==ticker||v.ageMs===null||v.ageMs>EDGE_OFFLINE_MS)return 'Edge layer has no current decision for this market';
     if(!v.gate||v.gate.action!=='TRADE')return `Edge gate: ${v.gate?.action??'NO_EDGE'} · ${v.gate?.reason??v.reason??'no decision'}`;
     if(v.gate.side!==side)return `Edge gate favours ${String(v.gate.side).toUpperCase()}, not ${side.toUpperCase()}`;
+    // The order must match what the gate approved: never a worse price (a walked book) or a bigger size.
+    if(order){const ask=v.gate.ask,n=v.gate.contracts;
+      if(typeof ask!=='number'||!Number.isFinite(ask)||order.limit>ask+1e-9)return `Edge gate priced ${side.toUpperCase()} at ${typeof ask==='number'&&Number.isFinite(ask)?(ask*100).toFixed(1):'?'}¢; this order could pay up to ${(order.limit*100).toFixed(1)}¢`;
+      if(typeof n!=='number'||!Number.isFinite(n)||order.count>n)return `Edge gate sized this at ${n} contracts; this order is ${order.count}`;}
     if(!v.real_risk?.allowed)return `Risk governor: ${v.real_risk?.reason??'not allowed'}`;
     return null;
   }

@@ -40,12 +40,12 @@ against the new `p_base`. It becomes a test of the full engine once the stack ad
 |---|---|
 | `config.py` | One typed `EdgeConfig`. Override any knob with `EDGE_<NAME>` in the environment or in `.env.local`. `ENGINE_VALIDATED` also works without the prefix. |
 | `spot.py` | Exactly one price per second. A skipped second is carried forward and flagged `carried` (and degraded). Gaps over 10 s restart the series. The engine chooses the source: **BRTI** from Kalshi's CF Benchmarks feed when its 1-s print is fresh, otherwise the median of the Coinbase, Kraken and Bitstamp mids (plus the engine's learned proxy basis), flagged `degraded`. |
-| `vol.py` | EWMA of 1-s log returns (half-life 300 s), floor 10% annualised, × `TAIL_MULT` 1.15. Carried seconds, gaps and source switches are not counted as returns. `sigma_usd(price)` is in dollars per √s. It needs 120 returns after a sidecar restart, so the first 2 minutes show `WARMING` and `NO_EDGE`. |
-| `fair_value.py` | Your formulas. Before the final minute: `sd = σ√(secs_left − 40)`. Inside it: `(sum(fixed) + r(spot+drift))/(n+r)` and `sd = (r/(n+r))σ√(r/3)`. Normal CDF, clamped to [0.001, 0.999]. Ties resolve YES. Also contains `FinalWindowTracker` and the adapter. Official BRTI prints sent by the engine replace the sidecar's own prints for the same seconds. |
+| `vol.py` | EWMA of 1-s log returns (half-life 300 s), floor 10% annualised, × a residual scale: `TAIL_MULT` before the final minute, `TAIL_MULT_FINAL` inside it. Both are 1.0 since 2026-11-10, because `fair_value.py` now carries the horizon scaling itself. Carried seconds, gaps and source switches are not counted as returns. `sigma_usd(price)` is in dollars per √s. It needs 120 returns after a sidecar restart, so the first 2 minutes show `WARMING` and `NO_EDGE`. |
+| `fair_value.py` | The settlement average is a sum of 60 one-second prints, so its variance is the exact double sum of their covariances: `Var = σ²/N² · ΣΣ ½(V(i)+V(j)−V(|i−j|))`, with `V(h) = h·VR(h)` and `VR` the measured variance ratio of BRTI (`VAR_RATIO`: 1.03 at 5 s, 1.15 at 60 s, 1.23 at 5 min). Before the final minute the mean is the spot. Inside it the mean is `(sum(fixed) + m(spot+drift))/(n+m)` with `m = ceil(secs_left)` slots left; the print for the current second is the spot, so only the `m − 1` later prints carry variance. This replaced `sd = σ√(secs_left − 40)` and `sd = (r/(n+r))σ√(r/3)`, which were too narrow 30–60 s out and too wide in the last 10 s. Normal CDF, clamped to [0.001, 0.999]. Ties resolve YES. Also contains `FinalWindowTracker` and the adapter. Official BRTI prints sent by the engine replace the sidecar's own prints for the same seconds. |
 | `ev_gate.py` | `taker_fee = 0.07·p(1−p)`. Both sides are priced: `cost = ask + fee`, `edge = q − cost`. Below `MIN_EDGE` → NO_EDGE. An ask under `MIN_ASK` (10¢) → BLOCKED (longshot): the fee is the largest share of the upside there and longshots lose to the favourite-longshot bias. Favourites up to 99¢ stay allowed. An ask in 30–70¢ → BLOCKED. If \|p − market\| > `MAX_DISAGREE` (8 pts) the action is **MODEL_DISAGREE**, never TRADE, and the reason says what the gate would otherwise have done. Market = the mid, else the YES ask, else 1 − the NO ask (one-sided books). Size = min(quarter-Kelly, 1%) × bankroll / cost, floored. Under 1 contract → NO_EDGE. Recorded fees use Kalshi's whole-order rounding up to $0.0001 (`order_fee`). |
 | `risk.py` | Blackouts: the US equity open 09:30–10:00 ET on weekdays, plus `edge/blackouts.json` (`{"event", "start", "end"}` as ISO times with offset, maintained by hand; the sidecar logs `edge-warning` at startup when the last entry is under 14 days away). Then the daily stop (−3% of start-of-day bankroll), the weekly stop (−6%, weeks start Monday ET), one position per window, and 10 windows a day. |
 | `db.py` | `data/edge.db`. `signals` stores one snapshot per window per minute-left bucket, every TRADE, and one `disagree` row per window per minute while the model disagrees. Every row has `sd_final`, `z = (mean_final − target)/sd_final`, `sigma_ann` and `tail_mult`, so σ can be diagnosed later. `windows` stores the proxy check: this layer's own 60-s average against Kalshi's settlement value and result. |
-| `service.py` | The per-second pipeline. In shadow mode a TRADE is paper-filled at the **next** observed ask (the next tick) with the exact fee. A trade with no ask before close is marked `unfilled`. |
+| `service.py` | The per-second pipeline. In shadow mode a TRADE is paper-filled with the exact fee at the first live ask at least `SHADOW_FILL_DELAY_S` (3 s) after the signal, and never against a stale book: the price a person acting on the signal could get. A trade with no ask before close is marked `unfilled`. |
 | `server.py`, `__main__.py` | `POST /tick`, `POST /settle`, `GET /health`, `GET /state`. Binds to loopback only. |
 | `score.py` | The go/no-go CLI (below). |
 
@@ -68,6 +68,8 @@ It is checked twice: when the order is quoted and again when it is sent (`/real/
   - the sidecar is online (a reply in the last 2 s)
   - a current decision for this market exists
   - `gate.action == TRADE` on **the same side**
+  - the order matches what the gate approved: its worst price is not above the ask the gate priced, and its size is not above the gate's contracts (an order that walks the book to a worse price is refused)
+  - the engine's own stale-book / BRTI breaker is off
   - the governor allows your **real** book (daily/weekly stop, one position per window, 10 windows, blackouts)
 
   If any one fails, the order is refused and the reason is shown and logged as `real-order-vetoed`.
@@ -81,9 +83,9 @@ The existing guardrails (`guardrails: false`, Oct 28) are untouched. This govern
 
 ## Config knobs (defaults)
 
-`MIN_EDGE=0.01 MIN_ASK=0.10 MAX_DISAGREE=0.08 BLOCK_MID_BAND=true (MID_BAND_LOW=0.30 MID_BAND_HIGH=0.70) KELLY_FRAC=0.25 MAX_RISK_FRAC=0.01
+`MIN_EDGE=0.03 MIN_ASK=0.10 MAX_DISAGREE=0.08 BLOCK_MID_BAND=true (MID_BAND_LOW=0.30 MID_BAND_HIGH=0.70) KELLY_FRAC=0.25 MAX_RISK_FRAC=0.01
 DAILY_STOP=-0.03 WEEKLY_STOP=-0.06 MAX_WINDOWS=10 EQUITY_OPEN_BLACKOUT=true VOL_HALFLIFE_S=300 VOL_FLOOR_ANN=0.10
-VOL_MIN_SAMPLES=120 TAIL_MULT=1.15 ENGINE_VALIDATED=false MODE=shadow BANKROLL=<Kalshi account value>
+VOL_MIN_SAMPLES=120 TAIL_MULT=1.0 TAIL_MULT_FINAL=1.0 SHADOW_FILL_DELAY_S=3 ENGINE_VALIDATED=false MODE=shadow BANKROLL=<Kalshi account value>
 PROXY_MIN_AGREE=0.95 PROXY_MIN_WINDOWS=10 PRIORITY=low PORT=3003 DB_PATH=data/edge.db`
 
 - `MODE=shadow` records paper fills and runs the governor on the paper book.
@@ -99,17 +101,22 @@ PROXY_MIN_AGREE=0.95 PROXY_MIN_WINDOWS=10 PRIORITY=low PORT=3003 DB_PATH=data/ed
 ## The PASS gate (`python -m edge.score`)
 
 - Brier scores for `market_mid`, `p_base`, `p_math`, `q`, `q_raw` and `p_engine`, overall and by minutes left (0–1,
-  1–3, 3–7, 7–15).
+  1–3, 3–7, 7–15). Every column is scored on the same rows; TRADE rows are excluded (they are picked for an extreme `p_base`).
 - Directional accuracy of the live call against the outcome, and against "always pick the side the market favours".
 - For TRADE fills: net P&L per contract (win = 1 − price − fee, loss = −price − fee), SE, 90% lower bound,
   first-half and second-half means, max drawdown.
 - **`PASS`** only if all of these hold: ≥ 300 fills, net ≥ +1.0¢ per contract, LB90 > 0, and both halves positive.
   Otherwise **`FAIL`**.
-- **`ENGINE: ADDS SIGNAL`** only if the Brier of `q_raw` is below `p_base` on ≥ 500 settled windows. Otherwise
+- **`ENGINE: ADDS SIGNAL`** only if the Brier of `q_raw` is below `p_base` on ≥ 500 settled windows **and** the one-sided 95% bound of the
+  per-window difference is below zero (snapshots inside a window share one outcome, so a window is one observation). Otherwise
   `NOT PROVEN`. The blended `q` is reported but never used for this verdict, because it is mostly Kalshi's own price.
 - p_base calibration by regime (pre-window / final minute) in 10-point bins: predicted against realised YES rate, with counts.
 - MODEL_DISAGREE: one per window per minute left; how often the market's side won, and how often the model's side did.
-- Each TRADE re-scored at `tail_mult = 1.0`: the mean doesn't depend on σ, so `p' = Φ(z·TAIL_MULT)` exactly.
+- Each TRADE re-scored at `tail_mult = 1.0`: the mean doesn't depend on σ, so `p' = Φ(z·tail)` exactly, with the tail the row was logged at (`TAIL_MULT`, or `TAIL_MULT_FINAL` in the final minute).
+
+## Calibration on history (`quant/edge_calibration.py`)
+
+`cd quant; uv run python edge_calibration.py` replays `vol.py` + `fair_value.py` over the BRTI 1-s archive and writes `output/quant/edge-calibration.md`: (1) the measured variance ratio next to the `VAR_RATIO` curve in code; (2) the variance of `(settlement average − mean)/sd` for every minute of the archive, which should be 1 at every time left; (3) outcome calibration on the second half of the calendar, for virtual rounds (every minute, strike built the way Kalshi builds it) and for Kalshi's real rounds, against the old shortcut and against a scale and a fat-tail mixture fitted on the first half; (4) the EV gate on the journal's real Kalshi asks filled 1, 2, 3 and 5 s after the decision. Re-run it before changing `VAR_RATIO`, `TAIL_MULT`, `TAIL_MULT_FINAL` or `MIN_EDGE`. `EDGE_*` environment overrides apply, so `EDGE_TAIL_MULT=1.1 uv run python edge_calibration.py` is a what-if run.
 - Proxy check: the share of windows where this layer's 60-s average lands on the same side of the target as Kalshi's
   result, plus the mean and max |average − Kalshi value|. Only windows with at least 55 of 60 prints count. The banner
   turns on below 95% over the last 50 windows (once there are at least 10).
