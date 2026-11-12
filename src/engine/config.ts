@@ -7,15 +7,16 @@ export const defaults = {
   guardrails: false, dailyLossLimit: .10, consecutiveLossLimit: 3, cooldownMinutes: 30, maxTradesPerHour: 4,
   chaseMove: .15, chaseSeconds: 60, halfLifeSeconds: 300, realizedBlend: .25,
   basisCorrection: 0, allowEstimatedK: false, staleMs: 2000, bookStaleMs: 5000, accountStaleMs: 60000, minVolSamples: 120,
-  feePrecision: .0001, audio: false, notifications: false,
-  /** Real copy orders from Top traders (2026-10-22): off until switched on; each confirmed copy spends at most this many dollars incl. fee. */
-  realCopyEnabled: false, realCopyMaxDollars: 10
+  feePrecision: .0001, audio: false, notifications: false
 };
 export type Config = typeof defaults;
+/** Settings removed with the Top traders page (2026-11-11): a journal saved before then still holds them, so they are dropped instead of rejected. */
+const RETIRED=new Set(['realCopyEnabled','realCopyMaxDollars']);
 export function validateConfig(input: unknown): Config {
   if (!input || typeof input !== 'object') throw new Error('Settings must be an object');
   const result = {...defaults};
   for (const [key,value] of Object.entries(input)) {
+    if (RETIRED.has(key)) continue;
     if (!(key in defaults)) throw new Error(`Unknown setting ${key}`);
     const original = defaults[key as keyof Config];
     if (typeof value !== typeof original || (typeof value === 'number' && !Number.isFinite(value))) throw new Error(`Invalid ${key}`);

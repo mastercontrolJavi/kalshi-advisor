@@ -85,7 +85,7 @@ export default function Paper(){
           <div className="relative min-w-0 lg:col-span-4 3xl:col-span-3"><div className="flex flex-col gap-4 lg:absolute lg:inset-0 lg:overflow-y-auto lg:pr-1 lg:[scrollbar-gutter:stable]"><Ticket s={s} fresh={fresh}/></div></div>
           <div className="relative min-w-0 lg:col-span-12 3xl:col-span-3"><div className="flex flex-col gap-4 3xl:absolute 3xl:inset-0 3xl:overflow-y-auto 3xl:pr-1 3xl:[scrollbar-gutter:stable]"><ForecastPanel s={s} fresh={fresh}/><Coach report={report} error={reportError}/></div></div>
         </div>
-        {(sim.positions??[]).some((p:any)=>p.ticker!==s?.market?.ticker)?<Collapsible open title="Other paper positions" icon={<Wallet aria-hidden className="size-4 text-info"/>} aside="copied bets and earlier rounds, settled on Kalshi's result"><OtherPositions s={s} fresh={fresh}/></Collapsible>:null}
+        {(sim.positions??[]).some((p:any)=>p.ticker!==s?.market?.ticker)?<Collapsible open title="Other paper positions" icon={<Wallet aria-hidden className="size-4 text-info"/>} aside="earlier rounds, settled on Kalshi's result"><OtherPositions s={s} fresh={fresh}/></Collapsible>:null}
         <Collapsible open title="Paper rounds" icon={<History aria-hidden className="size-4 text-info"/>} aside={coach?.settled?`${coach.settled} settled · ${signedDollars(coach.net)}`:'every round, graded'}><Rounds coach={coach}/></Collapsible>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <Collapsible open title="Paper equity" icon={<ChartIcon aria-hidden className="size-4 text-info"/>} aside={coach?.drawdown?`deepest drop ${dollars(coach.drawdown)}`:'after each settled round'}>
@@ -276,13 +276,13 @@ function Reset({account}:{account:any}){
     <p role="status" className="text-sm text-muted">{message}</p></div>;
 }
 
-/** Paper positions outside the current Bitcoin round: copied bets from Top traders, or a round still waiting for its result. */
+/** Paper positions outside the current Bitcoin round: an earlier round still waiting for its result. */
 function OtherPositions({s,fresh}:{s:any;fresh:boolean}){
   const rows=(s?.sim?.positions??[]).filter((p:any)=>p.ticker!==s?.market?.ticker),[busy,setBusy]=useState(''),[status,setStatus]=useState<{ok:boolean;text:string}|null>(null);
   async function sell(p:any){setBusy(p.ticker);setStatus(null);try{const d=await post('sim/order',{ticker:p.ticker,side:p.side,action:'sell',contracts:p.contracts});setStatus({ok:true,text:d.message});}catch(e){setStatus({ok:false,text:(e as Error).message});}finally{setBusy('');}}
   return <div><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['Market','Side','Contracts','Avg cost','Bid now','If sold','Closes',''].map(t=><th key={t} scope="col" className="pb-2 pr-3 font-medium">{t}</th>)}</tr></thead>
     <tbody>{rows.map((p:any)=><tr key={p.ticker} className="border-t border-line/70">
-      <th scope="row" className="max-w-[320px] py-2 pr-3 text-left font-normal"><div className="truncate font-medium">{p.title??p.ticker}</div><div className="text-xs text-muted">{p.copy?'copied from Top traders':p.ticker}</div></th>
+      <th scope="row" className="max-w-[320px] py-2 pr-3 text-left font-normal"><div className="truncate font-medium">{p.title??p.ticker}</div><div className="text-xs text-muted">{p.ticker}</div></th>
       <td className={cn('pr-3',p.side==='yes'?'text-yes':'text-no')}>{p.side.toUpperCase()}</td><td className="num pr-3">{qty(p.contracts)}</td><td className="num pr-3">{cents(p.avgCost)}</td><td className="num pr-3">{cents(p.bid)}</td>
       <td className={cn('num pr-3',p.unrealized>0?'text-yes':p.unrealized<0?'text-no':'')}>{signedDollars(p.unrealized)}</td>
       <td className="pr-3 text-muted">{p.close?new Date(p.close).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'—'}</td>

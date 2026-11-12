@@ -18,3 +18,7 @@ output/
 quant/.venv/
 quant/cache/
 __pycache__/
+
+# Paper-trading bot (bot/)
+bot/.venv/
+bot/cache/

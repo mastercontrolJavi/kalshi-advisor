@@ -1,6 +1,6 @@
 import {it,expect} from 'vitest';
 import {spotSeries,spotAt,basisTrack,quote,simulate,priceBuckets,clusterCI,appRule,atMinute,edges,bankroll,type Row} from '../src/backtest/sim';
-import {candleRow,candleBatches,hourlyEvent,hourlyStrikes,hourlyTicker,HistoryStore,type MarketRow,type SpotRow} from '../src/backtest/history';
+import {candleRow,candleBatches,HistoryStore,type MarketRow,type SpotRow} from '../src/backtest/history';
 import {fee} from '../src/engine/model/fees';
 const minute=(i:number,close:number,t0=1_000_020):SpotRow=>({ts:t0-20+i*60,open:close,high:close,low:close,close,volume:1});
 it('spot at an instant is the close of the Coinbase minute ending then, and volatility uses only earlier returns',()=>{
@@ -46,11 +46,6 @@ it('parses live and historical candle formats',()=>{
   const live=candleRow('T',{end_period_ts:60,yes_bid:{close_dollars:'0.4800',low_dollars:'0.29'},yes_ask:{close_dollars:'0.49'},price:{close_dollars:'0.48'},volume_fp:'10.00'});
   const old=candleRow('T',{end_period_ts:60,yes_bid:{close:'0.4800',low:'0.29'},yes_ask:{close:'0.49'},price:{close:null},volume:'10.00'});
   expect(live).toMatchObject({bid:.48,ask:.49,bid_lo:.29,price:.48,volume:10});expect(old).toMatchObject({bid:.48,ask:.49,bid_lo:.29,price:null,volume:10});});
-it('hourly event tickers use Eastern time, including after the DST change',()=>{
-  expect(hourlyEvent(Date.parse('2026-10-08T00:00:00Z')/1000)).toBe('KXBTCD-26OCT0720');
-  expect(hourlyEvent(Date.parse('2026-12-01T05:00:00Z')/1000)).toBe('KXBTCD-26DEC0100');
-  expect(hourlyTicker('KXBTCD-26OCT0720',83199.99)).toBe('KXBTCD-26OCT0720-T83199.99');
-  const k=hourlyStrikes(83210,100);expect(k).toEqual([83149.99,83199.99,83249.99,83299.99]);});
 it('candle batches stay under the tickers × window-minutes cap',()=>{
   const ms=Array.from({length:60},(_,i):MarketRow=>({ticker:'M'+String(i).padStart(2,'0'),series:'KXBTC15M',event:null,open_ts:i*900,close_ts:i*900+900,strike:1,result:'yes',settle:null,volume:null,source:'live',candles:0}));
   const groups=candleBatches(ms);expect(groups.flat()).toHaveLength(60);
@@ -66,15 +61,14 @@ it('bankroll: staking everything is wiped out by the first loss; a small stake s
 import {ruleVerdict,exitVerdict,type Verdict} from '../src/backtest/verdict';
 import {finalMinuteStudy,finalMinuteRows} from '../src/backtest/live';
 import {Journal} from '../src/engine/journal';
-const verdict=(o:Partial<Verdict>={}):Verdict=>({generated:new Date().toISOString(),from:Date.parse('2026-07-10')/1000,to:Date.parse('2026-10-08')/1000,rounds:8529,hours:1407,
-  buy15:{n:2483,mean:-.0064,ci:[-.0218,.0086],early:-.002,late:-.012},buyHourly:null,exits:{fixed:{mean:-.0128,ci:[-.0246,-.0009]},trailing:{mean:-.009,ci:[-.019,.0007]}},
-  kalshiBetter:{fifteen:13,fifteenOf:14,hourly:7,hourlyOf:7},profitable:[],strategies:32,ruin:[{stake:1,ruined:1},{stake:.02,ruined:0}],longshot:{fifteen:-.25,hourly:-.54},finalMinute:null,...o});
+const verdict=(o:Partial<Verdict>={}):Verdict=>({generated:new Date().toISOString(),from:Date.parse('2026-07-10')/1000,to:Date.parse('2026-10-08')/1000,rounds:8529,
+  buy15:{n:2483,mean:-.0064,ci:[-.0218,.0086],early:-.002,late:-.012},exits:{fixed:{mean:-.0128,ci:[-.0246,-.0009]},trailing:{mean:-.009,ci:[-.019,.0007]}},
+  kalshiBetter:{fifteen:13,fifteenOf:14},profitable:[],strategies:32,ruin:[{stake:1,ruined:1},{stake:.02,ruined:0}],longshot:{fifteen:-.25},finalMinute:null,...o});
 it('the BUY verdict states the backtest result and calls an interval spanning zero "no proven edge"',()=>{
   expect(ruleVerdict(null,'15m').text).toContain('npm run backtest');
   const v=ruleVerdict(verdict(),'15m');expect(v.tone).toBe('warn');expect(v.text).toContain('−0.6¢ per contract');expect(v.text).toContain('2,483 past rounds');expect(v.text).toContain('no proven edge');
   expect(ruleVerdict(verdict({buy15:{n:500,mean:.02,ci:[.005,.03],early:.02,late:.02}}),'15m').tone).toBe('yes');
   expect(ruleVerdict(verdict({buy15:{n:500,mean:-.02,ci:[-.03,-.01],early:0,late:0}}),'15m').text).toContain('it lost money');
-  expect(ruleVerdict(verdict(),'hourly').text).toContain('Not backtested for hourly');
   expect(ruleVerdict(verdict({buy15Model:{n:6765,mean:-.012,ci:[-.021,-.002],early:0,late:0}}),'15m',Date.now(),'model').text).toMatch(/raw model.*−1\.2¢.*it lost money/);
   expect(ruleVerdict(verdict(),'15m',Date.now(),'model').text).toContain('Not backtested');
   expect(ruleVerdict(verdict({generated:'2026-09-01T00:00:00Z'}),'15m',Date.parse('2026-10-08')).text).toContain('over two weeks old');

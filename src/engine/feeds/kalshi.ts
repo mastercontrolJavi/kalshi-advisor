@@ -27,21 +27,6 @@ export class KalshiClient {
   }
   get authenticated(){return !!this.key&&!!this.id;}
   headers(path:string,method:'GET'|'POST'='GET'){if(!this.key)throw new Error('Kalshi key unavailable');return signedHeaders(this.key,this.id,path,Date.now()+this.clockOffset,method);}
-  /**
-   * A signed POST (real copy orders only, 2026-10-22). Sent once, never retried: an order is not idempotent, and a
-   * retry after a timeout could buy twice. Kalshi's error message is passed back as it is.
-   */
-  post(path:string,body:unknown):Promise<any>{
-    if(!path.startsWith('/')||path.startsWith('//')||path.includes('://'))throw new Error('Invalid Kalshi API path');
-    const run=async()=>{
-      if(!this.clockSynced)throw new Error('Server clock not synchronized');
-      const response=await fetch(REST+path,{method:'POST',headers:{...this.headers('/trade-api/v2'+path,'POST'),'Content-Type':'application/json'},body:JSON.stringify(body),redirect:'error',signal:AbortSignal.timeout(10000)});
-      const data=await response.json().catch(()=>({}));
-      if(!response.ok)throw new Error(`Kalshi refused the order (HTTP ${response.status}): ${data?.error?.message??data?.message??data?.code??'no reason given'}`);
-      return data;
-    };
-    const task=this.tail.then(run,run);this.tail=task.catch(()=>{}).then(()=>new Promise(r=>setTimeout(r,this.spacingMs)));return task;
-  }
   get(path:string,auth=false):Promise<any>{
     if(!path.startsWith('/')||path.startsWith('//')||path.includes('://'))throw new Error('Invalid Kalshi API path');
     const run=async()=>{

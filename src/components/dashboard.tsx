@@ -24,7 +24,7 @@ import {fillMarks,type RoundFill} from './candles';
 const PriceChart=dynamic(()=>import('./price-chart'),{ssr:false,loading:()=><div className="chart-tall animate-pulse rounded-xl bg-surface-2"/>});
 
 export default function Dashboard(){
-  const {state:s,connected,fresh}=useLive(),markets=useLive('/markets-ws'),[override,setOverride]=useState(''),[error,setError]=useState(''),sound=useSoundAlerts(s,fresh,'15m',{state:markets.state,fresh:markets.fresh});
+  const {state:s,connected,fresh}=useLive(),[override,setOverride]=useState(''),[error,setError]=useState(''),sound=useSoundAlerts(s,fresh);
   async function unlock(){try{const r=await fetch('/api/engine/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:override})});const data=await r.json();if(!r.ok)throw new Error(data.error);setOverride('');}catch(e){setError((e as Error).message);}}
   // Your real fills this round as buy/sell arrows on the chart; the key keeps the marks from being reset 4 times a second.
   const fills:RoundFill[]=s?.roundFills??[],fillKey=fills.map(f=>`${f.time}:${f.side}:${f.contracts}:${f.closedContracts}`).join('|');

@@ -1,9 +1,9 @@
 import {it,expect} from 'vitest';
-import {gateEvaluation,gateHourly,gateTactics,paperProven} from '../src/engine/evidence';
+import {gateEvaluation,gateTactics,paperProven} from '../src/engine/evidence';
 import {ruleProven,signalEvidence,type Verdict,type RuleResult} from '../src/backtest/verdict';
 const rule=(over:Partial<RuleResult>={}):RuleResult=>({n:2661,mean:-.004,ci:[-.02,.011],early:-.004,late:-.005,...over});
-const verdict=(buy15:RuleResult,buyHourly:RuleResult|null=rule({n:698})):Verdict=>({generated:new Date().toISOString(),from:0,to:1,rounds:9182,hours:1569,buy15,buyHourly,
-  exits:{fixed:{mean:0,ci:[0,0]},trailing:{mean:0,ci:[0,0]}},kalshiBetter:{fifteen:13,fifteenOf:14,hourly:7,hourlyOf:7},profitable:[],strategies:32,ruin:[],longshot:{fifteen:null,hourly:null},finalMinute:null});
+const verdict=(buy15:RuleResult):Verdict=>({generated:new Date().toISOString(),from:0,to:1,rounds:9182,buy15,
+  exits:{fixed:{mean:0,ci:[0,0]},trailing:{mean:0,ci:[0,0]}},kalshiBetter:{fifteen:13,fifteenOf:14},profitable:[],strategies:32,ruin:[],longshot:{fifteen:null},finalMinute:null});
 const proven=rule({mean:.02,ci:[.005,.035],early:.02,late:.018});
 const firm={action:'BUY YES',reason:'Buy YES at 52¢ or less',idea:{side:'yes',kind:'taker',price:.5,fee:.0175,edge:.05,contracts:3,cost:1.5,maxLoss:1.55,queue:0,reason:''},makers:[],edges:{yes:.05,no:-.1},
   firm:{side:'yes' as const,limit:.52,heldMs:4000,edgeNow:.05,id:7},forming:null} as any;
@@ -33,14 +33,6 @@ it('an unproven firm BUY is hidden from the dashboard with the evidence; a prove
   const forming={...firm,action:'NO TRADE',idea:null,firm:null,forming:{side:'no',ms:1000,needMs:3000},reason:'BUY NO forming: confirms if it holds 2 s more · edge 5.0¢'};
   const g=gateEvaluation(forming,verdict(rule()),'quant',true);expect(g.forming).toBeNull();expect(g.reason).toBe('edge 5.0¢');
   const quiet={...firm,action:'NO TRADE',idea:null,firm:null,forming:null};expect(gateEvaluation(quiet,verdict(rule()),'quant',true)).toBe(quiet);});
-
-it('hourly ideas show only for a proven hourly rule',()=>{
-  const ideas=[{ticker:'A'},{ticker:'B'}];
-  expect(gateHourly(ideas,verdict(proven,rule({n:698})),true)).toMatchObject({ideas:[],hidden:expect.stringContaining('698 past hours')});
-  expect(gateHourly(ideas,verdict(rule(),proven),true)).toEqual({ideas,hidden:null});
-  expect(gateHourly(ideas,verdict(rule()),false)).toEqual({ideas,hidden:null});
-  expect(gateHourly([],verdict(rule()),true)).toEqual({ideas:[],hidden:null});});
-
 it('scalp and dip setups need a proven paper record; a dip "buy" hint is hidden with them, a falling-knife warning is not',()=>{
   const ideas=[{kind:'scalp'},{kind:'dip'}],watch=[{verdict:'buy'},{verdict:'knife'}];
   const losing={scalp:{mean:-.031,low:-.051,high:-.013,count:4433},dip:{mean:-.092,low:-.165,high:-.025,count:713}};

@@ -1,7 +1,7 @@
 import {writeFileSync,mkdirSync,existsSync} from 'node:fs';
 import Database from 'better-sqlite3';
 import {dirname} from 'node:path';
-import {HistoryStore,SERIES15,SERIES_HOURLY} from './history';
+import {HistoryStore,SERIES15} from './history';
 import {finalMinuteStudy} from './live';
 import {setupStats} from './setup-stats';
 import {VERDICT_PATH,type Verdict,type RuleResult} from './verdict';
@@ -71,28 +71,9 @@ export function analyze(store:HistoryStore,log:(m:string)=>void=()=>{},journal:D
     run('Longshot at ≤ 10¢, ≥ 2 min left · hold',priceBand(.001,.1,120,840)),
   ];
   log(`15-minute: ${rows.length} decision rows, ${rounds} rounds`);
-  // Hourly
-  const mH=store.markets(SERIES_HOURLY).filter(x=>x.candles>0);let hourly:{rows:number;events:number;accuracy:Score[];fair:Bucket[];strategies:Line[];from:number;to:number}|null=null;
-  if(mH.length){
-    const hrows=buildRows(mH,store.allCandles(SERIES_HOURLY),s,basis.at,{cluster:'event',band:600}),hsplit=median(hrows.map(r=>r.time));
-    const order=['50–59 min','40–50 min','30–40 min','20–30 min','10–20 min','5–10 min','1–5 min'];
-    const bucket=(r:Row)=>{const mins=r.tau/60;return mins>=50?order[0]:mins>=40?order[1]:mins>=30?order[2]:mins>=20?order[3]:mins>=10?order[4]:mins>=5?order[5]:order[6];};
-    const hrun=(name:string,pick:Picker,exit?:ExitRule)=>run(name,pick,exit,hrows,hsplit);
-    hourly={rows:hrows.length,events:new Set(hrows.map(r=>r.cluster)).size,accuracy:scoreBy(hrows,bucket,order),fair:priceBuckets(hrows,undefined,60),from:Math.min(...mH.map(x=>x.close_ts)),to:Math.max(...mH.map(x=>x.close_ts)),strategies:[
-      hrun('App hourly rule (quant blend, ≥ 4¢ edge, last 15 min or ≥ 8¢) · hold',appRule(q)),
-      hrun('App hourly rule · current trailing exits',appRule(q),TRAIL_EXIT),
-      hrun('Raw model, ≥ 4¢ edge · hold',appRule(m)),
-      ...[.08,.12,.2].map(e=>hrun(`Quant blend, ≥ ${Math.round(e*100)}¢ edge, any time · hold`,appRule(q,{minEdge:e,earlyEdge:e,maxSpread:.06,windowMax:3600}))),
-      hrun('Favorite strike at 80–90¢, last 15 min · hold',priceBand(.8,.9,60,900)),
-      hrun('Favorite strike at 90–97¢, last 15 min · hold',priceBand(.9,.97,60,900)),
-      hrun('Any strike at 40–60¢, 30+ min left · hold',priceBand(.4,.6,1800,3540)),
-      hrun('Longshot strike at ≤ 10¢, ≥ 5 min left · hold',priceBand(.001,.1,300,3540)),
-    ]};
-    log(`Hourly: ${hrows.length} decision rows, ${hourly.events} hours`);
-  }
   // Basis and plain-English conclusions
   const raw=basis.points.map(x=>x.raw),sorted=[...raw].sort((a,b)=>a-b),q25=sorted[Math.floor(sorted.length*.25)],q75=sorted[Math.floor(sorted.length*.75)];
-  const all=[...strategies15,...(hourly?.strategies??[])],winners=all.filter(l=>l.s.n>=30&&l.s.ci[0]>0),robust=winners.filter(l=>l.s.early>0&&l.s.late>0),losers=all.filter(l=>l.s.n>=30&&l.s.ci[1]<0);
+  const all=strategies15,winners=all.filter(l=>l.s.n>=30&&l.s.ci[0]>0),robust=winners.filter(l=>l.s.early>0&&l.s.late>0),losers=all.filter(l=>l.s.n>=30&&l.s.ci[1]<0);
   const modelWins=accuracy.filter(a=>a.diffCI[1]<0).map(a=>a.label),kalshiWins=accuracy.filter(a=>a.diffCI[0]>0).map(a=>a.label);
   const app=strategies15[0].s,bestScale=scales.reduce((a,b)=>b.brier<a.brier?b:a);
   // Exits vs holding the very same entries: paired per-round difference.
@@ -114,7 +95,7 @@ export function analyze(store:HistoryStore,log:(m:string)=>void=()=>{},journal:D
   ].filter(Boolean);
   const md=[
     `# Backtest: ${day(from)} to ${day(to)}`,'',
-    `Generated ${new Date().toISOString().slice(0,16).replace('T',' ')} UTC by \`npm run backtest\`. Data: ${rounds.toLocaleString()} settled KXBTC15M rounds with Kalshi 1-minute YES bid/ask candles${hourly?`, ${hourly.events.toLocaleString()} KXBTCD hours (${day(hourly.from)} to ${day(hourly.to)}, strikes within $600 of spot)`:''}, Coinbase BTC-USD 1-minute candles. Every result is per 1 contract after Kalshi's taker fee on entry and on any early exit, with one trade per round (per hour for hourly) so the 95% ranges are honest.`,'',
+    `Generated ${new Date().toISOString().slice(0,16).replace('T',' ')} UTC by \`npm run backtest\`. Data: ${rounds.toLocaleString()} settled KXBTC15M rounds with Kalshi 1-minute YES bid/ask candles, Coinbase BTC-USD 1-minute candles. Every result is per 1 contract after Kalshi's taker fee on entry and on any early exit, with one trade per round so the 95% ranges are honest.`,'',
     '## What this says','',...takeaways.map(t=>'- '+t),'',
     '## 1. Who forecasts better: the app or Kalshi? (15-min)','',
     'Brier score (lower is better; 0.25 = coin flip). One sample per round per minute; 95% range of the model − Kalshi difference resamples whole rounds.','',
@@ -130,10 +111,7 @@ export function analyze(store:HistoryStore,log:(m:string)=>void=()=>{},journal:D
     '## 5. Bet size: what happens to $40','',
     'Each row replays 2,000 random 100-trade sequences drawn from the strategy\'s real backtest trades, staking a fixed share of the current balance every time.','',
     bankrollTable([strategies15[0],strategies15.find(l=>l.name.startsWith('Minute 1: buy the market favorite · hold'))!]),'',
-    ...(hourly?[
-      '## 6. Hourly (KXBTCD)','',`${hourly.events.toLocaleString()} hours, strikes within $600 of the spot at each minute; samples resample whole hours.`,'',
-      scoreTable(hourly.accuracy,'Time left'),'','**Is the hourly price fair?** (any time with ≥ 1 min left)','',bucketTable(hourly.fair),'',strategyTable(hourly.strategies),'']:[]),
-    '## 7. Final minute (live journal, second by second)','',
+    '## 6. Final minute (live journal, second by second)','',
     ...(final?[`${final.rounds} settled rounds the app watched (${day(final.from)} to ${day(final.to)}), ${final.rows.toLocaleString()} seconds with a model price. The model sees the locked part of the settlement average here; the 1-minute history above cannot. Entries take the ask the second the forecast beats it by ≥ 4¢ after the fee (5–59 s left), one per round, held to settlement.`,'',
       scoreTable(final.accuracy,'Time left'),'',strategyTable([{name:'Final minute: model edge ≥ 4¢ · hold',s:final.model,trades:[]},{name:'Final minute: quant blend edge ≥ 4¢ · hold',s:final.quant,trades:[]}]),'']:['No live journal (data/advisor.db) found.','']),
     '## Method and limits','',
@@ -147,13 +125,13 @@ export function analyze(store:HistoryStore,log:(m:string)=>void=()=>{},journal:D
   const summary=takeaways.map(t=>'• '+t.replace(/\*\*/g,'')).join('\n');
   const rule=(x:Summary):RuleResult=>({n:x.n,mean:x.mean,ci:x.ci,early:x.early,late:x.late});
   const lowBucket=(b:Bucket[])=>{const x=b.find(y=>y.lo===0);return x?x.pnl/x.price:null;};
-  const verdict:Verdict={generated:new Date().toISOString(),from,to,rounds,hours:hourly?.events??0,buy15:rule(app),buy15Model:rule(strategies15.find(l=>l.name.startsWith('Raw diffusion model, ≥ 4¢'))!.s),buyHourly:hourly?rule(hourly.strategies[0].s):null,
-    exits:{fixed:fixedVsHold,trailing:trailVsHold},kalshiBetter:{fifteen:kalshiWins.length,fifteenOf:accuracy.length,hourly:hourly?.accuracy.filter(a=>a.diffCI[0]>0).length??0,hourlyOf:hourly?.accuracy.length??0},
+  const verdict:Verdict={generated:new Date().toISOString(),from,to,rounds,buy15:rule(app),buy15Model:rule(strategies15.find(l=>l.name.startsWith('Raw diffusion model, ≥ 4¢'))!.s),
+    exits:{fixed:fixedVsHold,trailing:trailVsHold},kalshiBetter:{fifteen:kalshiWins.length,fifteenOf:accuracy.length},
     profitable:winners.map(w=>w.name),strategies:all.length,ruin:[1,.25,.1,.02].map(stake=>({stake,ruined:bankroll(strategies15[0].trades,stake).ruined})),
-    longshot:{fifteen:lowBucket(fair),hourly:hourly?lowBucket(hourly.fair):null},finalMinute:final?{rounds:final.rounds,trade:rule(final.model)}:null,
+    longshot:{fifteen:lowBucket(fair)},finalMinute:final?{rounds:final.rounds,trade:rule(final.model)}:null,
     sellTest:{window:rule(sellWindow),final:final?rule(final.sell):null},setups:setupStats(m15,c15,s,basis.at)};
   const strip=(l:Line[])=>l.map(({name,s})=>({name,s}));
-  return {markdown:md,summary,verdict,json:{from,to,rounds,accuracy,overall,fair,fairLate,calModel,calKalshi,scales,strategies15:strip(strategies15),hourly:hourly?{...hourly,strategies:strip(hourly.strategies)}:null,final,basis:{median:median(raw),q25,q75},verdict}};
+  return {markdown:md,summary,verdict,json:{from,to,rounds,accuracy,overall,fair,fairLate,calModel,calKalshi,scales,strategies15:strip(strategies15),final,basis:{median:median(raw),q25,q75},verdict}};
 }
 export function runBacktest(store:HistoryStore,o:{out:string;log?:(m:string)=>void;journal?:string}){
   // The live journal is opened read-only, so this can run while the app is writing to it.

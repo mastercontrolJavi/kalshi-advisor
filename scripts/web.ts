@@ -4,16 +4,19 @@ import {createServer,request} from 'node:http';
 import {WebSocketServer,WebSocket} from 'ws';
 import {authorized,requireDashboardCredentials} from '../src/engine/auth';
 import {fullSpeed} from '../src/engine/power';
+import {readBotRecord} from '../src/bot/record';
 requireDashboardCredentials();
 // This server relays the 4 Hz engine stream to the page, so it must not be power-throttled on battery either (power.ts).
 fullSpeed((event,data)=>console.log(JSON.stringify({time:new Date().toISOString(),event,data})));
-const dev=process.argv.includes('--dev'),port=Number(process.env.PORT??3000),enginePort=Number(process.env.ENGINE_PORT??3001),marketsPort=Number(process.env.MARKETS_PORT??3002);
-// Each backend process behind the authenticated server: HTTP by path prefix, live updates by WebSocket path.
-const apis:[string,number,string][]=[['/api/engine/',enginePort,'Engine'],['/api/markets/',marketsPort,'Markets engine']],sockets:Record<string,number>={'/ws':enginePort,'/markets-ws':marketsPort};
+const dev=process.argv.includes('--dev'),port=Number(process.env.PORT??3000),enginePort=Number(process.env.ENGINE_PORT??3001);
+// The engine behind the authenticated server: HTTP by path prefix, live updates by WebSocket path.
+const apis:[string,number,string][]=[['/api/engine/',enginePort,'Engine']],sockets:Record<string,number>={'/ws':enginePort};
 const app=next({dev,hostname:'127.0.0.1',port});
 await app.prepare();const handle=app.getRequestHandler(),wss=new WebSocketServer({noServer:true});
 const server=createServer((req,res)=>{
   if(!authorized(req.headers.authorization,req)){res.writeHead(401,{'WWW-Authenticate':'Basic realm="Kalshi Advisor"','Cache-Control':'no-store'});res.end('Authentication required');return;}
+  // The paper bot's record (bot/, DECISIONS 81): read here from its own ledger, so the engine does no work for it.
+  if(req.url==='/api/bot'&&req.method==='GET'){try{const body=JSON.stringify(readBotRecord());res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(body);}catch(e){res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}return;}
   const api=apis.find(([prefix])=>req.url?.startsWith(prefix));
   if(api){const [prefix,target,name]=api;
     const upstream=request({hostname:'127.0.0.1',port:target,path:req.url!.slice(prefix.length-1),method:req.method,headers:{...req.headers,'x-forwarded-host':req.headers.host}},r=>{res.writeHead(r.statusCode??502,r.headers);r.pipe(res);});

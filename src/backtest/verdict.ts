@@ -6,17 +6,17 @@ import type {SetupStats} from './setups';
 export const VERDICT_PATH='./data/backtest-verdict.json';
 export interface RuleResult {n:number;mean:number;ci:[number,number];early:number;late:number}
 export interface Verdict {
-  generated:string;from:number;to:number;rounds:number;hours:number;
-  buy15:RuleResult;buyHourly:RuleResult|null;
+  generated:string;from:number;to:number;rounds:number;
+  buy15:RuleResult;
   /** The same rule on the raw diffusion model (Use quant forecast for signals off). */
   buy15Model?:RuleResult|null;
   exits:{fixed:{mean:number;ci:[number,number]};trailing:{mean:number;ci:[number,number]}};
-  kalshiBetter:{fifteen:number;fifteenOf:number;hourly:number;hourlyOf:number};
+  kalshiBetter:{fifteen:number;fifteenOf:number};
   profitable:string[];strategies:number;
   /** Share of 100-trade runs that fell below 5% of the start, by stake per trade, for the BUY rule's trades. */
   ruin:{stake:number;ruined:number}[];
-  /** Average return on money spent for contracts bought at ≤ 5¢ (15-minute, 5–14 min left) and hourly. */
-  longshot:{fifteen:number|null;hourly:number|null};
+  /** Average return on money spent for contracts bought at ≤ 5¢ (15-minute, 5–14 min left). */
+  longshot:{fifteen:number|null};
   finalMinute:{rounds:number;trade:RuleResult|null}|null;
   /** Selling vs holding when the quant forecast is ≥ 3¢ below the net bid: 1–15 min left (history) and last 90 s (live journal). */
   sellTest?:{window:RuleResult;final:RuleResult|null}|null;
@@ -28,12 +28,12 @@ const date=(ts:number)=>new Date(ts*1000).toLocaleDateString('en-US',{month:'sho
 export const STALE_DAYS=14;
 export function stale(v:Verdict,now=Date.now()){return now-Date.parse(v.generated)>STALE_DAYS*86400000;}
 /** One sentence for a BUY signal: how the same rule did on past rounds, and whether that is an edge. */
-export function ruleVerdict(v:Verdict|null,which:'15m'|'hourly',now=Date.now(),source:'quant'|'model'='quant'):{tone:'yes'|'warn'|'neutral';text:string}{
+export function ruleVerdict(v:Verdict|null,which:'15m',now=Date.now(),source:'quant'|'model'='quant'):{tone:'yes'|'warn'|'neutral';text:string}{
   if(!v)return {tone:'neutral',text:'Not backtested yet: run npm run backtest to see how this rule did on past rounds.'};
-  const raw=which==='15m'&&source==='model',r=which==='15m'?raw?v.buy15Model??null:v.buy15:v.buyHourly;
-  if(!r||!r.n)return {tone:'neutral',text:`Not backtested for ${which==='15m'?'15-minute':'hourly'} markets yet.`};
+  const raw=source==='model',r=raw?v.buy15Model??null:v.buy15;
+  if(!r||!r.n)return {tone:'neutral',text:`Not backtested for 15-minute markets yet.`};
   const edge=r.ci[0]>0,loses=r.ci[1]<0;
-  const text=`Backtest: this BUY rule${raw?' (raw model)':''} averaged ${c(r.mean)} per contract after fees over ${r.n.toLocaleString()} past ${which==='15m'?'rounds':'hours'} (${date(v.from)}–${date(v.to)}; likely range ${c(r.ci[0])} to ${c(r.ci[1])}) — ${edge?'a measurable edge so far':loses?'it lost money':'no proven edge'}.${stale(v,now)?' Results are over two weeks old; re-run npm run backtest.':''}`;
+  const text=`Backtest: this BUY rule${raw?' (raw model)':''} averaged ${c(r.mean)} per contract after fees over ${r.n.toLocaleString()} past rounds (${date(v.from)}–${date(v.to)}; likely range ${c(r.ci[0])} to ${c(r.ci[1])}) — ${edge?'a measurable edge so far':loses?'it lost money':'no proven edge'}.${stale(v,now)?' Results are over two weeks old; re-run npm run backtest.':''}`;
   return {tone:edge?'yes':'warn',text};
 }
 /**
@@ -53,16 +53,16 @@ export function finalMinuteEvidence(v:Verdict|null):{status:'collecting'|'proven
 /**
  * The bar a BUY rule must clear before the app shows its signals (Settings → provenSignalsOnly, on by default): the
  * final-minute bar — ≥ 100 trades, a 95% range above zero and a profit in both halves of the period.
- * 2026-10-15 edge study (DECISIONS 56): no 15-minute or hourly rule has cleared it; on 9,188 rounds Kalshi's price
+ * 2026-10-15 edge study (DECISIONS 56): no 15-minute rule has cleared it; on 9,188 rounds Kalshi's price
  * alone forecast best out of sample, and the model's disagreements with it lost after fees.
  */
 export function ruleProven(r:RuleResult|null|undefined):boolean{return !!r&&r.n>=FINAL_MIN_TRADES&&r.ci[0]>0&&r.early>0&&r.late>0;}
-export function signalEvidence(v:Verdict|null,which:'15m'|'hourly',source:'quant'|'model'='quant',now=Date.now()):{proven:boolean;text:string}{
+export function signalEvidence(v:Verdict|null,which:'15m',source:'quant'|'model'='quant',now=Date.now()):{proven:boolean;text:string}{
   if(v&&stale(v,now))return {proven:false,text:'Hidden: the backtest verdict is out of date, so BUY signals stay hidden until it refreshes (npm run backtest).'};
-  const r=which==='15m'?source==='model'?v?.buy15Model:v?.buy15:v?.buyHourly;
+  const r=source==='model'?v?.buy15Model:v?.buy15;
   if(ruleProven(r))return {proven:true,text:''};
-  if(!r||!r.n)return {proven:false,text:`Hidden until the ${which==='15m'?'15-minute':'hourly'} BUY rule has been backtested.`};
-  return {proven:false,text:`Hidden: this BUY rule has no proven edge — ${c(r.mean)} per contract after fees over ${r.n.toLocaleString()} past ${which==='15m'?'rounds':'hours'} (likely range ${c(r.ci[0])} to ${c(r.ci[1])}).`};
+  if(!r||!r.n)return {proven:false,text:`Hidden until the 15-minute BUY rule has been backtested.`};
+  return {proven:false,text:`Hidden: this BUY rule has no proven edge — ${c(r.mean)} per contract after fees over ${r.n.toLocaleString()} past rounds (likely range ${c(r.ci[0])} to ${c(r.ci[1])}).`};
 }
 /** The evidence behind an advise-mode label, in one line (null when there is nothing to cite). */
 export function sellEvidence(v:Verdict|null,action:string):string|null{

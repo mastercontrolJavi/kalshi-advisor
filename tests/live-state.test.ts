@@ -32,11 +32,11 @@ it('a device clock that is off by seconds stays fresh, while replayed old packet
   expect(clockSkew([])).toBe(0);
 });
 it('quarter-second updates without the slow fields keep the last copy; a new value replaces it',()=>{
-  const full={engineTime:1,market:{ticker:'A'},exits:[{ticker:'A',contracts:5}],backtest:{generated:'d1'},hourly:{event:'H'},config:{exitMode:'advise'},mySetups:{rounds:3}};
+  const full={engineTime:1,market:{ticker:'A'},exits:[{ticker:'A',contracts:5}],backtest:{generated:'d1'},config:{exitMode:'advise'},mySetups:{rounds:3}};
   const fast=mergeLiveState(full,{engineTime:2,market:{ticker:'A'},exits:[{ticker:'A',contracts:5}]});
-  for(const k of ['backtest','hourly','config','mySetups'])expect(fast[k]).toEqual((full as any)[k]);
+  for(const k of ['backtest','config','mySetups'])expect(fast[k]).toEqual((full as any)[k]);
   expect(mergeLiveState(fast,{engineTime:3,market:{ticker:'B'},backtest:{generated:'d2'},exits:[]}).backtest).toEqual({generated:'d2'});
-  expect(mergeLiveState(null,{engineTime:1}).hourly).toBeUndefined();expect(SLOW_FIELDS).not.toContain('exits');expect(SLOW_FIELDS).not.toContain('book');
+  expect(mergeLiveState(null,{engineTime:1}).backtest).toBeUndefined();expect(SLOW_FIELDS).not.toContain('exits');expect(SLOW_FIELDS).not.toContain('book');
 });
 it('packets arriving while Chrome slows the page timer still count as fresh',()=>{
   // Heartbeat last ran at 50,000 (throttled); packets keep arriving, the latest at 61,000 stamped 60,950 by the engine.

@@ -6,7 +6,7 @@ import type {SetupStats} from '../backtest/setups';
 /**
  * The paper account in the journal (sim_accounts, sim_fills): every reset starts a new account with the bankroll you
  * choose, so the old record stays for the coach and for later studies. Bitcoin rounds settle from the outcomes table the
- * live advisor writes; any other Kalshi market (a copied sports or politics bet) from sim_results, which the engine fills
+ * live advisor writes; any other Kalshi market (an earlier round still holding a paper position) from sim_results, which the engine fills
  * from Kalshi's own result while a paper position is open.
  */
 export const PAPER_SCHEMA=`CREATE TABLE IF NOT EXISTS sim_accounts(id INTEGER PRIMARY KEY,time INTEGER NOT NULL,bankroll REAL NOT NULL);
@@ -78,7 +78,7 @@ export class PaperDesk {
     const l=this.ledger()!,meta=new Map<string,any>();for(const f of this.fills(a.id))if(f.context?.title)meta.set(f.ticker,f.context);
     const positions=l.positions.map(p=>{const m=mark(p.ticker,p.side),value=m.bid!==null?p.contracts*m.bid:null,c=meta.get(p.ticker);
       return {...p,avgCost:p.cost/p.contracts,bid:m.bid,fair:m.fair,value,unrealized:value!==null?value-p.cost:null,holdValue:m.fair!==null?p.contracts*m.fair:null,
-        title:c?.title??null,url:c?.url??null,close:c?.close??null,copy:!!c?.copy};});
+        title:c?.title??null,url:c?.url??null,close:c?.close??null};});
     const equity=l.cash+positions.reduce((s,p)=>s+(p.value??p.cost),0),settled=l.rounds.filter(r=>r.pnl!==null);
     return {version:this.version,account:a,cash:l.cash,equity,realized:l.realized,fees:l.fees,positions,rounds:settled.length,wins:settled.filter(r=>r.pnl!>0).length};
   }
