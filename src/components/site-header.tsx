@@ -1,9 +1,9 @@
 'use client';
 import type {ReactNode} from 'react';
 import {cn} from '@/lib/utils';
-const links=[{href:'/',label:'15-min'},{href:'/paper',label:'Paper'},{href:'/analytics',label:'Analytics'},{href:'/calibration',label:'Calibration'}];
+const links=[{href:'/',label:'15-min'},{href:'/paper',label:'Paper'},{href:'/bot',label:'Bot'},{href:'/analytics',label:'Analytics'},{href:'/calibration',label:'Calibration'}];
 /** Shared sticky header: brand, page navigation (current page marked), and optional page-specific status on the right. */
-export function SiteHeader({current,aside,children,bottom}:{current:'/'|'/paper'|'/analytics'|'/calibration';aside?:ReactNode;children?:ReactNode;bottom?:ReactNode}){
+export function SiteHeader({current,aside,children,bottom}:{current:'/'|'/paper'|'/bot'|'/analytics'|'/calibration';aside?:ReactNode;children?:ReactNode;bottom?:ReactNode}){
   return <header className="sticky top-0 z-30 border-b border-line/60 bg-bg/75 backdrop-blur-xl">
     <div className="mx-auto flex max-w-[1600px] 3xl:max-w-[2400px] 4xl:max-w-[3200px] flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5 sm:gap-x-4 sm:px-6">
       <a href="/" className="flex items-center gap-2"><img src="/icon.svg" alt="" width={28} height={28} className="size-7"/><span className="font-display text-lg font-bold tracking-tight sm:text-xl">Kalshi Advisor</span></a>

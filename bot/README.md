@@ -6,7 +6,7 @@ ledger in `data/bot.db`.
 
 ```powershell
 npm run bot            # run it (also started by the desktop shortcut / npm run launch; BOT=off in .env.local skips it)
-npm run bot:status     # bankroll, record, last ten trades
+npm run bot:status     # bankroll, record, last ten trades (the dashboard's Bot page shows the same, live)
 npm run bot:backtest   # replay on the recorded journal -> output/bot-backtest.md
 npm run bot:test
 uv run --project bot python -m bot reset   # back to $15 (stop the bot first)

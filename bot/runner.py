@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, Optional
 
 import websockets
@@ -76,6 +78,10 @@ class Bot:
         self.cooldown: Dict[str, float] = {}
         self.stats = {'messages': 0, 'evals': 0, 'reasons': {}}
         self.hit_target = self.broker.equity >= cfg.TARGET
+        self.view: Optional[tuple] = None  # the latest look at the round: (ticker, secs_left, p_yes, yes_ask, no_ask, verdict)
+        self.connected = False
+        self.started = time.time()
+        self.status_path = Path(cfg.DB_PATH).with_name('bot-status.json')
 
     # ---------- market list ----------
     async def refresh_markets(self) -> None:
@@ -123,6 +129,10 @@ class Bot:
                 except Exception as e:
                     log(name + '-error', message=repr(e))
             tick += 1
+            try:
+                self.write_status()
+            except Exception as e:
+                log('status-error', message=repr(e))
             if tick % 6 == 0:
                 s = self.broker.summary()
                 log('status', equity=round(s['equity'], 4), rounds=s['rounds'], wins=s['wins'], open=s['open'], misses=s['misses'],
@@ -130,6 +140,22 @@ class Bot:
                     reasons=self.stats['reasons'])
                 self.stats = {'messages': 0, 'evals': 0, 'reasons': {}}
             await asyncio.sleep(10)
+
+    def write_status(self) -> None:
+        """A small file the dashboard's Bot page reads (written every 10 s, replaced atomically)."""
+        now = time.time()
+        v, cfg, m = self.view, self.cfg, self.current(now)
+        data = {'time': now * 1000, 'started': self.started * 1000, 'connected': self.connected, 'ready': self.pricer.ready,
+                'warmup': [self.pricer.vol.count, cfg.VOL_MIN_SAMPLES], 'bookDelayMs': round(self.delay.ms),
+                'valueAgeMs': round(now * 1000 - self.last_value_ms) if self.last_value_ms else None,
+                'round': None if m is None else {'ticker': m.ticker, 'close': m.close * 1000, 'strike': m.strike, 'held': m.ticker in self.broker.positions},
+                'view': None if v is None or m is None or v[0] != m.ticker else {'secsLeft': v[1], 'pYes': v[2], 'yesAsk': v[3], 'noAsk': v[4], 'verdict': v[5]},
+                'config': {'start': cfg.START_BANKROLL, 'target': cfg.TARGET, 'minEdge': cfg.MIN_EDGE, 'minAsk': cfg.MIN_ASK, 'maxAsk': cfg.MAX_ASK,
+                           'midBand': [cfg.MID_BAND_LOW, cfg.MID_BAND_HIGH] if cfg.BLOCK_MID_BAND else None, 'window': [cfg.MIN_SECS_LEFT, cfg.MAX_SECS_LEFT],
+                           'kelly': cfg.KELLY_FRAC, 'maxRisk': cfg.MAX_RISK_FRAC, 'latencyMs': cfg.LATENCY_MS}}
+        tmp = self.status_path.with_suffix('.tmp')
+        tmp.write_text(json.dumps(data), encoding='utf-8')
+        os.replace(tmp, self.status_path)
 
     # ---------- websocket ----------
     async def subscribe(self, tickers: list) -> None:
@@ -155,6 +181,7 @@ class Bot:
                     await ws.send(json.dumps({'id': 2, 'cmd': 'subscribe', 'params': {'channels': ['cfbenchmarks_value_5hz'], 'index_ids': ['BRTI']}}))
                     now = time.time()
                     await self.subscribe([m.ticker for m in sorted(self.markets.values(), key=lambda m: m.open) if m.close > now][:2])
+                    self.connected = True
                     log('connected')
                     backoff = 0.5
                     async for raw in ws:
@@ -163,7 +190,7 @@ class Bot:
                 raise
             except Exception as e:
                 log('stream-error', message=repr(e))
-            self.ws = None
+            self.ws, self.connected = None, False
             for m in self.markets.values():
                 m.book.valid = False
             await asyncio.sleep(backoff)
@@ -248,7 +275,9 @@ class Bot:
         if priced is None:
             return self.skip('model warming up')
         fv, left = priced
-        intent, why = decide(self.cfg, fv, left, market.book.ask('yes'), market.book.ask('no'), self.broker.equity)
+        yes_ask, no_ask = market.book.ask('yes'), market.book.ask('no')
+        intent, why = decide(self.cfg, fv, left, yes_ask, no_ask, self.broker.equity)
+        self.view = (market.ticker, left, fv.p_yes, yes_ask, no_ask, why)
         if intent is None:
             return self.skip(why)
         if self.broker.traded(market.ticker):
