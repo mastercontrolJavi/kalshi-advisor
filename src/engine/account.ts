@@ -77,8 +77,8 @@ export class Account {
       if(allKey!==this.allMarketsKey){this.allMarketsKey=allKey;
         try{this.allMarketEvents=normalizeAccount(rawFills,rawSettlements,()=>true);}
         catch(e){this.allMarketEvents=null;this.journal.log('account-all-markets-error',{message:(e as Error).message});}}
-      // Open-position costs (with actual fees) for every Bitcoin market, hourly included; P&L and guardrails stay 15-minute only.
-      const openCosts=new Map<string,OpenCost>();normalizeAccount(rawFills,rawSettlements,['KXBTC15M','KXBTCD'],openCosts);this.openCosts=openCosts;
+      // Open-position costs (with actual fees) for every Bitcoin market; P&L and guardrails stay 15-minute only.
+      const openCosts=new Map<string,OpenCost>();normalizeAccount(rawFills,rawSettlements,['KXBTC15M'],openCosts);this.openCosts=openCosts;
       const config=this.journal.config();
       // Warnings are stored with each real trade; reuse them after a restart instead of recomputing every past fill
       // (763 fills cost 2–12 s of blocked engine loop on the first sync, 2026-10-11).

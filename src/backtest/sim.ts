@@ -55,7 +55,7 @@ export function modelP(spot:number,strike:number,sigma:number,tau:number,basis:n
 export const quantP=(model:number,mid:number|null,sigma:number)=>predict(priorFit(),{modelP:model,mid,sigma,momentum30s:null,momentum120s:null,imbalance:null,tradeFlow30s:null}).p;
 /**
  * One row per market per minute with at least 60 s left. `cluster` groups rows that share an outcome driver: the
- * round for 15-minute markets, the hour for hourly strikes. Hourly strikes are kept only within `band` dollars of the
+ * round for 15-minute markets. When `band` is set, strikes are kept only within that many dollars of the
  * corrected spot at that minute (a decision-time filter, so no look-ahead).
  */
 export function buildRows(markets:MarketRow[],candles:Map<string,CandleRow[]>,s:SpotSeries,basisAt:(ts:number)=>number|null,opts:{cluster:'ticker'|'event';band?:number;varianceScale?:number}={cluster:'ticker'}):Row[]{

@@ -10,7 +10,7 @@ import {SETUP_TITLE,type SetupKind,type SetupStats,type SetupWindow} from '../ba
  */
 export type Verdict='good'|'unlucky'|'lucky'|'mistake'|'open';
 export type Cause='selection'|'price'|'sizing'|'flips'|'earlyExit'|'fees'|'tilt';
-export interface RoundReview {ticker:string;time:number;side:Side;result:Side|null;pnl:number|null;staked:number;fees:number;stakePct:number|null;title:string|null;source:'btc'|'copy'|'market';group:string|null;
+export interface RoundReview {ticker:string;time:number;side:Side;result:Side|null;pnl:number|null;staked:number;fees:number;stakePct:number|null;title:string|null;source:'btc'|'market';
   entry:{tau:number|null;price:number;fair:number|null;edge:number|null;setup:{kind:SetupKind;window:SetupWindow|null;with:boolean}|null};
   verdict:Verdict;flags:Cause[];notes:string[]}
 export interface Group {label:string;rounds:number;wins:number;net:number}
@@ -39,12 +39,11 @@ export function reviewRound(r:SimRound,stats?:SetupStats[]|null):RoundReview{
   if(stakePct!==null&&stakePct>MAX_STAKE){flags.push('sizing');notes.push(`Bet ${pct(stakePct)} of the paper bankroll on one round (keep it under ${pct(MAX_STAKE)}).`);}
   if(r.flipped){flags.push('flips');notes.push('Bought both sides in the same round: the second buy sold the first at the bid and paid the fee twice.');}
   if(r.soldEarly&&r.holdPnl!==null&&r.pnl!==null){const d=r.pnl-r.holdPnl;notes.push(`Sold before the close: ${d>=0?'saved':'cost'} ${usd(Math.abs(d)).slice(1)} versus holding to settlement.`);if(d<0)flags.push('earlyExit');}
-  if(ctx.copy)notes.unshift(`Copied ${ctx.copy.wallets} ranked wallet${ctx.copy.wallets===1?'':'s'} holding $${Math.round(ctx.copy.value).toLocaleString()}${ctx.copy.avgEntry!=null?` from ${Math.round(ctx.copy.avgEntry*100)}¢`:''}.`);
-  else if(ctx.tau!=null&&(r.ticker.startsWith('KXBTC15M')||ctx.setup))notes.unshift(`${first.side.toUpperCase()} with ${mmss(ctx.tau)} left · ${setupLabel(setup)}.`);
+  if(ctx.tau!=null&&(r.ticker.startsWith('KXBTC15M')||ctx.setup))notes.unshift(`${first.side.toUpperCase()} with ${mmss(ctx.tau)} left · ${setupLabel(setup)}.`);
   const sound=!flags.some(f=>f==='selection'||f==='price'||f==='sizing'||f==='flips');
   const verdict:Verdict=r.pnl===null?'open':r.pnl>0?(sound?'good':'lucky'):(sound?'unlucky':'mistake');
-  const source=ctx.copy?'copy':r.ticker.startsWith('KXBTC15M')||ctx.setup?'btc':'market';
-  return {ticker:r.ticker,time:first.time,side:first.side,result:r.result,pnl:r.pnl,staked:r.staked,fees:r.fees,stakePct,title:typeof ctx.title==='string'?ctx.title:null,source,group:typeof ctx.copy?.group==='string'?ctx.copy.group:null,entry:{tau:ctx.tau??null,price:first.price,fair,edge,setup},verdict,flags,notes};
+  const source=r.ticker.startsWith('KXBTC15M')||ctx.setup?'btc':'market';
+  return {ticker:r.ticker,time:first.time,side:first.side,result:r.result,pnl:r.pnl,staked:r.staked,fees:r.fees,stakePct,title:typeof ctx.title==='string'?ctx.title:null,source,entry:{tau:ctx.tau??null,price:first.price,fair,edge,setup},verdict,flags,notes};
 }
 const CAUSES:Record<Cause,{title:string;why:string;fix:string}>={
   selection:{title:'Trading setups that lose',why:'Coin flips, bets against the trend and chased bounces lose money over thousands of past rounds: Kalshi already prices what the chart shows.',fix:'Skip coin flips and trades against the trend. The Chart setup box shows each setup’s record before you buy.'},
@@ -70,7 +69,7 @@ export function coach(rounds:SimRound[],stats?:SetupStats[]|null,bankroll?:numbe
     return {cause,...CAUSES[cause],rounds:xs.length,net:lost};
   }).filter(x=>x.rounds>0&&x.net<0).sort((a,b)=>a.net-b.net);
   const groups=new Map<string,Group>();const add=(label:string,r:RoundReview)=>{const g=groups.get(label)??{label,rounds:0,wins:0,net:0};g.rounds++;if(r.pnl!>0)g.wins++;g.net+=r.pnl!;groups.set(label,g);};
-  for(const r of done){if(r.source==='copy'){add(`Copied sharps${r.group?` · ${r.group}`:''}`,r);add('Copied sharps',r);}else if(r.source==='btc'){add(setupLabel(r.entry.setup),r);if(r.entry.setup?.window)add(`${r.entry.setup.window} min left`,r);}
+  for(const r of done){if(r.source==='btc'){add(setupLabel(r.entry.setup),r);if(r.entry.setup?.window)add(`${r.entry.setup.window} min left`,r);}
     const p=r.entry.price;add(p<.3?'Long shots (under 30¢)':p<.6?'Near even (30–60¢)':p<.85?'Favourites (60–85¢)':'Heavy favourites (85¢+)',r);
     add(rounds.find(x=>x.ticker===r.ticker)?.soldEarly?'Sold before the close':'Held to settlement',r);}
   // A group holding every round only repeats the total, so it is not an insight.

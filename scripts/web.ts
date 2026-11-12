@@ -7,9 +7,9 @@ import {fullSpeed} from '../src/engine/power';
 requireDashboardCredentials();
 // This server relays the 4 Hz engine stream to the page, so it must not be power-throttled on battery either (power.ts).
 fullSpeed((event,data)=>console.log(JSON.stringify({time:new Date().toISOString(),event,data})));
-const dev=process.argv.includes('--dev'),port=Number(process.env.PORT??3000),enginePort=Number(process.env.ENGINE_PORT??3001),marketsPort=Number(process.env.MARKETS_PORT??3002);
-// Each backend process behind the authenticated server: HTTP by path prefix, live updates by WebSocket path.
-const apis:[string,number,string][]=[['/api/engine/',enginePort,'Engine'],['/api/markets/',marketsPort,'Markets engine']],sockets:Record<string,number>={'/ws':enginePort,'/markets-ws':marketsPort};
+const dev=process.argv.includes('--dev'),port=Number(process.env.PORT??3000),enginePort=Number(process.env.ENGINE_PORT??3001);
+// The engine behind the authenticated server: HTTP by path prefix, live updates by WebSocket path.
+const apis:[string,number,string][]=[['/api/engine/',enginePort,'Engine']],sockets:Record<string,number>={'/ws':enginePort};
 const app=next({dev,hostname:'127.0.0.1',port});
 await app.prepare();const handle=app.getRequestHandler(),wss=new WebSocketServer({noServer:true});
 const server=createServer((req,res)=>{

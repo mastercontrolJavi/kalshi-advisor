@@ -28,18 +28,3 @@ export function buildRounds(db:Database.Database,limit=40):{rounds:Round[];trend
     const brier=rs.length?rs.reduce((s,r)=>s+(k.get(r)!.p-(r.result==='yes'?1:0))**2,0)/rs.length:null;return [k.key,{n:rs.length,hits,rate:rs.length?hits/rs.length:null,brier,last10:rolling.at(-1)?.[k.key]??null}];}));
   return {rounds,trends:{rolling,totals}};
 }
-/** Hourly history: each hour's frozen calls (45/30/15/5/1 min left) against whether it finished above its opening reference. */
-export function buildHourlyHistory(db:Database.Database,limit=24){
-  const events=(db.prepare('SELECT event,MAX(time) t FROM hourly_calls GROUP BY event ORDER BY t DESC LIMIT ?').all(limit) as {event:string}[]).map(r=>r.event);
-  const rows=events.map(event=>{
-    const out=db.prepare('SELECT settle,k_hour,up FROM hourly_outcomes WHERE event=?').get(event) as any;
-    const calls=Object.fromEntries((db.prepare('SELECT horizon,direction,p,kalshi,k_hour,context FROM hourly_calls WHERE event=?').all(event) as any[]).map(r=>[String(r.horizon),{direction:r.direction,p:r.p,kalshi:r.kalshi,kHour:r.k_hour,close:JSON.parse(r.context).close}]));
-    const anyCall=Object.values(calls)[0] as any;
-    return {event,close:anyCall?.close??null,kHour:out?.k_hour??anyCall?.kHour??null,settle:out?.settle??null,result:out?.up==null?null:out.up?'yes':'no',calls};
-  });
-  const totals=Object.fromEntries([2700,1800,900,300,60].map(h=>{const rs=rows.filter(r=>r.result&&r.calls[String(h)]);const hits=rs.filter(r=>(r.calls[String(h)].direction==='UP')===(r.result==='yes')).length;
-    const kal=rs.filter(r=>r.calls[String(h)].kalshi!=null);
-    return [String(h),{n:rs.length,hits,rate:rs.length?hits/rs.length:null,brier:rs.length?rs.reduce((s,r)=>s+(r.calls[String(h)].p-(r.result==='yes'?1:0))**2,0)/rs.length:null,
-      kalshiBrier:kal.length?kal.reduce((s,r)=>s+(r.calls[String(h)].kalshi-(r.result==='yes'?1:0))**2,0)/kal.length:null}];}));
-  return {rows,totals};
-}

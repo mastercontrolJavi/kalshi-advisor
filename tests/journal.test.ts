@@ -28,7 +28,7 @@ it('a sync requested while one is running is queued, not dropped',async()=>{
   const client:any={authenticated:true,limits:null,get:async(path:string)=>{if(path==='/portfolio/balance'){balanceCalls++;if(balanceCalls===1)await gate;return {balance:1000,portfolio_value:0};}return {};},pages:async()=>[]};
   const account=new Account(client,new Journal(':memory:'));const first=account.sync();await account.sync();expect(balanceCalls).toBe(1);
   release();await first;await new Promise(r=>setTimeout(r,20));expect(balanceCalls).toBe(2);expect(account.ready).toBe(true);});
-it('hourly fills are normalized for open-position costs while P&L stays 15-minute only',async()=>{
+it('fills in a listed extra series are normalized for open-position costs while P&L stays 15-minute only',async()=>{
   const {normalizeAccount}=await import('../src/engine/account');
   const fills=[{fill_id:'h',ticker:'KXBTCD-26OCT0720-T83199.99',outcome_side:'yes',book_side:'bid',count_fp:'10',yes_price_dollars:'.5',no_price_dollars:'.5',fee_cost:'.1',created_time:'2026-10-08T00:00:00Z'}];
   const open=new Map();expect(normalizeAccount(fills,[])).toHaveLength(0);expect(normalizeAccount(fills,[],['KXBTC15M','KXBTCD'],open)).toHaveLength(1);

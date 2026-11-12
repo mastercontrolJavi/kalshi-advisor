@@ -102,7 +102,7 @@ export function DataUpdate({s}:{s:any}){
     <div className="text-sm"><div className="font-medium">{f.status==='proven'?'The data found something':'Final-minute entries are on, but the data does not support them'}</div><div className="text-fg/85">{f.text} {f.status==='proven'?'You can allow final-minute entries in Settings → Entry rules; the app will not turn them on by itself.':'You can turn them off in Settings → Entry rules.'}</div></div></Card>;
 }
 /** How the same BUY rule did on past rounds (npm run backtest), shown beside every BUY signal. */
-export function BacktestNote({s,which}:{s:any;which:'15m'|'hourly'}){
+export function BacktestNote({s,which}:{s:any;which:'15m'}){
   const v=ruleVerdict(s?.backtest??null,which,Date.now(),which==='15m'&&s?.quant?.signalSource==='model'?'model':'quant');
   return <div className={cn('mt-3 flex items-start gap-2 rounded-xl border px-3 py-2 text-sm',v.tone==='warn'?'border-warn/40 bg-warn-dim/30':v.tone==='yes'?'border-yes/35 bg-yes-dim/30':'border-line bg-surface-2/60')}>
     <FlaskConical aria-hidden className={cn('mt-0.5 size-4 shrink-0',v.tone==='warn'?'text-warn':v.tone==='yes'?'text-yes':'text-muted')}/><span>{v.text}</span></div>;
@@ -213,11 +213,11 @@ export function Stat({label,children,sub,tone='neutral'}:{label:string;children:
   return <div className="min-w-0"><div className="flex items-center gap-1"><span className="label">{label}</span><SectionHelp title={label}/></div><div className={cn('num mt-1.5 text-xl font-medium sm:text-2xl',toneText[tone])}>{children}</div>{sub?<div className="mt-0.5 truncate text-xs text-muted">{sub}</div>:null}</div>;
 }
 const noticeStyle:Record<string,string>={yes:'border-yes/40 bg-yes-dim/30',warn:'border-warn/40 bg-warn-dim/30',no:'border-no/40 bg-no-dim/30'};
-/** A heads-up box: what moved and what selling now would do. Shared by the Bitcoin positions box and Markets. */
+/** A heads-up box: what moved and what selling now would do. Used by the Bitcoin positions box. */
 export function Notice({notice}:{notice:{tone:'yes'|'warn'|'no';title:string;text:string}}){
   return <div role="status" className={cn('mt-3 rounded-xl border px-3 py-2 text-sm',noticeStyle[notice.tone])}><div className={cn('font-medium',toneText[notice.tone])}>{notice.title}</div><div className="text-fg/85">{notice.text}</div></div>;
 }
-/** A figure in its own card: label, big number, optional subline (Analytics and Markets → Record). */
+/** A figure in its own card: label, big number, optional subline (Analytics). */
 export function Kpi({label,children,sub,className}:{label:string;children:ReactNode;sub?:ReactNode;className?:string}){
   return <Card className="p-4"><div className="flex items-center gap-1"><span className="label">{label}</span><SectionHelp title={label}/></div><div className={cn('num mt-1.5 text-2xl font-medium',className)}>{children}</div>{sub?<div className="mt-0.5 text-xs text-muted">{sub}</div>:null}</Card>;
 }

@@ -1,0 +1,24 @@
+[project]
+name = "kalshi-bot"
+version = "0.1.0"
+description = "Paper-trading bot for Kalshi KXBTC15M (asyncio + websockets). Places no real orders."
+requires-python = ">=3.12"
+dependencies = [
+    "websockets>=14",
+    "cryptography>=43",
+]
+
+[project.optional-dependencies]
+# Only for `python -m bot backtest` (replay of the engine's recorded journal).
+research = [
+    "polars>=1.20",
+    "numpy>=2.1",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]

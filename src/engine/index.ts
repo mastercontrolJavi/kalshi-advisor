@@ -40,36 +40,26 @@ import {PRICE_HORIZONS,PRICE_VERSION,emptyPriceFit,priceInputs,forecastPrice,typ
 import {PriceForecastJournal} from './quant/price-journal';
 import {scalp,dips} from './quant/tactics';
 import {rollupMarkets,buildAnalytics} from './analytics';
-import {HourlyBoard,HOURLY_SERIES,HOURLY_HORIZONS,ladder,impliedAbove,hourlyIdeas} from './hourly';
-import {buildHourlyHistory} from './rounds';
-import {priorFit} from './quant/stack';
 import {VERDICT_PATH,type Verdict} from '../backtest/verdict';
-import {gateEvaluation,gateHourly,gateTactics} from './evidence';
+import {gateEvaluation,gateTactics} from './evidence';
 import {BacktestRefresher} from './refresh';
 import {classifySetup,type MySetups} from '../backtest/setups';
 import {mySetups} from './my-setups';
 import {SLOW_FIELDS} from './stream';
 import {PaperDesk,type MarketNow} from './paper';
-import {RealCopy,orderBody,describeFill,newClientOrderId} from './real-copy';
 import {Orderbook} from './feeds/orderbook';
 import {effectiveFees} from './feeds/kalshi';
 import {baseFees} from './model/fees';
-import {EdgeLink,edgeSpot,RealBookMemo,realOrderVeto,WindowReservations,EDGE_SERIES} from './edge-link';
+import {EdgeLink,edgeSpot,RealBookMemo} from './edge-link';
 requireDashboardCredentials();createExecutor(process.env.ENABLE_EXECUTOR==='true');
 const journal=new Journal();let config=journal.config();
 const priceJournal=new PriceForecastJournal(journal.db);
 // Paper trading on the live round (paper.ts): its own account in the journal, settled by the same results.
 const desk=new PaperDesk(journal);
-// Real copy orders (real-copy.ts): confirmed quotes only, capped, off until switched on in Settings.
-const realCopy=new RealCopy();
 // Edge sidecar (edge/, Python; DECISIONS 75): settlement-aware fair value, fee-aware gate, risk governor, data/edge.db.
-// One fire-and-forget POST a second; replies cached on state.edge. It vetoes real KXBTC15M orders (fail closed).
+// One fire-and-forget POST a second; replies cached on state.edge.
 let edgeBackfillAt=0;
-const reservations=new WindowReservations({load:()=>journal.get<Record<string,number>>('edge:reservations',{}),save:held=>journal.set('edge:reservations',held)}),realBookMemo=new RealBookMemo();
-const engineStartedAt=Date.now();
-/** KXBTC15M real orders wait for the first Kalshi account sync after start: fills made just before a restart are then known. */
-const windowLocalVeto=(ticker:string)=>!ticker.startsWith(EDGE_SERIES)?null:reservations.has(ticker)?'A real order for this window is already in flight or filled (one position per window)'
-  :!(account.ready&&account.updated>=engineStartedAt)?'Waiting for the first Kalshi account sync since the engine started':null;
+const realBookMemo=new RealBookMemo();
 const edgeLink=new EdgeLink(process.env.EDGE_URL??`http://127.0.0.1:${process.env.EDGE_PORT??3003}`,(event,data)=>log(event,data),reply=>{
   // Windows the sidecar never saw settle (it was down): resend Kalshi's result from the journal, at most every 30 s.
   if(!reply.unsettled?.length||Date.now()-edgeBackfillAt<30000)return;edgeBackfillAt=Date.now();
@@ -111,8 +101,6 @@ const benchmarkJournal=new BenchmarkJournal(journal.db),benchmark=new BenchmarkF
 const researchJournal=new ResearchJournal(journal.db);
 // Execution guardrails (execution-guard.ts, DECISIONS 70): the 500 ms stale-book breaker and the final-minute lock shadow log.
 const breaker=new StaleBreaker(),lockShadow=new LockShadow(journal.db);let lockShadowState=lockShadowScores(journal.db),lockShadowAt=0,lastBreaker=false;
-/** Real KXBTC15M orders only (these routes also serve sports): refused while the engine's own stale-book/BRTI breaker is on. */
-const staleVeto=(ticker:string)=>ticker.startsWith(EDGE_SERIES)&&breaker.stale?`Real KXBTC15M orders are paused: Kalshi book or BRTI feed is stale${breaker.reasons.length?` (${breaker.reasons.join(' · ')})`:''}`:null;
 // Your real fills in the current round, for the chart's buy/sell marks. Rebuilt only when the journal's events or the round change.
 let roundFillCache:{events:unknown;ticker:string|null;fills:{time:number;side:string;price:number;contracts:number;closedContracts:number}[]}={events:null,ticker:null,fills:[]};
 const roundFills=(events:ReturnType<typeof journal.realEvents>,ticker:string|null)=>{if(roundFillCache.events!==events||roundFillCache.ticker!==ticker)roundFillCache={events,ticker,fills:ticker?events.filter(e=>e.type==='fill'&&e.ticker===ticker&&e.side!=null&&e.price!=null).map(e=>({time:e.time,side:e.side!,price:e.price!,contracts:e.contracts,closedContracts:e.closedContracts??0})):[]};return roundFillCache.fills;};
@@ -172,16 +160,11 @@ async function settlements(){
     settledOnce=true;
   }finally{settling=false;}
 }
-/** What a copied sharp bet carried into the paper fill (sanitised: it comes from the page). */
-function copyContext(c:any):Record<string,unknown>{
-  if(!c||typeof c!=='object')return {};const str=(x:unknown,n:number)=>typeof x==='string'?x.slice(0,n):null,num=(x:unknown)=>Number.isFinite(Number(x))?Number(x):null;
-  return {copy:{cond:str(c.cond,100),outcome:str(c.outcome,200),title:str(c.title,300),group:str(c.group,30),wallets:num(c.wallets),value:num(c.value),avgEntry:num(c.avgEntry)}};
-}
 /**
  * The market for a paper order. The current Bitcoin round uses the live book and its delay check; any other Kalshi
- * market (a copied sports, politics or crypto bet) is read now: its order book and its series' fee schedule.
+ * market (an earlier round still holding a paper position) is read now: its order book and its series' fee schedule.
  */
-async function paperMarket(ticker?:string,extra:Record<string,unknown>={}):Promise<MarketNow>{
+async function paperMarket(ticker?:string):Promise<MarketNow>{
   const m=state.market;
   if(ticker&&ticker!==m?.ticker){
     if(!/^[A-Z0-9][A-Z0-9._-]{2,99}$/.test(ticker))throw new Error('Unknown Kalshi market');
@@ -191,17 +174,17 @@ async function paperMarket(ticker?:string,extra:Record<string,unknown>={}):Promi
     try{const {series}=await client.get('/series/'+encodeURIComponent(String(mk.event_ticker).split('-')[0]));schedule={...effectiveFees(series,[],mk.event_ticker,now+client.clockOffset),precision:config.feePrecision};}catch{}
     return {ticker,tau:(Date.parse(mk.close_time)-(now+client.clockOffset))/1000,active:mk.status==='active',book:v,delayed:false,delayMs:0,schedule,bookStaleMs:config.bookStaleMs,now,
       context:{title:[mk.title,mk.yes_sub_title].filter(Boolean).join(' · '),close:Date.parse(mk.close_time),url:`https://kalshi.com/markets/${String(mk.event_ticker).split('-')[0].toLowerCase()}`,
-        mid:v.yesBid!==null&&v.yesAsk!==null?(v.yesBid+v.yesAsk)/2:null,spread:v.yesBid!==null&&v.yesAsk!==null?v.yesAsk-v.yesBid:null,feeVerified:schedule.verified,...extra}};
+        mid:v.yesBid!==null&&v.yesAsk!==null?(v.yesBid+v.yesAsk)/2:null,spread:v.yesBid!==null&&v.yesAsk!==null?v.yesAsk-v.yesBid:null,feeVerified:schedule.verified}};
   }
   if(!m)throw new Error('No round is open right now');
   const now=Date.now(),chosen=kalshi.current(m.ticker,now),book=chosen?.book.view();if(!book||!chosen)throw new Error('No Kalshi book yet');
   const mid=book.yesBid!==null&&book.yesAsk!==null?(book.yesBid+book.yesAsk)/2:null;
   return {ticker:m.ticker,tau:(Date.parse(m.close_time)-(now+client.clockOffset))/1000,active:m.status==='active',book,delayed:chosen.delayed,delayMs:chosen.delayMs,
     schedule:{...kalshi.fees,precision:config.feePrecision},bookStaleMs:config.bookStaleMs,now,
-    context:{setup:state.setup??null,q:state.quant?.p??null,model:state.quant?.model??null,mid,spread:book.yesBid!==null&&book.yesAsk!==null?book.yesAsk-book.yesBid:null,dist:state.distance??null,K:state.K??null,proxy:state.proxy??null,...extra}};
+    context:{setup:state.setup??null,q:state.quant?.p??null,model:state.quant?.model??null,mid,spread:book.yesBid!==null&&book.yesAsk!==null?book.yesAsk-book.yesBid:null,dist:state.distance??null,K:state.K??null,proxy:state.proxy??null}};
 }
 /**
- * Paper positions outside the current Bitcoin round (copied bets, or a round that closed while the engine was off):
+ * Paper positions outside the current Bitcoin round (a round that closed while the engine was off):
  * marked at Kalshi's live bids and settled on Kalshi's own result, checked every 30 s.
  */
 const paperMarks=new Map<string,{yesBid:number|null;noBid:number|null}>();
@@ -233,30 +216,13 @@ const server=createServer(async(req,res)=>{
     if(req.method==='GET'&&path==='/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;}
     if(req.method==='GET'&&path.startsWith('/export/')){const table=path.slice(8);const csv=journal.export(table);res.writeHead(200,{'Content-Type':'text/csv','Content-Disposition':`attachment; filename="${table}.csv"`});res.end(csv);return;}
     if(req.method==='GET'&&path==='/sim/report'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(desk.report(verdict?.setups)));return;}
-    if(req.method==='POST'&&['/settings','/override','/sim/order','/sim/reset','/real/quote','/real/order'].includes(path)){
+    if(req.method==='POST'&&['/settings','/override','/sim/order','/sim/reset'].includes(path)){
       const origin=req.headers.origin,host=req.headers['x-forwarded-host']??req.headers.host;
       if(!origin||new URL(origin).host!==host){res.writeHead(403);res.end('Origin rejected');return;}
       let body='';for await(const chunk of req){body+=chunk;if(body.length>16384)throw new Error('Request too large');}
       const data=JSON.parse(body);
-      if(path==='/real/quote'){const lock=state.guards?.locked?String(state.guards.reason??'guardrail lock'):null;
-        const q=realCopy.quote(await paperMarket(typeof data.ticker==='string'?data.ticker:undefined,copyContext(data.copy)),data.side,data.dollars===undefined?undefined:Number(data.dollars),
-          {enabled:config.realCopyEnabled,cap:config.realCopyMaxDollars,balance:account.balance,lock,now:Date.now()});
-        const veto=windowLocalVeto(q.ticker)??realOrderVeto(q.ticker,q.side,edgeLink.view(),undefined,{limit:q.limit,count:q.count})??staleVeto(q.ticker);if(veto){log('real-order-vetoed',{stage:'quote',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
-        const {context:_c,...quote}=q;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,quote,balance:account.balance}));return;}
-      if(path==='/real/order'){const q=realCopy.take(data.token,Date.now());
-        // Checked again at the moment of sending: the switch or a lock may have changed during the 30 s.
-        if(!config.realCopyEnabled)throw new Error('Real copy orders were switched off');if(state.guards?.locked)throw new Error(`Real orders are paused: ${state.guards.reason??'guardrail lock'}`);
-        // Edge veto (DECISIONS 75), checked again at the moment of sending: gate TRADE on this side + governor + sidecar online.
-        const veto=windowLocalVeto(q.ticker)??realOrderVeto(q.ticker,q.side,edgeLink.view(),undefined,{limit:q.limit,count:q.count})??staleVeto(q.ticker);if(veto){log('real-order-vetoed',{stage:'order',ticker:q.ticker,side:q.side,reason:veto});throw new Error(veto);}
-        // Reserve the window before any await, so a second confirmation for the same window cannot also reach Kalshi.
-        const window=q.ticker.startsWith(EDGE_SERIES);
-        if(window&&!reservations.reserve(q.ticker)){const reason='A real order for this window is already in flight or filled (one position per window)';log('real-order-vetoed',{stage:'order',ticker:q.ticker,side:q.side,reason});throw new Error(reason);}
-        const body=orderBody(q,newClientOrderId());log('real-order-sent',{...body,cost:q.cost,cap:q.cap,copy:q.context.copy??null});
-        let r:any;try{r=await client.post('/portfolio/events/orders',body);}catch(e){/* kept reserved: a timeout may still have placed the order */log('real-order-error',{client_order_id:body.client_order_id,message:(e as Error).message});throw e;}
-        const result=describeFill(q,r);if(window&&r.fill_count!=null&&Number.isFinite(Number(r.fill_count))&&Number(r.fill_count)===0)reservations.release(q.ticker);log('real-order-result',{client_order_id:body.client_order_id,order_id:r.order_id,fill_count:r.fill_count,remaining_count:r.remaining_count,average_fill_price:r.average_fill_price,average_fee_paid:r.average_fee_paid});
-        void account.onFill();res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,order_id:r.order_id,...result}));return;}
       if(path==='/sim/reset'){const account=desk.reset(Number(data.bankroll));log('paper-account',account);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,account}));return;}
-      if(path==='/sim/order'){const result=desk.order({side:data.side,action:data.action,contracts:data.contracts===undefined?undefined:Number(data.contracts),dollars:data.dollars===undefined?undefined:Number(data.dollars)},await paperMarket(typeof data.ticker==='string'?data.ticker:undefined,copyContext(data.copy)));
+      if(path==='/sim/order'){const result=desk.order({side:data.side,action:data.action,contracts:data.contracts===undefined?undefined:Number(data.contracts),dollars:data.dollars===undefined?undefined:Number(data.dollars)},await paperMarket(typeof data.ticker==='string'?data.ticker:undefined));
         log('paper-order',{message:result.message,fills:result.fills.map(f=>({ticker:f.ticker,side:f.side,action:f.action,contracts:f.contracts,price:f.price}))});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,...result}));return;}
       if(path==='/settings'){config=validateConfig({...config,...data});journal.set('config',config);log('settings-updated',config);}
       else {if(data.confirmation!=='I accept the risk')throw new Error('Type I accept the risk');journal.set('overrideDay',dayKey(Date.now()));log('daily-lock-override',{day:dayKey(Date.now())});}
@@ -274,57 +240,8 @@ const fallbackTimer=setInterval(()=>safe('book-fallback-error',()=>kalshi.fallba
 const backupTimer=setInterval(()=>safe('book-backup-error',()=>kalshi.pollBackup()),500);
 const accountTimer=setInterval(()=>safe('account-sync-error',()=>account.sync()),30000);
 const settlementTimer=setInterval(()=>safe('settlement-error',settlements),10000);
-const hourlyTimer=setInterval(()=>safe('hourly-refresh-error',()=>hourlyBoard.refresh(Date.now()+client.clockOffset)),3000);
-const hourlySettleTimer=setInterval(()=>safe('hourly-settle-error',settleHours),30000);
 const pruneTimer=setInterval(()=>journal.prune(),3600000);journal.prune();
 const paperTimer=setInterval(()=>safe('paper-sweep-error',paperSweep),30000);
-// Hourly Bitcoin (KXBTCD): one REST read of every strike every 3 s, priced with the same settlement-average model.
-const hourlyBoard=new HourlyBoard(client),hourlyMemory=new Map<string,ExitMemory>();
-let hourlyState:any=null,hourlyHistory=buildHourlyHistory(journal.db);
-function computeHourly(time:number,now:number,spot:number|null,vol:any,venueStates:any[],guards:any){
-  const {current,next}=hourlyBoard.events(time);
-  const base={updated:hourlyBoard.updated,error:hourlyBoard.error,series:HOURLY_SERIES,next:next?{event:next.event,open:next.open,close:next.close}:hourlyBoard.upcoming,history:hourlyHistory,calibration:{hourly:calibration?.hourly??null}};
-  if(!current)return {...base,event:null};
-  const tau=(current.close-time)/1000,basis=config.basisCorrection+(config.autoBasis?basisState.correction:0),schedule={...kalshi.fees,precision:config.feePrecision};
-  // "Up this hour" reference: the proxy average of the 60 s before the hour opened (plus the learned basis).
-  const kFill=filledSeconds(proxy.history,current.open-60000,current.open),kHour=kFill?mean(kFill.values)+basis:null;
-  const lockedFill=tau<=60?filledSeconds(proxy.history,current.close-60000,time):{values:[],imputed:0},locked=lockedFill?.values??null;
-  const modelReady=spot!==null&&vol.count>=config.minVolSamples&&vol.sigma>0&&locked!==null;
-  const inputs={spot,sigma:vol.sigma,tau,locked,basis,kHour,modelReady};
-  const rungs=ladder(current.markets,inputs,schedule);
-  const upModel=modelReady&&kHour!==null?probability(spot!,kHour,vol.sigma,tau,locked!,basis).p:null,kalshiUp=kHour!==null?impliedAbove(rungs,kHour):null;
-  const upQuant=upModel!==null?predict(priorFit(),{modelP:upModel,mid:kalshiUp,sigma:vol.sigma,momentum30s:null,momentum120s:null,imbalance:null,tradeFlow30s:null}).p:null;
-  const feedsOk=venueStates.every((v:any)=>v.healthy),accountOk=account.ready&&now-account.updated<config.accountStaleMs;
-  const blocked=guards.reason??(!modelReady?'Model warming':!feedsOk?'One or more price feeds stale':!accountOk?'Authenticated balance/history unavailable':now-hourlyBoard.updated>15000?'Hourly prices stale':null);
-  const {ideas:allIdeas,reason}=hourlyIdeas(rungs,tau,account.balance,config,schedule,blocked);
-  // Paper-trade every best idea, but show (and sound) only a proven rule (evidence.ts).
-  const {ideas,hidden}=gateHourly(allIdeas,verdict,config.provenSignalsOnly);
-  if(upQuant!==null&&kHour!==null&&rungs.length){
-    const h=HOURLY_HORIZONS.find(h=>tau<=h&&tau>h-30&&!journal.hourlyHorizons(current.event).has(h));
-    if(h!==undefined){const atm=rungs.reduce((b,r)=>Math.abs(r.strike-kHour)<Math.abs(b.strike-kHour)?r:b,rungs[0]);
-      journal.saveHourlyCall(current.event,h,time,tau,kHour,{direction:upQuant>=.5?'UP':'DOWN',p:upQuant,baseP:upModel!,kalshi:kalshiUp},{ticker:atm.ticker,close:current.close,spot,sigma:vol.sigma});}
-  }
-  // Paper-trade the best hourly idea (the signals table dedupes by ticker/side/price).
-  const best=ideas[0],paperBest=allIdeas[0];
-  if(paperBest)journal.signal(paperBest.ticker,time,{side:paperBest.side,kind:'hourly',price:paperBest.price,fee:paperBest.fee,edge:paperBest.edge,contracts:paperBest.contracts,cost:paperBest.cost,maxLoss:paperBest.maxLoss,queue:0,reason:paperBest.reason} as any,{p:paperBest.fair,tau,regime:vol.regime,close:current.close},schedule);
-  // Exit plans for hourly positions in this event, priced per strike.
-  const held=(account.positions as any[]).filter(p=>String(p.ticker).startsWith(current.event+'-'));
-  const heldRungs=new Map(ladder(current.markets.filter(m=>held.some(p=>p.ticker===m.ticker)),inputs,schedule,Infinity).map(r=>[r.ticker,r]));
-  const exits=held.map(pos=>{const r=heldRungs.get(pos.ticker),key=`${pos.ticker}:${pos.position_fp}:${pos.market_exposure_dollars}`,mem=hourlyMemory.get(key)??{action:null,peak:null};
-    const e=exitAdvice(pos,r?.quant??null,r?{yesBid:r.yesBid,noBid:r.noBid}:null,schedule,config,mem,null,entryCost(pos,account.openCosts.get(pos.ticker),schedule),tau);if(e){if(mem.action!==e.action)log('exit-advice',{ticker:pos.ticker,action:e.action,hourly:true,bid:e.bid,winProb:e.winProb,unrealized:e.unrealized});if(e.notice&&e.notice.kind!==mem.notice)log('exit-notice',{ticker:pos.ticker,kind:e.notice.kind,hourly:true,unrealized:e.unrealized});hourlyMemory.set(key,{action:e.action,peak:e.peakPct,trough:e.troughPct??null,entryProb:e.entryWinProb??mem.entryProb??null,notice:e.notice?.kind??null});}
-    return e?{...e,strike:r?.strike??null}:null;}).filter(Boolean);
-  return {...base,event:current.event,open:current.open,close:current.close,tau,spot,kHour,kSource:kFill?'proxy average of the 60 s before the hour opened':null,lockedCount:locked?.length??0,
-    up:upQuant===null?null:{model:upModel,kalshi:kalshiUp,quant:upQuant,direction:upQuant>=.5?'UP':'DOWN',confidence:confidence(upQuant)},
-    rungs,ideas,hidden,reason:best?best.reason:hidden&&paperBest?'No proven edge — the hourly BUY idea is hidden.':reason,action:best?`BUY ${best.side==='yes'?'ABOVE':'NOT ABOVE'} $${Math.round(best.strike).toLocaleString()}`:'NO TRADE',exits};
-}
-async function settleHours(){
-  const now=Date.now()+client.clockOffset;
-  for(const p of journal.pendingHours(now-5000)){const {market:m}=await client.get('/markets/'+encodeURIComponent(p.ticker));const v=Number(m.expiration_value);
-    if((m.result==='yes'||m.result==='no')&&m.expiration_value!==''&&Number.isFinite(v)){journal.settleHourly(p.event,now,v,p.k_hour,{ticker:p.ticker,result:m.result});log('hourly-settled',{event:p.event,settle:v,kHour:p.k_hour,up:p.k_hour==null?null:v>=p.k_hour});}}
-  for(const t of journal.unsettledPaper('hourly',now-5000)){const {market:m}=await client.get('/markets/'+encodeURIComponent(t));if(m.result==='yes'||m.result==='no')journal.settlePaper(t,m.result,now);}
-  hourlyHistory=buildHourlyHistory(journal.db);
-}
-
 // Late-round forecast (final minute): fitted on the kept final-minute seconds and used only once its learned weights beat
 // the default blend on rounds held out of the fit; until then the main forecast applies there too. Fitted once at startup
 // (before the loop runs); after that refits and the calibration report run on a worker thread (calibration-worker.ts):
@@ -526,15 +443,12 @@ const loop=setInterval(()=>{
           engine_call:liveCall?.direction??null,engine_confidence:liveCall?.confidence??null,
           final_prints:actualTau<=61?brtiHistory.filter(p=>p.time>=close-60000&&p.time<close).map(p=>[p.time,p.price]):null,
           book_stale:breakerView.stale||delayed,stale_reason:breakerView.stale?breakerView.reasons.join(' · '):delayed?`Kalshi book ${Math.round(delayMs)} ms behind`:null,
-          balance:accountValue,real:realBookMemo.get(account.allMarketEvents??events,accountValue,market.ticker,now,reservations.tickers(now))});}
+          balance:accountValue,real:realBookMemo.get(account.allMarketEvents??events,accountValue,market.ticker,now)});}
       state={...common,...tick,market,evaluation:shown,exits,liveCall,nextCall,quality,openingCall:journal.openingCall(market.ticker),
         quant:{p:q,model:model?.p??null,mid,active:forecast.active,markets:forecast.markets,reason:forecast.reason,late:{active:lateStack.active,markets:lateStack.markets,inUse:forecast===lateStack,cv:lateStack.cv},basis,autoBasis:basisState,signalSource:config.useQuantForSignals&&q!==null?'quant':'model'},
         tactics:{live:tacticsLive,ideas:tactics.ideas,dips:tactics.watch,hidden:tactics.hidden},lockedCount:locked?.length??0,lockedImputed:lockedFill?.imputed??0,distance:spot!==null&&K!==null?spot-K:null,
         lock,danger:dangerBadges(mid,now,schedule)};
     }
-    // Hourly board: recomputed once per second, reused between the faster publishes.
-    if(newSecond){try{hourlyState=computeHourly(time,now,spot,vol,venueStates,guards);}catch(e){log('hourly-error',{message:(e as Error).message});}}
-    state.hourly=hourlyState;
     if(!market&&newSecond)edgeLink.ping();state.edge=edgeLink.view(now);
     state.shortTerm=priceState;
     state.flowPulse=flowOn?flowLatest?{...flowLatest.pulse,db:flowLatest.db,ageMs:now-flowLatest.received,path:flowPath}:{starting:true,path:flowPath}:null;
@@ -548,13 +462,13 @@ const loop=setInterval(()=>{
     // the last copy. New connections get the full state on connect. This cut the 4 Hz push from ~200 KB to ~30 KB.
     state.calibration=calibration;state.loopMs=performance.now()-started;
     const sendCalibration=calibration?.updated!==sentCalibration;sentCalibration=calibration?.updated??null;
-    // Slow fields (stream.ts: verdict, setup records, hourly board, settings…) also go once a second only (~240 → ~130 KB/s).
+    // Slow fields (stream.ts: verdict, setup records, settings…) also go once a second only (~240 → ~130 KB/s).
     const slow=newSecond?{}:Object.fromEntries(SLOW_FIELDS.map(k=>[k,undefined]));
     const message=JSON.stringify({...state,...slow,calibration:sendCalibration?calibration:undefined,history:newSecond?state.history:undefined});for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<1000000)ws.send(message);
   }catch(e){log('loop-error',{message:(e as Error).message});state.evaluation={action:'NO TRADE',reason:'Engine evaluation error — see event journal',idea:null,makers:[]};}
 },100);
 // The flow worker writes its last bars and closes its database on 'stop', then exits itself; it gets 2 s before the process
 // ends without it. The journal stays open until then, since the worker's log messages are written to it.
-const shutdown=()=>{if(stopping)process.exit(0);stopping=true;refresher.stop();loopLag.stop();void calWorker?.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,hourlyTimer,hourlySettleTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();if(orderFlow)microstructure.stop();recordResearch(()=>researchJournal.flush());kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();
+const shutdown=()=>{if(stopping)process.exit(0);stopping=true;refresher.stop();loopLag.stop();void calWorker?.terminate();void priceWorker?.terminate();for(const t of [refresherTimer,loop,refreshTimer,fallbackTimer,backupTimer,accountTimer,settlementTimer,pruneTimer,paperTimer,calibrationTimer,priceTimer])clearInterval(t);proxy.stop();benchmark.stop();if(orderFlow)microstructure.stop();recordResearch(()=>researchJournal.flush());kalshi.stop();for(const c of wss.clients)c.terminate();wss.close();server.close();
   const exit=()=>{journal.db.close();process.exit(0);},w=flowWorker;if(!w)return exit();w.once('exit',exit);setTimeout(exit,2000);w.postMessage({kind:'stop'});};
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

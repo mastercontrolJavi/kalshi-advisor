@@ -1,7 +1,7 @@
 import {signalEvidence,FINAL_MIN_TRADES,type Verdict} from '../backtest/verdict';
 import type {FirmEvaluation} from './signals';
 /**
- * Evidence gate (Settings → provenSignalsOnly, DECISIONS 56). A BUY, hourly idea or scalp/dip setup is shown, and
+ * Evidence gate (Settings → provenSignalsOnly, DECISIONS 56). A BUY or scalp/dip setup is shown, and
  * sounds, only when its rule has cleared the proven bar; otherwise the dashboard says what was hidden and why.
  * The gate changes only what is shown: every signal is still journaled and paper-traded, so a rule that starts
  * working proves itself and reappears without anyone touching a setting.
@@ -12,10 +12,6 @@ export function gateEvaluation(ev:FirmEvaluation,verdict:Verdict|null,source:'qu
   const e=signalEvidence(verdict,'15m',source);if(e.proven)return ev;
   if(!ev.firm)return {...ev,forming:null,reason:ev.reason.replace(/^BUY (YES|NO) forming: confirms if it holds \d+ s more · /,'')};
   return {...ev,action:'NO TRADE',idea:null,firm:null,forming:null,reason:`No proven edge — the BUY ${ev.firm.side.toUpperCase()} signal is hidden.`,hidden:{side:ev.firm.side,text:e.text}};
-}
-export function gateHourly<T>(ideas:T[],verdict:Verdict|null,on:boolean):{ideas:T[];hidden:string|null}{
-  if(!on||!ideas.length)return {ideas,hidden:null};
-  const e=signalEvidence(verdict,'hourly');return e.proven?{ideas,hidden:null}:{ideas:[],hidden:e.text};
 }
 /** Scalp/dip have no backtest (they need second-by-second fills), so their live paper record is the evidence. */
 export interface PaperRecord {mean:number|null;low:number|null;high:number|null;count:number}

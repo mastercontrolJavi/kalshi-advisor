@@ -4,11 +4,11 @@ import {dirname} from 'node:path';
 import {KalshiClient} from '../engine/feeds/kalshi';
 /**
  * Historical backfill for the backtest (data/history.db, separate from the live journal). Public read-only data only:
- * Kalshi settled KXBTC15M markets with 1-minute YES bid/ask candles, hourly KXBTCD strike candles near the money,
+ * Kalshi settled KXBTC15M markets with 1-minute YES bid/ask candles,
  * and Coinbase BTC-USD 1-minute candles as the spot proxy. Every step is resumable; nothing is signed or written to
  * Kalshi.
  */
-export const SERIES15='KXBTC15M',SERIES_HOURLY='KXBTCD';
+export const SERIES15='KXBTC15M';
 export interface MarketRow {ticker:string;series:string;event:string|null;open_ts:number;close_ts:number;strike:number|null;result:string|null;settle:number|null;volume:number|null;source:string;candles:number}
 export interface CandleRow {ticker:string;ts:number;bid:number|null;ask:number|null;bid_lo:number|null;bid_hi:number|null;ask_lo:number|null;ask_hi:number|null;price:number|null;volume:number|null}
 export interface SpotRow {ts:number;open:number;high:number;low:number;close:number;volume:number}
@@ -44,16 +44,6 @@ export function candleRow(ticker:string,c:any):CandleRow{
   const d=(o:any,k:string)=>num(o?.[k+'_dollars']??o?.[k]);
   return {ticker,ts:c.end_period_ts,bid:d(c.yes_bid,'close'),ask:d(c.yes_ask,'close'),bid_lo:d(c.yes_bid,'low'),bid_hi:d(c.yes_bid,'high'),ask_lo:d(c.yes_ask,'low'),ask_hi:d(c.yes_ask,'high'),price:d(c.price,'close'),volume:num(c.volume_fp??c.volume)};
 }
-const MONTHS=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-const et=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'2-digit',month:'numeric',day:'2-digit',hour:'2-digit',hourCycle:'h23'});
-/** KXBTCD event ticker for an hour closing at closeTs (seconds): KXBTCD-26OCT0720 = 8 PM ET on Oct 7, 2026. */
-export function hourlyEvent(closeTs:number){
-  const p=Object.fromEntries(et.formatToParts(new Date(closeTs*1000)).map(x=>[x.type,x.value]));
-  return `${SERIES_HOURLY}-${p.year}${MONTHS[Number(p.month)-1]}${p.day}${p.hour}`;
-}
-/** Hourly strikes are listed at $X99.99 (and on some days $X49.99); request both on a $50 grid around the spot. */
-export function hourlyStrikes(spot:number,band=1000,step=50){const out:number[]=[];for(let x=Math.ceil((spot-band)/step)*step;x<=spot+band;x+=step)out.push(x-.01);return out;}
-export const hourlyTicker=(event:string,strike:number)=>`${event}-T${strike.toFixed(2)}`;
 type Log=(msg:string)=>void;
 async function paged(client:KalshiClient,path:string,stop:(m:any)=>boolean,log:Log){
   const out:any[]=[];let cursor='';const seen=new Set<string>();
@@ -115,20 +105,4 @@ export async function fetchSpot(store:HistoryStore,from:number,to:number,log:Log
     }
     await new Promise(res=>setTimeout(res,150));if(++n%50===0)log(`  spot ${new Date(t*1000).toISOString().slice(0,10)}`);
   }
-}
-/**
- * Hourly KXBTCD: the strike ladder settles on the same 60-s BRTI average as the 15-minute market closing at the top
- * of the hour, so results come from that market's expiration value. Strikes within ±band of the Coinbase spot at the
- * hour's open (known at that time, no look-ahead) are requested; tickers that do not exist are simply not returned.
- */
-export async function planHourly(store:HistoryStore,from:number,to:number,cutoff:number,log:Log,band=1000){
-  const tops=store.markets(SERIES15,Math.max(from,cutoff),to).filter(m=>m.close_ts%3600===0&&m.settle!==null);const rows:MarketRow[]=[];
-  for(const m of tops){const open=m.close_ts-3600,s=store.spot(open-60,open-60)[0];if(!s)continue;const event=hourlyEvent(m.close_ts);
-    for(const strike of hourlyStrikes(s.close,band))rows.push({ticker:hourlyTicker(event,strike),series:SERIES_HOURLY,event,open_ts:open,close_ts:m.close_ts,strike,result:m.settle!>strike?'yes':'no',settle:m.settle,volume:null,source:'planned',candles:0});}
-  // Only plan tickers we have not tried yet; existing rows keep their candle status.
-  const known=new Set(store.markets(SERIES_HOURLY).map(m=>m.ticker));store.putMarkets(rows.filter(r=>!known.has(r.ticker)));log(`hourly: ${tops.length} hours planned`);
-}
-export async function fetchHourlyCandles(store:HistoryStore,client:KalshiClient,log:Log){
-  const todo=store.markets(SERIES_HOURLY).filter(m=>m.candles===0);log(`hourly: ${new Set(todo.map(m=>m.event)).size} hours need candles`);
-  await batchCandles(store,client,todo,log,'hourly');
 }

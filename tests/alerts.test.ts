@@ -23,13 +23,9 @@ it('take profit and cut loss each have their own alert, then hold when back in t
   expect(detectEvents({...base,exits:{A:'HOLD'}},{...base,exits:{A:'TAKE PROFIT'}})).toEqual(['takeProfit']);expect(detectEvents({...base,exits:{A:'HOLD'}},{...base,exits:{A:'CUT LOSS'}})).toEqual(['cutLoss']);
   expect(detectEvents({...base,exits:{A:'TAKE PROFIT'}},{...base,exits:{A:'TAKE PROFIT'}})).toEqual([]);expect(detectEvents({...base,exits:{A:'TAKE PROFIT'}},{...base,exits:{A:'HOLD'}})).toEqual(['hold']);});
 it('a new scalp/dip setup pings once',()=>{const s1={...base,setupKey:'A:scalp:yes'};expect(detectEvents(base,s1)).toEqual(['setup']);expect(detectEvents(s1,s1)).toEqual([]);});
-it('the hourly page follows the hour: its best idea, its exits, its up/down call and its timing',()=>{
-  const s=(o:any={})=>({config:{sweetMaxSeconds:900},guards:{pnl:0,today:'2026-10-07',locked:false},quality:{level:'solid'},evaluation:{idea:{side:'yes',price:.5}},ticker:'15M',market:{ticker:'15M'},tau:500,
-    hourly:{event:'KXBTCD-26OCT0720',tau:1000,ideas:[],exits:[],up:{direction:'UP'},...o}});
-  const a=snapshot(s(),true,'hourly');expect(a.ticker).toBe('KXBTCD-26OCT0720');expect(a.ideaKey).toBeNull();expect(a.liveDir).toBe('UP');
-  const b=snapshot(s({tau:890,ideas:[{ticker:'T1',side:'no',price:.3}],up:{direction:'DOWN'}}),true,'hourly');
-  expect(detectEvents(a,b)).toEqual(['buyNo','flipDown','entryWindow']);
-  expect(snapshot(s(),true,'15m').ideaKey).toBe('15M:yes:0.5');});
+it('the snapshot follows the current 15-minute round',()=>{
+  const s={config:{sweetMaxSeconds:900},guards:{pnl:0,today:'2026-10-07',locked:false},quality:{level:'solid'},evaluation:{idea:{side:'yes',price:.5}},ticker:'15M',market:{ticker:'15M'},tau:500};
+  expect(snapshot(s,true).ideaKey).toBe('15M:yes:0.5');});
 it('sound is on by default; prefs saved before v2 are switched back on once, keeping the volume',()=>{
   expect(defaultPrefs.enabled).toBe(true);expect(Object.values(defaultPrefs.categories).every(Boolean)).toBe(true);
   const old=migratePrefs({enabled:false,volume:.3,categories:{signals:false,positions:true,results:true,calls:true,timing:true,warnings:false},repeatSell:false});
@@ -40,23 +36,3 @@ it('a hold-mode heads-up plays once when it appears or changes, not when it clea
   expect(detectEvents({...base,notices:{A:'gain'}},{...base,notices:{A:'gain'}})).toEqual([]);
   expect(detectEvents({...base,notices:{A:'gain'}},{...base,notices:{A:'giveback'}})).toEqual(['positionMove']);
   expect(detectEvents({...base,notices:{A:'loss'}},{...base,notices:{A:null}})).toEqual([]);});
-import {marketsSnapshot,detectMarketEvents,claimOnce} from '../src/components/alert-events';
-it('markets: a new notice kind on a position plays its sound once; first sight and clearing are silent',()=>{
-  const s=(kind:string|null)=>marketsSnapshot({positions:[{ticker:'C',notice:kind?{kind}:null}]},true);
-  expect(detectMarketEvents(null,s('dead'))).toEqual([]);
-  expect(detectMarketEvents(s(null),s('one-left'))).toEqual([{ticker:'C',kind:'one-left',sound:'oneLeft'}]);
-  expect(detectMarketEvents(s('one-left'),s('dead')).map(e=>e.sound)).toEqual(['comboDead']);
-  expect(detectMarketEvents(s(null),s('leg-won')).map(e=>e.sound)).toEqual(['legWon']);
-  expect(detectMarketEvents(s(null),s('loss')).map(e=>e.sound)).toEqual(['marketMove']);
-  expect(detectMarketEvents(s('loss'),s(null))).toEqual([]);expect(detectMarketEvents(s(null),marketsSnapshot(null,false))).toEqual([]);
-  expect(detectMarketEvents({},s('dead'))).toEqual([]);});
-it('claimOnce lets only one tab play a markets sound within the window',()=>{
-  const m=new Map<string,string>(),store={getItem:(k:string)=>m.get(k)??null,setItem:(k:string,v:string)=>void m.set(k,v)};
-  expect(claimOnce('C:dead',1000,store)).toBe(true);expect(claimOnce('C:dead',1500,store)).toBe(false);expect(claimOnce('C:dead',62000,store)).toBe(true);expect(claimOnce('D:dead',1500,store)).toBe(true);});
-it('the markets sound category is on by default, and old saved prefs gain it switched on',()=>{
-  expect(defaultPrefs.categories.markets).toBe(true);expect(migratePrefs({version:2,enabled:true,volume:.5,categories:{signals:false},repeatSell:true}).categories.markets).toBe(true);});
-it('a Markets card turning to SELL or SELL NOW sounds once; calming from SELL NOW to SELL is silent',()=>{
-  const v=(verdict:string)=>marketsSnapshot({positions:[{ticker:'S',notice:null,verdict}]},true);
-  expect(detectMarketEvents(v('HOLD'),v('SELL'))).toEqual([{ticker:'S',kind:'SELL',sound:'sell'}]);
-  expect(detectMarketEvents(v('SELL'),v('SELL NOW')).map(e=>e.sound)).toEqual(['sell']);
-  expect(detectMarketEvents(v('SELL NOW'),v('SELL'))).toEqual([]);expect(detectMarketEvents(v('HOLD'),v('LET IT RIDE'))).toEqual([]);});
