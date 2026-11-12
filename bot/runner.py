@@ -14,6 +14,8 @@ from typing import Dict, Optional
 
 import websockets
 
+from edge.ev_gate import taker_fee
+
 from . import kalshi
 from .book import Book, FeedDelay
 from .config import BotConfig, credentials
@@ -45,6 +47,18 @@ def parse_ts(iso: str) -> float:
     return datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp()
 
 
+def best_side(p_yes: float, yes_ask: Optional[float], no_ask: Optional[float], intent: Optional[Intent]) -> dict:
+    """The side and edge to show: the one decide() picked, else the side with the larger edge after the fee (the one
+    decide() would pick if it passed the rules). Never inferred from which side the model favours."""
+    if intent is not None:
+        return {'side': intent.side, 'edge': intent.edge}
+    edges = [(q - ask - taker_fee(ask), side) for side, q, ask in (('yes', p_yes, yes_ask), ('no', 1 - p_yes, no_ask)) if ask is not None and 0 < ask < 1]
+    if not edges:
+        return {'side': None, 'edge': None}
+    edge, side = max(edges)
+    return {'side': side, 'edge': edge}
+
+
 class Market:
     def __init__(self, m: dict):
         self.ticker: str = m['ticker']
@@ -70,15 +84,15 @@ class Bot:
         self.subscribed: set = set()
         self.ws = None
         self.next_id = 10
-        self.book_sid: Optional[int] = None
-        self.book_seq: Optional[int] = None
+        self.seqs: Dict[int, int] = {}   # last sequence number seen on each subscription id
+        self.book_sids: set = set()      # subscription ids that carry order-book messages
         self.delay = FeedDelay()
         self.last_value_ms = 0.0      # local receive time of the newest BRTI value
         self.pending: Optional[str] = None  # ticker with an order in flight
         self.cooldown: Dict[str, float] = {}
         self.stats = {'messages': 0, 'evals': 0, 'reasons': {}}
         self.hit_target = self.broker.equity >= cfg.TARGET
-        self.view: Optional[tuple] = None  # the latest look at the round: (ticker, secs_left, p_yes, yes_ask, no_ask, verdict)
+        self.view: Optional[tuple] = None  # the latest look at the round: (ticker, secs_left, p_yes, yes_ask, no_ask, verdict, intent)
         self.connected = False
         self.started = time.time()
         self.status_path = Path(cfg.DB_PATH).with_name('bot-status.json')
@@ -149,7 +163,8 @@ class Bot:
                 'warmup': [self.pricer.vol.count, cfg.VOL_MIN_SAMPLES], 'bookDelayMs': round(self.delay.ms),
                 'valueAgeMs': round(now * 1000 - self.last_value_ms) if self.last_value_ms else None,
                 'round': None if m is None else {'ticker': m.ticker, 'close': m.close * 1000, 'strike': m.strike, 'held': m.ticker in self.broker.positions},
-                'view': None if v is None or m is None or v[0] != m.ticker else {'secsLeft': v[1], 'pYes': v[2], 'yesAsk': v[3], 'noAsk': v[4], 'verdict': v[5]},
+                'view': None if v is None or m is None or v[0] != m.ticker else {'secsLeft': v[1], 'pYes': v[2], 'yesAsk': v[3], 'noAsk': v[4], 'verdict': v[5],
+                                                                               **best_side(v[2], v[3], v[4], v[6])},
                 'config': {'start': cfg.START_BANKROLL, 'target': cfg.TARGET, 'minEdge': cfg.MIN_EDGE, 'minAsk': cfg.MIN_ASK, 'maxAsk': cfg.MAX_ASK,
                            'midBand': [cfg.MID_BAND_LOW, cfg.MID_BAND_HIGH] if cfg.BLOCK_MID_BAND else None, 'window': [cfg.MIN_SECS_LEFT, cfg.MAX_SECS_LEFT],
                            'kelly': cfg.KELLY_FRAC, 'maxRisk': cfg.MAX_RISK_FRAC, 'latencyMs': cfg.LATENCY_MS}}
@@ -174,7 +189,7 @@ class Bot:
             try:
                 async with websockets.connect(kalshi.WS, additional_headers=self.signer.headers(kalshi.WS_PATH), ping_interval=5, ping_timeout=10,
                                               max_size=2 ** 22, max_queue=4096, open_timeout=10) as ws:
-                    self.ws, self.subscribed, self.book_sid, self.book_seq = ws, set(), None, None
+                    self.ws, self.subscribed, self.seqs, self.book_sids = ws, set(), {}, set()
                     for m in self.markets.values():
                         m.book.valid = False
                     await ws.send(json.dumps({'id': 1, 'cmd': 'subscribe', 'params': {'channels': ['cfbenchmarks_value'], 'index_ids': ['BRTI']}}))
@@ -200,15 +215,22 @@ class Bot:
         self.stats['messages'] += 1
         kind, d = m.get('type'), m.get('msg') or {}
         now_ms = time.time() * 1000
-        # Kalshi numbers every message on a subscription (acks included); a skipped number is a lost book update.
+        # Kalshi numbers every message on a subscription (acks included), separately per subscription id. A later
+        # subscribe for the next round may join the first id or get its own, so every id is tracked. A skipped number on
+        # an id that carries book messages is a lost book update: every book is distrusted until fresh snapshots arrive.
         sid, seq = m.get('sid'), m.get('seq')
-        if self.book_sid is not None and sid == self.book_sid and isinstance(seq, int):
-            if self.book_seq is not None and seq != self.book_seq + 1:
-                log('book-gap', seq=seq, expected=self.book_seq + 1)
-                self.book_seq = None
-                asyncio.get_running_loop().create_task(self.resync())
-                return
-            self.book_seq = seq
+        if kind in ('orderbook_delta', 'orderbook_snapshot') and isinstance(sid, int):
+            self.book_sids.add(sid)
+        if isinstance(sid, int) and isinstance(seq, int):
+            last = self.seqs.get(sid)
+            self.seqs[sid] = seq
+            if last is not None and seq != last + 1:
+                log('sequence-gap', sid=sid, seq=seq, expected=last + 1, book=sid in self.book_sids)
+                if sid in self.book_sids:
+                    for market in self.markets.values():
+                        market.book.valid = False
+                    asyncio.get_running_loop().create_task(self.resync())
+                    return
         if kind in ('orderbook_delta', 'orderbook_snapshot'):
             market = self.markets.get(d.get('market_ticker'))
             if isinstance(m.get('sending_ts_ms'), (int, float)):
@@ -242,8 +264,8 @@ class Bot:
             if market is not None:
                 self.evaluate(market)
         elif kind == 'subscribed':
-            if d.get('channel') == 'orderbook_delta' and self.book_sid is None:
-                self.book_sid, self.book_seq = d.get('sid'), None
+            if d.get('channel') == 'orderbook_delta' and isinstance(d.get('sid'), int):
+                self.book_sids.add(d['sid'])
         elif kind == 'error':
             log('ws-error', detail=d)
 
@@ -277,7 +299,7 @@ class Bot:
         fv, left = priced
         yes_ask, no_ask = market.book.ask('yes'), market.book.ask('no')
         intent, why = decide(self.cfg, fv, left, yes_ask, no_ask, self.broker.equity)
-        self.view = (market.ticker, left, fv.p_yes, yes_ask, no_ask, why)
+        self.view = (market.ticker, left, fv.p_yes, yes_ask, no_ask, why, intent)
         if intent is None:
             return self.skip(why)
         if self.broker.traded(market.ticker):

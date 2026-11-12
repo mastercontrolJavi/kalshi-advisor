@@ -22,16 +22,16 @@ function Now({s}:{s:any}){
   if(!s)return <Empty>The bot has not reported yet. It starts with the app; BOT=off in .env.local skips it.</Empty>;
   if(!s.running)return <Empty>The bot is not running (last report {new Date(s.time).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}).</Empty>;
   const v=s.view,r=s.round,c=s.config,warm=!s.ready;
-  const side=v&&v.pYes!=null?(v.pYes>=.5?'yes':'no'):null,ask=side==='yes'?v?.yesAsk:v?.noAsk,q=side==='yes'?v?.pYes:v?1-v.pYes:null;
-  const fee=ask!=null?.07*ask*(1-ask):null,edge=q!=null&&ask!=null?q-ask-fee!:null;
+  // The side and edge come from the bot (the side its rule picked, else the one with the larger edge), never from which side the model favours.
+  const side:'yes'|'no'|null=v?.side??null,edge:number|null=v?.edge??null;
   return <dl className="grid grid-cols-2 gap-y-2 text-sm">
     <dt className="text-muted">Round</dt><dd className="num text-right">{r?r.ticker.replace('KXBTC15M-',''):'none open'}</dd>
     <dt className="text-muted">Time left</dt><dd className="num text-right">{r?mmss((r.close-s.time)/1000):'—'}</dd>
     <dt className="text-muted">Target</dt><dd className="num text-right">{r?.strike?dollars(r.strike):'—'}</dd>
     <dt className="text-muted">Model: finishes above</dt><dd className="num text-right">{warm?`warming up ${s.warmup[0]}/${s.warmup[1]}`:pct(v?.pYes)}</dd>
     <dt className="text-muted">Ask, YES / NO</dt><dd className="num text-right">{cents(v?.yesAsk)} / {cents(v?.noAsk)}</dd>
-    <dt className="text-muted">Edge on its side after fee</dt><dd className={cn('num text-right',tone(edge))}>{warm?'—':signedCents(edge)}<span className="ml-1 text-xs text-muted">needs +{(c.minEdge*100).toFixed(0)}¢</span></dd>
-    <dt className="text-muted">Decision</dt><dd className="text-right">{r?.held?'Holding this round to settlement':warm?'Collecting index prints first':v?VERDICTS[v.verdict]??v.verdict:'Waiting for the book'}</dd>
+    <dt className="text-muted">{side?`Best edge after fee: ${side.toUpperCase()}`:'Best edge after fee'}</dt><dd className={cn('num text-right',tone(edge))}>{warm?'—':signedCents(edge)}<span className="ml-1 text-xs text-muted">needs +{(c.minEdge*100).toFixed(0)}¢</span></dd>
+    <dt className="text-muted">Decision</dt><dd className="text-right">{r?.held?'Holding this round to settlement':warm?'Collecting index prints first':v?(v.verdict==='trade'&&side?`Buying ${side.toUpperCase()}`:VERDICTS[v.verdict]??v.verdict):'Waiting for the book'}</dd>
     <dt className="text-muted">Kalshi stream delay</dt><dd className="num text-right">{s.bookDelayMs} ms</dd>
   </dl>;
 }

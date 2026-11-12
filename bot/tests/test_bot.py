@@ -124,3 +124,46 @@ def test_pricer_final_minute_uses_locked_prints():
     for t in list(range(close - 200, close - 50)) + list(range(close - 20, close - 5)):
         q.on_print(t, 100_000.0)
     assert q.fair(99_990.0, close) is None                # half the window's prints are missing
+
+
+def test_shown_side_is_the_one_picked_not_the_models_favourite():
+    from bot.runner import best_side
+    # Model says 45% YES, YES asks 10c, NO asks 60c: the bot buys YES although NO is the favourite.
+    intent, why = decide(replace(CFG, MIN_ASK=0.05), fv(0.45), 300, 0.10, 0.60, 15.0)
+    assert why == 'trade' and intent.side == 'yes'
+    assert best_side(0.45, 0.10, 0.60, intent) == {'side': 'yes', 'edge': intent.edge}
+    shown = best_side(0.45, 0.10, 0.60, None)              # no trade: still the side with the larger edge
+    assert shown['side'] == 'yes' and math.isclose(shown['edge'], 0.45 - 0.10 - taker_fee(0.10))
+    assert best_side(0.45, None, None, None) == {'side': None, 'edge': None}
+
+
+def test_sequence_gap_on_a_later_subscription_distrusts_the_books():
+    import asyncio
+    from bot.runner import Bot, Market
+    bot = Bot.__new__(Bot)                                  # message handling only: no key, no socket
+    bot.stats, bot.seqs, bot.book_sids, bot.markets, bot.resynced = {'messages': 0}, {}, set(), {}, 0
+    for t in ('A', 'B'):
+        bot.markets[t] = Market({'ticker': t, 'open_time': '2026-01-01T00:00:00Z', 'close_time': '2026-01-01T00:15:00Z', 'floor_strike': 1})
+    bot.evaluate = lambda market: None
+    bot.delay = __import__('bot.book', fromlist=['FeedDelay']).FeedDelay()
+
+    async def resync():
+        bot.resynced += 1
+    bot.resync = resync
+
+    def snap(sid, seq, t):
+        return {'type': 'orderbook_snapshot', 'sid': sid, 'seq': seq, 'msg': {'market_ticker': t, 'yes_dollars_fp': [['0.4', '5']], 'no_dollars_fp': []}}
+
+    def delta(sid, seq, t):
+        return {'type': 'orderbook_delta', 'sid': sid, 'seq': seq, 'msg': {'market_ticker': t, 'side': 'yes', 'price_dollars': '0.4', 'delta_fp': '1'}}
+
+    async def run():
+        bot.on_message(snap(1, 1, 'A'))
+        bot.on_message(snap(2, 1, 'B'))                    # the next round arrives on its own subscription id
+        bot.on_message(delta(1, 2, 'A'))
+        bot.on_message(delta(2, 2, 'B'))
+        assert bot.markets['A'].book.valid and bot.markets['B'].book.valid and bot.resynced == 0
+        bot.on_message(delta(2, 4, 'B'))                   # seq 3 on the second id was lost
+        await asyncio.sleep(0)
+        assert not bot.markets['B'].book.valid and not bot.markets['A'].book.valid and bot.resynced == 1
+    asyncio.run(run())
