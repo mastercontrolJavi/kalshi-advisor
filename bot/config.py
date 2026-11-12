@@ -30,7 +30,7 @@ class BotConfig:
     MIN_SECS_LEFT: float = 120.0   # the last 2 minutes lost (-3..-4c); the model is not better than Kalshi there
     MAX_SECS_LEFT: float = 600.0   # the first 5 minutes were a coin flip around zero
 
-    # --- Sizing: fractional Kelly on the model's probability, whole contracts ---
+    # --- Sizing: fractional Kelly on the model's probability, in hundredths of a contract ---
     KELLY_FRAC: float = 0.5
     MAX_RISK_FRAC: float = 0.10    # most of the bankroll one round may cost
     # --- Fill model ---

@@ -22,7 +22,7 @@ def status() -> None:
         print(f"  result   ${s['pnl']:+.2f} after ${s['fees']:.2f} fees; {100 * s['per_contract']:+.2f}c a contract{ci}")
         print(f"  entries  average price {100 * s['avg_price']:.1f}c, average model edge {100 * s['avg_edge']:+.1f}c")
     for ts, ticker, side, n, price, pnl in b.db.execute('SELECT ts, ticker, side, contracts, price, pnl FROM fills ORDER BY id DESC LIMIT 10'):
-        print(f"  {datetime.fromtimestamp(ts):%m-%d %H:%M:%S}  {ticker}  {side.upper():3} {n} @ {100 * price:.1f}c  " + ('open' if pnl is None else f'${pnl:+.2f}'))
+        print(f"  {datetime.fromtimestamp(ts):%m-%d %H:%M:%S}  {ticker}  {side.upper():3} {n:g} @ {100 * price:.1f}c  " + ('open' if pnl is None else f'${pnl:+.2f}'))
 
 
 def main() -> None:

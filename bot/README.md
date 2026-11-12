@@ -24,7 +24,7 @@ on, and the 5 Hz value). On every index value and every book change it:
    strike, with the measured variance of BRTI);
 2. compares that with each side's ask after the taker fee (`0.07 x P x (1 - P)` a contract);
 3. buys the better side if the edge is at least 3c, the ask is 10-30c or 70-97c, and 2-10 minutes are left;
-4. sizes it at half Kelly, at most 10% of the bankroll, in whole contracts;
+4. sizes it at half Kelly, at most 10% of the bankroll, in hundredths of a contract (Kalshi fills fractions);
 5. holds to settlement. One buy a round, no exits (every exit rule tested in this project lost to holding).
 
 The paper order is immediate-or-cancel at the ask the bot decided on, filled against the book as it stands
@@ -42,13 +42,13 @@ Replay of the recorded journal (`npm run bot:backtest`, 616 rounds, 2026-10-23 t
 
 | fill | net per contract | 95% range | $15 became |
 |---|---:|---:|---:|
-| same second | +2.1c | -1.3..+5.6c | $25 |
-| 1 s later | +1.7c | -1.8..+5.1c | $18 |
+| same second | +2.2c | -1.3..+5.6c | $31 |
+| 1 s later | +1.6c | -1.8..+5.1c | $18 |
 | 2 s later | +1.7c | -1.7..+5.1c | $14 |
 
 None of these is distinguishable from zero, and the time window and price bands were chosen on most of the same
 rounds, which flatters them. If the same-second result were the truth, $15 would reach $100 within 30 days about
-three times in four and go bust about one time in six; if the truth is zero edge, the account drifts down by the
+about five times in six and go bust about one time in fourteen; if the truth is zero edge, the account drifts down by the
 fee. Judge the live paper record at 300+ settled rounds, by cents per contract and its range in `bot:status`, not by
 the bankroll.
 

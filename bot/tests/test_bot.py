@@ -41,13 +41,16 @@ def test_feed_delay_is_measured_above_its_own_floor():
     assert d.ms == 2000
 
 
-def test_walk_respects_limit_cash_and_whole_contracts():
+def test_walk_respects_limit_cash_and_hundredths():
     asks = [(0.20, 2.9), (0.21, 10)]
-    assert walk(asks, 0.20, 5, 100)[0] == 2            # only whole contracts at the limit
+    assert walk(asks, 0.20, 5, 100)[0] == 2.9          # only what rests at the limit
+    asks = [(0.20, 2), (0.21, 10)]
+    assert walk(asks, 0.21, 0.36, 100)[0] == 0.36      # a part of a contract
     n, paid, fee = walk(asks, 0.21, 5, 100)
     assert n == 5 and math.isclose(paid, 2 * 0.20 + 3 * 0.21) and math.isclose(fee, order_fee(0.20, 2) + order_fee(0.21, 3))
     assert walk(asks, 0.19, 5, 100)[0] == 0            # ask moved above the limit
-    assert walk(asks, 0.21, 5, 0.45)[0] == 2           # cash covers two contracts and their fee, not a third
+    n, paid, fee = walk(asks, 0.21, 5, 0.45)           # cash runs out part-way through the second level
+    assert 2 < n < 2.2 and paid + fee <= 0.45 + 1e-9 and paid + fee + 0.01 * 0.21 + order_fee(0.21, n - 2 + 0.01) - order_fee(0.21, n - 2) > 0.45
 
 
 def test_paper_account_round_trip_and_restart(tmp_path):
@@ -68,18 +71,21 @@ def test_paper_account_round_trip_and_restart(tmp_path):
     assert s['rounds'] == 2 and s['wins'] == 1 and math.isclose(s['pnl'], s['equity'] - 15.0)
 
 
-def test_size_is_capped_and_allows_one_contract_under_the_cap():
-    assert size(CFG, 0.30, 0.22, 15.0) == 2              # half Kelly is 4.4% of $15 = two 23c contracts
-    assert size(CFG, 0.86, 0.80, 15.0) == 1              # one 81c contract fits under 10% of $15
-    assert size(CFG, 0.95, 0.90, 5.0) == 0               # one 90c contract is more than 10% of $5
+def test_size_is_fractional_and_capped():
+    cost = 0.22 + taker_fee(0.22)
+    n = size(CFG, 0.30, 0.22, 15.0)                      # half Kelly: 4.4% of $15
+    assert math.isclose(n, math.floor(0.5 * (0.30 - cost) / (1 - cost) * 15 / cost * 100) / 100) and 2.8 < n < 2.9
+    assert 0 < size(CFG, 0.95, 0.90, 5.0) < 1            # part of a 90c contract on a $5 bankroll
+    assert size(CFG, 0.86, 0.80, 15.0) == 1.84           # a big edge is capped at 10% of $15, not rounded to 1
+    assert size(CFG, 0.845, 0.80, 15.0) == 1.65          # between whole numbers: exactly what the rule asks for
     n = size(CFG, 0.60, 0.20, 1000.0)
-    assert n * 0.20 + order_fee(0.20, n) <= 100.0 + 1e-9 and (n + 1) * 0.20 + order_fee(0.20, n + 1) > 100.0
+    assert n * 0.20 + order_fee(0.20, n) <= 100.0 + 1e-9 and (n + 0.01) * 0.20 + order_fee(0.20, n + 0.01) > 100.0
     assert size(CFG, 0.20, 0.22, 1000.0) == 0            # no edge, no size
 
 
 def test_decide_rules():
     ok, why = decide(CFG, fv(0.30), 300, 0.22, 0.79, 15.0)
-    assert ok and ok.side == 'yes' and math.isclose(ok.edge, 0.30 - 0.22 - taker_fee(0.22)) and ok.contracts == 2
+    assert ok and ok.side == 'yes' and math.isclose(ok.edge, 0.30 - 0.22 - taker_fee(0.22)) and 2.8 < ok.contracts < 2.9
     assert decide(CFG, fv(0.30), 60, 0.22, 0.79, 15.0)[0] is None      # last two minutes
     assert decide(CFG, fv(0.30), 700, 0.22, 0.79, 15.0)[0] is None     # first five minutes
     assert decide(CFG, fv(0.24), 300, 0.22, 0.79, 15.0)[1] == 'no edge after the fee'

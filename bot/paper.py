@@ -14,7 +14,7 @@ from edge.ev_gate import order_fee
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS account (id INTEGER PRIMARY KEY CHECK (id = 1), cash REAL NOT NULL, start REAL NOT NULL, started REAL NOT NULL, peak REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS fills (
-  id INTEGER PRIMARY KEY, ts REAL NOT NULL, ticker TEXT NOT NULL, side TEXT NOT NULL, contracts INTEGER NOT NULL, price REAL NOT NULL,
+  id INTEGER PRIMARY KEY, ts REAL NOT NULL, ticker TEXT NOT NULL, side TEXT NOT NULL, contracts REAL NOT NULL, price REAL NOT NULL,
   fee REAL NOT NULL, q REAL, edge REAL, p_yes REAL, secs_left REAL, decided_ask REAL, wanted INTEGER, latency_ms REAL,
   result TEXT, payout REAL, pnl REAL, settled REAL);
 CREATE INDEX IF NOT EXISTS fills_ticker ON fills (ticker);
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS equity (ts REAL NOT NULL, equity REAL NOT NULL, note 
 class Position:
     ticker: str
     side: str
-    contracts: int
+    contracts: float
     cost: float  # price paid plus fees
 
 
@@ -35,25 +35,28 @@ class Position:
 class Fill:
     ticker: str
     side: str
-    contracts: int
+    contracts: float
     price: float  # average
     fee: float
 
 
-def walk(asks: Sequence[Tuple[float, float]], limit: float, want: int, cash: float) -> Tuple[int, float, float]:
-    """Immediate-or-cancel buy: take whole contracts from the cheapest asks at or under `limit` while cash lasts.
-    Returns (contracts, dollars paid, fees). Kalshi charges the fee per fill, rounded up to $0.0001."""
-    got, paid, fees = 0, 0.0, 0.0
+def walk(asks: Sequence[Tuple[float, float]], limit: float, want: float, cash: float) -> Tuple[float, float, float]:
+    """Immediate-or-cancel buy: take contracts (in hundredths) from the cheapest asks at or under `limit` while cash
+    lasts. Returns (contracts, dollars paid, fees). Kalshi charges the fee per fill, rounded up to $0.0001."""
+    got, paid, fees = 0, 0.0, 0.0  # got counts hundredths
+    left = int(round(want * 100))
     for price, qty in asks:
-        if price > limit + 1e-9 or got >= want:
+        if price > limit + 1e-9 or left <= 0:
             break
-        n = min(want - got, int(math.floor(qty + 1e-9)))
-        while n > 0 and paid + fees + n * price + order_fee(price, n) > cash + 1e-9:
+        n = min(left, int(math.floor(qty * 100 + 1e-6)))
+        afford = int(math.floor((cash - paid - fees) / (price * 1.07) * 100)) + 2  # a close upper bound, trimmed below
+        n = min(n, max(afford, 0))
+        while n > 0 and paid + fees + n / 100 * price + order_fee(price, n / 100) > cash + 1e-9:
             n -= 1
         if n <= 0:
             break
-        got, paid, fees = got + n, paid + n * price, fees + order_fee(price, n)
-    return got, paid, fees
+        got, left, paid, fees = got + n, left - n, paid + n / 100 * price, fees + order_fee(price, n / 100)
+    return got / 100, paid, fees
 
 
 class PaperBroker:
@@ -73,7 +76,7 @@ class PaperBroker:
         self.positions: Dict[str, Position] = {}
         for ticker, side, n, cost in self.db.execute(
                 'SELECT ticker, side, SUM(contracts), SUM(contracts * price + fee) FROM fills WHERE settled IS NULL GROUP BY ticker, side'):
-            self.positions[ticker] = Position(ticker, side, int(n), cost)
+            self.positions[ticker] = Position(ticker, side, float(n), cost)
 
     @property
     def equity(self) -> float:
@@ -83,11 +86,11 @@ class PaperBroker:
     def traded(self, ticker: str) -> bool:
         return ticker in self.positions or self.db.execute('SELECT 1 FROM fills WHERE ticker = ? LIMIT 1', (ticker,)).fetchone() is not None
 
-    def buy(self, ticker: str, side: str, limit: float, want: int, asks: Sequence[Tuple[float, float]], ts: float, **context) -> Optional[Fill]:
+    def buy(self, ticker: str, side: str, limit: float, want: float, asks: Sequence[Tuple[float, float]], ts: float, **context) -> Optional[Fill]:
         if ticker in self.positions:
             return None
         n, paid, fees = walk(asks, limit, want, self.cash)
-        if n < 1:
+        if n <= 0:
             return None
         self.cash -= paid + fees
         self.positions[ticker] = Position(ticker, side, n, paid + fees)

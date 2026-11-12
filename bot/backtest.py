@@ -152,7 +152,7 @@ def project(cfg: BotConfig, trades: List[dict], rounds_per_day: float, days: int
         for _ in range(n):
             ask, q, win = pool[rng.randrange(len(pool))]
             c = size(cfg, q, ask, eq)
-            if c < 1 or eq < cfg.BUST:
+            if c <= 0 or eq < cfg.BUST:
                 continue
             eq += c * ((1.0 if win else 0.0) - ask - taker_fee(ask))
             if eq >= cfg.TARGET:

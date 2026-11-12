@@ -76,27 +76,28 @@ class Pricer:
 class Intent:
     side: str          # 'yes' | 'no'
     limit: float       # the ask decided on; the order is immediate-or-cancel at this price
-    contracts: int
+    contracts: float   # hundredths of a contract, as Kalshi fills them
     q: float           # model probability that this side wins
     edge: float        # q - (limit + fee), per contract
     p_yes: float
     secs_left: float
 
 
-def size(cfg: BotConfig, q: float, ask: float, bankroll: float) -> int:
-    """Whole contracts: KELLY_FRAC of the Kelly stake, at most MAX_RISK_FRAC of the bankroll. One contract is allowed
-    whenever it fits under that cap, since the Kelly stake on a small account is usually less than one."""
+LOT = 100  # Kalshi fills in hundredths of a contract (the owner's real fills: 0.36, 15.38)
+
+
+def size(cfg: BotConfig, q: float, ask: float, bankroll: float) -> float:
+    """Contracts, in hundredths: KELLY_FRAC of the Kelly stake, at most MAX_RISK_FRAC of the bankroll. Fractional, so a
+    small account stakes what the rule says instead of rounding up to a whole contract."""
     cost = ask + taker_fee(ask)
     if bankroll <= 0 or cost >= 1 or q <= cost:
-        return 0
+        return 0.0
     kelly = (q - cost) / (1 - cost)
     cap = cfg.MAX_RISK_FRAC * bankroll
-    n = math.floor(min(cfg.KELLY_FRAC * kelly * bankroll, cap) / cost + 1e-9)
-    while n > 0 and n * ask + order_fee(ask, n) > cap + 1e-9:
-        n -= 1
-    if n < 1 and ask + order_fee(ask, 1) <= cap + 1e-9:
-        n = 1
-    return n
+    lots = math.floor(min(cfg.KELLY_FRAC * kelly * bankroll, cap) / cost * LOT + 1e-9)
+    while lots > 0 and lots / LOT * ask + order_fee(ask, lots / LOT) > cap + 1e-9:
+        lots -= 1
+    return lots / LOT
 
 
 def decide(cfg: BotConfig, fv: FairValue, secs_left: float, yes_ask: Optional[float], no_ask: Optional[float],
@@ -122,8 +123,8 @@ def decide(cfg: BotConfig, fv: FairValue, secs_left: float, yes_ask: Optional[fl
             why = 'mid band'
             continue
         n = size(cfg, q, ask, bankroll)
-        if n < 1:
-            why = 'one contract is more than the risk cap'
+        if n <= 0:
+            why = 'stake too small to buy'
             continue
         if best is None or edge > best.edge:
             best = Intent(side, ask, n, q, edge, fv.p_yes, secs_left)
