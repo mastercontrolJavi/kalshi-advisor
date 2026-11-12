@@ -41,7 +41,9 @@ class BotConfig:
     USE_FAST_SPOT: bool = True     # price off the 5 Hz BRTI value when it is newer than the 1 Hz print (pre-window only)
     VOL_HALFLIFE_S: float = 300.0
     VOL_FLOOR_ANN: float = 0.10
-    VOL_MIN_SAMPLES: int = 120
+    # 10 minutes of prints before the first trade. With the sidecar's 120 the first live trade (2 minutes after a start)
+    # priced a 74c ask at 92%: a two-minute volatility sample is too short and makes the model overconfident.
+    VOL_MIN_SAMPLES: int = 600
     # --- Process ---
     PRIORITY: str = 'low'          # below-normal CPU priority so the bot yields to the advisor's engine
     DB_PATH: str = str(ROOT / 'data' / 'bot.db')
