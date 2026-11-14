@@ -13,7 +13,7 @@ from bot.strategy import Pricer, decide, size  # noqa: E402
 from edge.ev_gate import order_fee, taker_fee  # noqa: E402
 from edge.fair_value import FairValue  # noqa: E402
 
-CFG = BotConfig()
+CFG = BotConfig(KELLY_FRAC=0.5, MAX_RISK_FRAC=0.10)   # the sizing these numbers were worked out for; the live default may differ
 
 
 def fv(p):

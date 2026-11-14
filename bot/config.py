@@ -31,8 +31,9 @@ class BotConfig:
     MAX_SECS_LEFT: float = 600.0   # the first 5 minutes were a coin flip around zero
 
     # --- Sizing: fractional Kelly on the model's probability, in hundredths of a contract ---
-    KELLY_FRAC: float = 0.5
-    MAX_RISK_FRAC: float = 0.10    # most of the bankroll one round may cost
+    # 2026-11-13, user choice: 1.5x the first sizing (was 0.5 Kelly, 10% cap). A replay of 134 paper trades put the useful ceiling at 1.5-2x.
+    KELLY_FRAC: float = 0.75
+    MAX_RISK_FRAC: float = 0.15    # most of the bankroll one round may cost
     # --- Fill model ---
     LATENCY_MS: int = 300          # decision -> the order reaching Kalshi; the paper fill uses the book as it is then
     # --- Data guards ---
