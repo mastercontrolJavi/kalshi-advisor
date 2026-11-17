@@ -4,7 +4,7 @@ import {createServer,request} from 'node:http';
 import {WebSocketServer,WebSocket} from 'ws';
 import {authorized,requireDashboardCredentials} from '../src/engine/auth';
 import {fullSpeed} from '../src/engine/power';
-import {readBotRecord} from '../src/bot/record';
+import {readBotRecord,readStatus,setSwitch} from '../src/bot/record';
 requireDashboardCredentials();
 // This server relays the 4 Hz engine stream to the page, so it must not be power-throttled on battery either (power.ts).
 fullSpeed((event,data)=>console.log(JSON.stringify({time:new Date().toISOString(),event,data})));
@@ -17,6 +17,17 @@ const server=createServer((req,res)=>{
   if(!authorized(req.headers.authorization,req)){res.writeHead(401,{'WWW-Authenticate':'Basic realm="Kalshi Advisor"','Cache-Control':'no-store'});res.end('Authentication required');return;}
   // The paper bot's record (bot/, DECISIONS 81): read here from its own ledger, so the engine does no work for it.
   if(req.url==='/api/bot'&&req.method==='GET'){try{const body=JSON.stringify(readBotRecord());res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(body);}catch(e){res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}return;}
+  // The real-money switch (bot/live.py): only this page's own button may flip it, so the request must come from this
+  // origin as JSON. Switching on needs the bot running in live mode; switching off always works.
+  if(req.url==='/api/bot/live'&&req.method==='POST'){
+    const fail=(code:number,error:string)=>{res.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify({error}));};
+    let origin='';try{origin=new URL(req.headers.origin??'').host;}catch{}
+    if(!origin||origin!==req.headers.host||!String(req.headers['content-type']??'').startsWith('application/json'))return fail(403,'Not allowed from here');
+    let raw='';req.on('data',c=>{raw+=c;if(raw.length>1000)req.destroy();});
+    req.on('end',()=>{try{const next=setSwitch(JSON.parse(raw||'{}').armed,readStatus());console.log(JSON.stringify({time:new Date().toISOString(),event:'real-trading-switch',data:next}));
+      res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(next));}catch(e){fail(400,(e as Error).message);}});
+    return;
+  }
   const api=apis.find(([prefix])=>req.url?.startsWith(prefix));
   if(api){const [prefix,target,name]=api;
     const upstream=request({hostname:'127.0.0.1',port:target,path:req.url!.slice(prefix.length-1),method:req.method,headers:{...req.headers,'x-forwarded-host':req.headers.host}},r=>{res.writeHead(r.statusCode??502,r.headers);r.pipe(res);});

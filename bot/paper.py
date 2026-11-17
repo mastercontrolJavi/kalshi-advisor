@@ -92,6 +92,10 @@ class PaperBroker:
         n, paid, fees = walk(asks, limit, want, self.cash)
         if n <= 0:
             return None
+        return self.record(ticker, side, n, paid, fees, limit, want, ts, **context)
+
+    def record(self, ticker: str, side: str, n: float, paid: float, fees: float, limit: float, want: float, ts: float, **context) -> Fill:
+        """Book a fill: `n` contracts for `paid` dollars plus `fees`. The paper fill comes from walk(); a real one from Kalshi's reply."""
         self.cash -= paid + fees
         self.positions[ticker] = Position(ticker, side, n, paid + fees)
         self.db.execute(

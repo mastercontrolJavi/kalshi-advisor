@@ -12,9 +12,10 @@ from .config import load_config
 def status() -> None:
     from .paper import PaperBroker
     cfg = load_config()
-    b = PaperBroker(cfg.DB_PATH, cfg.START_BANKROLL)
+    live = cfg.MODE == 'live'
+    b = PaperBroker(cfg.LIVE_DB_PATH, cfg.LIVE_BUDGET) if live else PaperBroker(cfg.DB_PATH, cfg.START_BANKROLL)
     s = b.summary()
-    print(f"Paper account since {datetime.fromtimestamp(s['started']):%Y-%m-%d %H:%M}")
+    print(f"{'Real-money record' if live else 'Paper account'} since {datetime.fromtimestamp(s['started']):%Y-%m-%d %H:%M}")
     print(f"  equity   ${s['equity']:.2f}  (start ${s['start']:.2f}, peak ${s['peak']:.2f}, goal ${cfg.TARGET:.0f})")
     print(f"  rounds   {s['rounds']} settled, {s['wins']} won, {s['open']} open, {s['misses']} orders missed (ask moved before the fill)")
     if s['rounds']:
@@ -38,7 +39,7 @@ def main() -> None:
     elif cmd == 'reset':
         from .paper import PaperBroker
         cfg = load_config()
-        PaperBroker(cfg.DB_PATH, cfg.START_BANKROLL).reset(cfg.START_BANKROLL)
+        PaperBroker(cfg.DB_PATH, cfg.START_BANKROLL).reset(cfg.START_BANKROLL)  # the paper account only: the real-money record is never reset here
         print(f'Paper account reset to ${cfg.START_BANKROLL:.2f}. Restart the bot if it is running.')
     elif cmd == 'backtest':
         from .backtest import main as backtest

@@ -66,3 +66,22 @@ for the same quote. The miss rate hints at it but does not measure it.
 | `kalshi.py` | Request signing and public REST reads |
 | `runner.py` | The live loop: websocket, market rollover, guards, paper execution |
 | `backtest.py` | Replay through the same strategy and account code, and the goal projection |
+
+## Real money (`BOT_MODE=live`, 2026-11-17)
+
+Added at the owner's request after the paper record (319 rounds: no clear edge, -0.6c a contract weighted by contracts).
+The same rule and sizing, with real Kalshi orders.
+
+- **Two locks.** `BOT_MODE=live` in `.env.local` puts the bot in real-money mode, where it only watches. It orders only
+  while the switch on the Bot page is on (`data/bot-live.json`, written by the page's button and nothing else). The bot
+  reads the file again right before every order, so off is immediate.
+- **Budget.** It spends from its own record, `data/bot-live.db`, which starts at `LIVE_BUDGET` ($15) and grows only by
+  its own wins. An order is cut to what that cash can pay, fee included. The rest of the Kalshi balance is never counted.
+- **The order** (`live.py`, Kalshi Create Order V2, `POST /portfolio/events/orders`): immediate-or-cancel at the ask it
+  decided on, one a round, sent once and never retried. YES is a bid at the YES price; NO is an ask at 1 - the NO price.
+  The record is written from Kalshi's own fills for that order.
+- **It switches itself off** after any refused order, any order with no clear answer (it then reads the account's fills
+  for that round and books what it finds), any fill dearer than the order allowed, and any unexpected error. The reason
+  is shown on the Bot page. Only the owner switches it back on.
+- **Not tested against the exchange.** The tests use a fake Kalshi (`tests/test_live.py`); nothing was sent during the
+  build. The first order with the switch on is the live test.

@@ -34,6 +34,13 @@ class BotConfig:
     # 2026-11-13, user choice: 1.5x the first sizing (was 0.5 Kelly, 10% cap). A replay of 134 paper trades put the useful ceiling at 1.5-2x.
     KELLY_FRAC: float = 0.75
     MAX_RISK_FRAC: float = 0.15    # most of the bankroll one round may cost
+    # --- Real money (bot/live.py), 2026-11-17, user: "same type of experiment, but with real money that I can afford to lose" ---
+    # MODE 'live' sends real Kalshi orders, and only while the switch on the Bot page is on (data/bot-live.json). The bot
+    # spends from its own ledger (LIVE_DB_PATH), which starts at LIVE_BUDGET and grows only by its own wins: whatever
+    # else is in the Kalshi account is never counted. In live mode the paper account is left as it is.
+    MODE: str = 'paper'            # 'paper' | 'live'
+    LIVE_BUDGET: float = 15.0
+    LIVE_DB_PATH: str = str(ROOT / 'data' / 'bot-live.db')
     # --- Fill model ---
     LATENCY_MS: int = 300          # decision -> the order reaching Kalshi; the paper fill uses the book as it is then
     # --- Data guards ---
@@ -59,6 +66,8 @@ class BotConfig:
             raise ValueError('need 0 <= MIN_SECS_LEFT < MAX_SECS_LEFT <= 900')
         if self.START_BANKROLL <= 0 or self.LATENCY_MS < 0 or self.PRIORITY not in ('low', 'normal'):
             raise ValueError('invalid bankroll, latency or priority')
+        if self.MODE not in ('paper', 'live') or not (0 < self.LIVE_BUDGET <= 1000):
+            raise ValueError("MODE must be 'paper' or 'live', and LIVE_BUDGET between 0 and 1000 dollars")
 
 
 def load_config(env: Optional[Mapping[str, str]] = None, dotenv: Optional[Path] = ROOT / '.env.local') -> BotConfig:

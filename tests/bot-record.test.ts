@@ -1,5 +1,8 @@
 import {describe,it,expect} from 'vitest';
-import {summarize,readBotRecord,type BotTrade} from '../src/bot/record';
+import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {summarize,readBotRecord,readSwitch,setSwitch,type BotTrade} from '../src/bot/record';
 const t=(time:number,contracts:number,price:number,pnl:number|null,edge:number|null=.05):BotTrade=>({time,ticker:'T'+time,side:'yes',contracts,price,fee:.01,q:.5,edge,secsLeft:300,result:pnl==null?null:pnl>0?'yes':'no',pnl});
 describe('bot record',()=>{
   it('summarizes settled rounds per contract and keeps open positions at cost',()=>{
@@ -20,6 +23,25 @@ describe('bot record',()=>{
   });
   it('reports a missing ledger instead of throwing',()=>{
     const r=readBotRecord('data/does-not-exist.db','data/does-not-exist.json',5);
-    expect(r.missing).toBe(true);expect(r.status).toBeNull();expect(r.rounds).toBe(0);
+    expect(r.missing).toBe(true);expect(r.status).toBeNull();expect(r.rounds).toBe(0);expect(r.live).toBe(false);expect(r.switch).toBeNull();
+  });
+  it('switches real trading on only for a running live bot, and off always',()=>{
+    const dir=mkdtempSync(join(tmpdir(),'bot-switch-')),path=join(dir,'bot-live.json');
+    try{
+      expect(readSwitch(path).armed).toBe(false);                                   // no file = off
+      expect(()=>setSwitch(true,null,1,path)).toThrow(/not running/);
+      expect(()=>setSwitch(true,{running:true,mode:'paper'},1,path)).toThrow(/not running in real-money mode/);
+      expect(()=>setSwitch(true,{running:false,mode:'live'},1,path)).toThrow();
+      expect(()=>setSwitch('true',{running:true,mode:'live'},1,path)).toThrow(/true or false/);
+      expect(readSwitch(path).armed).toBe(false);
+      expect(setSwitch(true,{running:true,mode:'live'},7,path)).toEqual({armed:true,time:7,by:'user',note:''});
+      expect(readSwitch(path).armed).toBe(true);
+      expect(setSwitch(false,null,9,path).armed).toBe(false);                       // off needs nothing
+      expect(readSwitch(path)).toEqual({armed:false,time:9,by:'user',note:''});
+      writeFileSync(path,'{"armed":"yes"}');expect(readSwitch(path).armed).toBe(false);
+      const status=join(dir,'status.json');writeFileSync(status,JSON.stringify({time:100,mode:'live'}));writeFileSync(path,JSON.stringify({armed:true}));
+      const r=readBotRecord(join(dir,'none.db'),status,105,path);
+      expect(r.live).toBe(true);expect(r.switch?.armed).toBe(true);expect(r.missing).toBe(true);
+    }finally{rmSync(dir,{recursive:true,force:true});}
   });
 });
