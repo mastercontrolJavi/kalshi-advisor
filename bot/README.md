@@ -85,3 +85,21 @@ The same rule and sizing, with real Kalshi orders.
   is shown on the Bot page. Only the owner switches it back on.
 - **Not tested against the exchange.** The tests use a fake Kalshi (`tests/test_live.py`); nothing was sent during the
   build. The first order with the switch on is the live test.
+
+### Selling before settlement (live mode, 2026-11-17)
+
+The owner asked for it after closing three real rounds by hand: "instead of always letting it go to zero, get some
+money back".
+
+- **Losing:** the bid for the side held stays at or under half the entry price for 15 s, with 2+ minutes left.
+- **Reversing:** the bid has been 10c or more above the entry and stays at or under 60% of its highest for 15 s, with
+  1+ minute left.
+- Either one sells everything held at the bid: immediate-or-cancel and `reduce_only`, so it can only close the position.
+  Three attempts a round at most. A failed sale does not switch real trading off (it cannot spend money).
+- **What the replay says** (minute candles; the bot's 302 entries and 5,312 cheap-side entries from every recorded
+  round): both rules together average the same as holding (-3.8c vs -3.9c a contract; +1.3c vs +0.8c on the bot's
+  cheap entries) with smaller swings (27c vs 37c). Selling at a fixed gain cost about 2c a contract, so there is none.
+  The exits trim the swings; they do not create an edge.
+- **The record follows Kalshi.** Every 10 s, and at start for the last day, the bot reads the account's fills for the
+  rounds it holds and books whatever was sold, by itself or by the owner by hand (`PaperBroker.exits`, totals not
+  additions, so it is safe to repeat; a sale found after settlement restates the round).

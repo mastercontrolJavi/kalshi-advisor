@@ -11,7 +11,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import websockets
 
@@ -84,6 +84,10 @@ class Bot:
         self.broker = PaperBroker(cfg.LIVE_DB_PATH, cfg.LIVE_BUDGET) if self.live else PaperBroker(cfg.DB_PATH, cfg.START_BANKROLL)
         self.switch = live.Switch(Path(cfg.LIVE_DB_PATH).with_name('bot-live.json'))
         self.armed = False               # refreshed every 10 s, and read again from the file right before an order
+        self.peaks: Dict[str, float] = {}       # highest bid seen for the side held, per round
+        self.exit_since: Dict[str, float] = {}  # when the exit condition first held without a break
+        self.exit_wait: Dict[str, float] = {}   # no new sell attempt before this time
+        self.exit_tries: Dict[str, int] = {}
         self.pricer = Pricer(cfg)
         self.markets: Dict[str, Market] = {}
         self.subscribed: set = set()
@@ -125,7 +129,29 @@ class Bot:
                 return m
         return None
 
+    async def reconcile(self, ticker: str) -> None:
+        """Live mode: book whatever Kalshi shows as sold of this round's position, by the bot or by the owner by hand."""
+        row = self.broker.db.execute('SELECT side FROM fills WHERE ticker = ? ORDER BY id LIMIT 1', (ticker,)).fetchone()
+        if row is None:
+            return
+        n, cash = live.sold(await live.read_fills(self.signer, f'ticker={ticker}&limit=200', tries=2), row[0])
+        added = self.broker.exits(ticker, n, cash, time.time()) if n > 0 else 0.0
+        if added:
+            log('real-sale-booked', ticker=ticker, sold=n, cash=round(cash, 4), added=round(added, 4), equity=round(self.broker.equity, 4))
+
+    async def reconcile_all(self, recent_s: float = 0.0) -> None:
+        tickers = set(self.broker.open_tickers())
+        if recent_s:  # also rounds settled lately, in case a sale by hand was missed while the bot was down
+            tickers |= {r[0] for r in self.broker.db.execute('SELECT ticker FROM fills WHERE ts > ?', (time.time() - recent_s,))}
+        for ticker in sorted(tickers):
+            try:
+                await self.reconcile(ticker)
+            except Exception as e:
+                log('reconcile-error', ticker=ticker, message=repr(e))
+
     async def settle(self) -> None:
+        if self.live:
+            await self.reconcile_all()
         for ticker in self.broker.open_tickers():
             m = self.markets.get(ticker)
             if m is not None and time.time() < m.close + 5:
@@ -174,7 +200,8 @@ class Bot:
                                                                                **best_side(v[2], v[3], v[4], v[6])},
                 'config': {'start': self.broker.start, 'target': cfg.TARGET, 'minEdge': cfg.MIN_EDGE, 'minAsk': cfg.MIN_ASK, 'maxAsk': cfg.MAX_ASK,
                            'midBand': [cfg.MID_BAND_LOW, cfg.MID_BAND_HIGH] if cfg.BLOCK_MID_BAND else None, 'window': [cfg.MIN_SECS_LEFT, cfg.MAX_SECS_LEFT],
-                           'kelly': cfg.KELLY_FRAC, 'maxRisk': cfg.MAX_RISK_FRAC, 'latencyMs': cfg.LATENCY_MS}}
+                           'kelly': cfg.KELLY_FRAC, 'maxRisk': cfg.MAX_RISK_FRAC, 'latencyMs': cfg.LATENCY_MS,
+                           'exit': {'below': cfg.EXIT_BELOW, 'up': cfg.EXIT_UP, 'back': cfg.EXIT_BACK} if self.live else None}}
         tmp = self.status_path.with_suffix('.tmp')
         tmp.write_text(json.dumps(data), encoding='utf-8')
         os.replace(tmp, self.status_path)
@@ -288,6 +315,13 @@ class Bot:
     def evaluate(self, market: Market) -> None:
         self.stats['evals'] += 1
         now = time.time()
+        pos = self.broker.positions.get(market.ticker)
+        if pos is not None and self.live and self.armed and self.pending is None:
+            hit = self.exit_signal(market, pos, now)
+            if hit is not None:
+                self.pending = market.ticker
+                asyncio.get_running_loop().create_task(self.execute_exit(market, pos, *hit))
+            return
         if self.pending is not None or market.ticker in self.broker.positions or self.cooldown.get(market.ticker, 0) > now:
             return
         if not (market.open <= now < market.close):
@@ -341,6 +375,51 @@ class Bot:
             else:
                 log('paper-fill', ticker=market.ticker, side=fill.side, contracts=fill.contracts, price=round(fill.price, 4), fee=round(fill.fee, 4),
                     q=round(intent.q, 4), edge=round(intent.edge, 4), secs_left=round(intent.secs_left, 1), cash=round(self.broker.cash, 4))
+        finally:
+            self.pending = None
+
+    def exit_signal(self, market: Market, pos, now: float) -> Optional[Tuple[str, float]]:
+        """(reason, bid) when the position should be sold now: its bid has halved from the entry, or it was up and has
+        fallen back from its high. The condition must hold for EXIT_HOLD_S without a break. None otherwise."""
+        cfg, t, left = self.cfg, market.ticker, market.close - now
+        usable = market.book.valid and not market.book.crossed and self.delay.ms <= cfg.MAX_BOOK_DELAY_MS and market.open <= now < market.close
+        bid = market.book.best_bid(pos.side) if usable else None
+        if bid is None or bid < 0.01 or pos.left <= 0 or self.exit_wait.get(t, 0) > now or self.exit_tries.get(t, 0) >= 3:
+            self.exit_since.pop(t, None)
+            return None
+        peak = self.peaks[t] = max(self.peaks.get(t, pos.price), bid)
+        why = None
+        if cfg.EXIT_BELOW > 0 and left >= cfg.EXIT_MIN_SECS_LEFT and bid <= cfg.EXIT_BELOW * pos.price:
+            why = 'down to half its entry'
+        elif cfg.EXIT_BACK > 0 and left >= cfg.EXIT_REVERSAL_MIN_SECS_LEFT and peak >= pos.price + cfg.EXIT_UP and bid <= cfg.EXIT_BACK * peak:
+            why = 'reversing from its high'
+        if why is None:
+            self.exit_since.pop(t, None)
+            return None
+        return (why, bid) if now - self.exit_since.setdefault(t, now) >= cfg.EXIT_HOLD_S else None
+
+    async def execute_exit(self, market: Market, pos, why: str, bid: float) -> None:
+        """One real sale of what is held, immediate-or-cancel at the bid, reduce_only (it can only close the position).
+        The ledger then books whatever Kalshi shows as sold. A sale cannot spend money, so a problem here is logged
+        and tried again (three attempts a round) instead of switching real trading off."""
+        t = market.ticker
+        try:
+            if not self.switch.armed:
+                self.armed = False
+                return
+            self.exit_wait[t], self.exit_tries[t] = time.time() + 20.0, self.exit_tries.get(t, 0) + 1
+            self.exit_since.pop(t, None)
+            body = live.sell_body(t, pos.side, bid, pos.left)
+            log('real-sell-sent', why=why, held=pos.side, entry=round(pos.price, 4), bid=bid, **body)
+            try:
+                reply = await kalshi.post(self.signer, live.ORDERS, body)
+                log('real-sell-result', ticker=t, **{k: reply.get(k) for k in ('order_id', 'fill_count', 'remaining_count', 'average_fill_price', 'average_fee_paid')})
+            except Exception as e:
+                log('real-sell-problem', ticker=t, message=repr(e))
+            await asyncio.sleep(1.0)
+            await self.reconcile(t)
+        except Exception as e:
+            log('real-sell-error', ticker=t, message=repr(e))
         finally:
             self.pending = None
 
@@ -416,4 +495,6 @@ class Bot:
             await self.refresh_markets()
         except Exception as e:
             log('markets-error', message=repr(e))
+        if self.live:
+            await self.reconcile_all(recent_s=86400)
         await asyncio.gather(self.stream(), self.housekeeping())

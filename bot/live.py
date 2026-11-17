@@ -40,6 +40,32 @@ class Switch:
         os.replace(tmp, self.path)
 
 
+def sell_body(ticker: str, side: str, limit: float, contracts: float, client_order_id: Optional[str] = None) -> dict:
+    """Immediate-or-cancel sale of `contracts` of `side` at no less than `limit`: the mirror order (selling YES is an ask
+    at the YES price; selling NO is a bid at 1 - the NO price), marked reduce_only so Kalshi caps it at what the account
+    really holds. It can close a position and can never open one on the other side."""
+    if side not in ('yes', 'no') or not (0 < limit < 1) or contracts <= 0:
+        raise ValueError('invalid order')
+    yes_price = limit if side == 'yes' else 1 - limit
+    return {'ticker': ticker, 'client_order_id': client_order_id or str(uuid.uuid4()), 'side': 'ask' if side == 'yes' else 'bid',
+            'count': f'{contracts:.2f}', 'price': f'{yes_price:.4f}', 'time_in_force': 'immediate_or_cancel',
+            'self_trade_prevention_type': 'taker_at_cross', 'cancel_order_on_pause': True, 'reduce_only': True}
+
+
+def sold(fills: List[dict], side: str) -> Tuple[float, float]:
+    """(contracts, dollars after fees) of `side` sold in these fills, whoever sold them: the bot or the owner by hand.
+    Kalshi reports a sale of one side as a fill on the other (outcome_side), with both prices on it."""
+    other = 'no' if side == 'yes' else 'yes'
+    n = cash = 0.0
+    for f in fills:
+        if (f.get('outcome_side') or f.get('side')) != other:
+            continue
+        count = float(f['count_fp'])
+        n += count
+        cash += count * float(f['yes_price_dollars'] if side == 'yes' else f['no_price_dollars']) - float(f.get('fee_cost') or 0)
+    return round(n, 2), cash
+
+
 def order_body(ticker: str, side: str, limit: float, contracts: float, client_order_id: Optional[str] = None) -> dict:
     """Immediate-or-cancel buy of `contracts` on `side` at no worse than `limit`. Kalshi quotes every order from the YES
     leg: YES is a bid at the YES price; NO is an ask at 1 - the NO price. A moved price fills less or nothing."""
