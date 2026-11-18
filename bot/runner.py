@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import sys
 import time
@@ -22,6 +23,38 @@ from .book import Book, FeedDelay
 from .config import BotConfig, credentials
 from .paper import PaperBroker, walk
 from .strategy import Intent, Pricer, decide
+
+
+BALANCE_MAX_AGE_S = 60.0    # live mode: no order on a Kalshi balance older than this
+PENDING_GIVE_UP_S = 300.0   # live mode: an unclear order Kalshi still does not show after this is reported for a manual check
+
+
+def settled_result(market: dict) -> Optional[str]:
+    """'yes' or 'no' once Kalshi has decided the round, 'void' for a voided one, None while it is not settled.
+
+    Checked against Kalshi 2026-11-17: all 6,480 settled KXBTC15M markets read status 'finalized' with result 'yes' or
+    'no'. The market's result enum is yes / no / scalar / '' (docs.kalshi.com Get Market); 'void' ("voided/cancelled and
+    all positions returned at original cost") is named in the account's settlement records. So a finalized market with
+    neither yes nor no is read by its settlement_value_dollars (the YES payout): 1 or 0 is a plain yes or no, none is a
+    void. A fractional value (a scalar settlement, not something a binary BTC round should get) is left open and logged,
+    for the owner to check, rather than guessed."""
+    result = market.get('result')
+    if result in ('yes', 'no'):
+        return result
+    if result == 'void':
+        return 'void'
+    if market.get('status') != 'finalized':
+        return None
+    raw = market.get('settlement_value_dollars')
+    if raw in (None, ''):
+        return 'void'
+    value = float(raw)
+    if value >= 1 - 1e-9:
+        return 'yes'
+    if value <= 1e-9:
+        return 'no'
+    log('settlement-unhandled', ticker=market.get('ticker'), result=result, settlement_value=raw)
+    return None
 
 
 def log(event: str, **data) -> None:
@@ -85,6 +118,9 @@ class Bot:
         self.switch = live.Switch(Path(cfg.LIVE_DB_PATH).with_name('bot-live.json'))
         self.armed = False               # refreshed every 10 s, and read again from the file right before an order
         self.tripped: Optional[float] = None  # when the bot last switched itself off (ms); only a later switch-on by the owner counts
+        self.selling = False             # early sales allowed (on, or switched off by the bot itself): refreshed like `armed`
+        self.balance: Optional[float] = None  # the Kalshi account's cash in dollars (live mode), read every 10 s
+        self.balance_at = 0.0
         self.peaks: Dict[str, float] = {}       # highest bid seen for the side held, per round
         self.exit_since: Dict[str, float] = {}  # when the exit condition first held without a break
         self.exit_wait: Dict[str, float] = {}   # no new sell attempt before this time
@@ -160,24 +196,80 @@ class Bot:
             if m is not None and time.time() < m.close + 5:
                 continue
             market = (await kalshi.get('/markets/' + ticker)).get('market', {})
-            if market.get('result') in ('yes', 'no'):
-                pnl = self.broker.settle(ticker, market['result'], time.time())
+            result = settled_result(market)
+            if result is not None:
+                pnl = self.broker.settle(ticker, result, time.time())
                 eq = self.broker.equity
-                log('settled', ticker=ticker, result=market['result'], pnl=round(pnl, 4), equity=round(eq, 4))
+                log('settled', ticker=ticker, result=result, kalshi_result=market.get('result'), pnl=round(pnl, 4), equity=round(eq, 4))
                 if not self.hit_target and eq >= self.cfg.TARGET:
                     self.hit_target = True
                     log('target-reached', equity=round(eq, 2), target=self.cfg.TARGET)
 
+    async def refresh_balance(self) -> None:
+        """Live mode: the account's real cash. An order is never larger than this, whatever the bot's own record says."""
+        if not self.live:
+            return
+        b = await kalshi.signed_get(self.signer, '/portfolio/balance')
+        cash = float(b['balance']) / 100     # cents, as the engine reads it (src/engine/account.ts)
+        if not (math.isfinite(cash) and cash >= 0):
+            raise ValueError(f'unsupported balance {b.get("balance")!r}')
+        self.balance, self.balance_at = cash, time.time()
+
+    async def resolve_pending(self) -> None:
+        """Live mode: settle every real order whose outcome is not booked yet (see resolve_order)."""
+        if not self.live:
+            return
+        for p in self.broker.pending_orders():
+            if p['ticker'] == self.pending:  # the order path is handling this one right now
+                continue
+            try:
+                note = await self.resolve_order(p)
+                if note is not None:
+                    log('pending-order-resolved', ticker=p['ticker'], cid=p['cid'], note=note)
+            except Exception as e:
+                log('pending-order-error', ticker=p['ticker'], message=repr(e))
+
+    async def resolve_order(self, p: dict) -> Optional[str]:
+        """Look one real order up on Kalshi by the client id it was sent with, and book what it bought. Only that order is
+        read, so a trade by hand on the same round is never mistaken for the bot's. Returns a note once the order is
+        settled in the record, or None while Kalshi does not show it (or all its fills) yet. An order Kalshi still does
+        not show after PENDING_GIVE_UP_S switches real trading off with a note to check the account."""
+        t, side = p['ticker'], p['side']
+        orders = (await kalshi.signed_get(self.signer, f'/portfolio/orders?ticker={t}&limit=200')).get('orders') or []
+        order = next((o for o in orders if o.get('client_order_id') == p['cid']), None)
+        if order is None:
+            if time.time() - p['ts'] < PENDING_GIVE_UP_S:
+                return None
+            self.broker.drop_pending(p['cid'])
+            note = (f'An order on {t} that got no clear answer is still not on Kalshi {PENDING_GIVE_UP_S // 60:g} minutes later, '
+                    'so nothing is in the record for it: check Kalshi for a position in this round.')
+            self.disarm(note)
+            return note
+        want = float(order.get('fill_count_fp') or order.get('fill_count') or 0)
+        n, paid, fees = live.from_fills(await live.read_fills(self.signer, f"order_id={order['order_id']}", want=want), side)
+        if n < want - 0.005:
+            return None                      # Kalshi says more filled than its fills show yet: look again in 10 s
+        booked = n > 0 and not self.broker.has_fill(t)  # one buy a round: an order already booked is never booked twice
+        if booked:
+            context = {k: p[k] for k in ('q', 'edge', 'p_yes', 'secs_left')}
+            fill = self.broker.record(t, side, n, paid, fees, p['limit_price'], p['wanted'], time.time(), **context)
+            if self.balance is not None:
+                self.balance -= paid + fees
+            log('real-fill-recovered', ticker=t, side=side, contracts=fill.contracts, price=round(fill.price, 4), fee=round(fill.fee, 4), cash=round(self.broker.cash, 4))
+        self.broker.drop_pending(p['cid'])
+        return f'Kalshi shows {n:g} contracts bought; they are in the record.' if n > 0 else 'Kalshi shows nothing bought.'
+
     async def housekeeping(self) -> None:
         tick = 0
         while True:
-            for name, job in (('markets', self.refresh_markets), ('settle', self.settle)):
+            for name, job in (('markets', self.refresh_markets), ('balance', self.refresh_balance), ('pending', self.resolve_pending), ('settle', self.settle)):
                 try:
                     await job()
                 except Exception as e:
                     log(name + '-error', message=repr(e))
             tick += 1
             self.armed = self.live and self.switched_on()
+            self.selling = self.live and self.may_sell()
             try:
                 self.write_status()
             except Exception as e:
@@ -199,6 +291,7 @@ class Bot:
         v, cfg, m = self.view, self.cfg, self.current(now)
         data = {'time': now * 1000, 'started': self.started * 1000, 'connected': self.connected, 'ready': self.pricer.ready,
                 'mode': cfg.MODE, 'armed': self.armed, 'switch': self.switch.read() if self.live else None, 'budget': cfg.LIVE_BUDGET,
+                'balance': self.balance if self.live and now - self.balance_at <= BALANCE_MAX_AGE_S else None, 'selling': self.selling,
                 'warmup': [self.pricer.vol.count, cfg.VOL_MIN_SAMPLES], 'bookDelayMs': round(self.delay.ms),
                 'valueAgeMs': round(now * 1000 - self.last_value_ms) if self.last_value_ms else None,
                 'round': None if m is None else {'ticker': m.ticker, 'close': m.close * 1000, 'strike': m.strike, 'held': m.ticker in self.broker.positions},
@@ -328,7 +421,7 @@ class Bot:
         self.stats['evals'] += 1
         now = time.time()
         pos = self.broker.positions.get(market.ticker)
-        if pos is not None and self.live and self.armed and self.pending is None:
+        if pos is not None and self.live and self.selling and self.pending is None:
             hit = self.exit_signal(market, pos, now)
             if hit is not None:
                 self.pending = market.ticker
@@ -417,11 +510,12 @@ class Bot:
     async def execute_exit(self, market: Market, pos, why: str, bid: float) -> None:
         """One real sale of what is held, immediate-or-cancel at the bid, reduce_only (it can only close the position).
         The ledger then books whatever Kalshi shows as sold. A sale cannot spend money, so a problem here is logged
-        and tried again (three attempts a round) instead of switching real trading off."""
+        and tried again (three attempts a round) instead of switching real trading off. It also runs after the bot
+        switched itself off (a sale can only reduce what is held), but not after the owner switched trading off."""
         t = market.ticker
         try:
-            if not self.switched_on():
-                self.armed = False
+            if not self.may_sell():
+                self.selling = False
                 return
             self.exit_wait[t], self.exit_tries[t] = time.time() + 20.0, self.exit_tries.get(t, 0) + 1
             self.exit_since.pop(t, None)
@@ -445,8 +539,14 @@ class Bot:
         s = self.switch.read()
         return s['armed'] and (self.tripped is None or (isinstance(s['time'], (int, float)) and s['time'] > self.tripped))
 
+    def may_sell(self) -> bool:
+        """Early sales: while trading is on, and after the bot switched itself off (the file says off 'by bot', or its
+        write failed and the file still says on). Off by the owner stops them too."""
+        s = self.switch.read()
+        return s['armed'] or s['by'] == 'bot'
+
     def disarm(self, note: str) -> None:
-        self.armed, self.tripped = False, time.time() * 1000
+        self.armed, self.tripped, self.selling = False, time.time() * 1000, self.live
         try:
             self.switch.off(note)
         except Exception as e:
@@ -464,41 +564,53 @@ class Bot:
         if not (market.book.valid and not market.book.crossed and self.delay.ms <= self.cfg.MAX_BOOK_DELAY_MS and now < market.close - 5):
             self.cooldown[t] = now + 1.0
             return
-        # Never more than the ledger's cash: the size is cut to what the budget can pay at the limit, fee included.
-        count = walk([(intent.limit, intent.contracts)], intent.limit, intent.contracts, self.broker.cash)[0]
+        # Never more than the ledger's cash, nor than the account's real cash (read every 10 s): the size is cut to what
+        # both can pay at the limit, fee included. With no recent balance the bot does not order at all.
+        if self.balance is None or now - self.balance_at > BALANCE_MAX_AGE_S:
+            self.cooldown[t] = now + 10.0
+            return self.skip('Kalshi balance not known')
+        count = walk([(intent.limit, intent.contracts)], intent.limit, intent.contracts, min(self.broker.cash, self.balance))[0]
         if count <= 0:
-            self.cooldown[t] = market.close
-            return self.skip('budget cannot pay for this order')
+            short = self.balance < self.broker.cash  # the account, not the record, is what is short: it may be topped up
+            self.cooldown[t] = now + 10.0 if short else market.close
+            return self.skip('Kalshi balance cannot pay for this order' if short else 'budget cannot pay for this order')
         body = live.order_body(t, intent.side, intent.limit, count)
         context = dict(q=intent.q, edge=intent.edge, p_yes=intent.p_yes, secs_left=intent.secs_left)
-        self.cooldown[t] = market.close  # one order a round, whatever happens next
+        self.cooldown[t] = market.close  # no second order this round, unless this one fills nothing (below)
+        # Written before the send: if the answer is unclear, or the bot stops before booking it, this order is looked up
+        # on Kalshi later by its client id (resolve_order) and whatever it bought is booked then.
+        cid = body['client_order_id']
+        self.broker.add_pending(cid, now, t, intent.side, intent.limit, count, **context)
         log('real-order-sent', **body)
         try:
             reply = await kalshi.post(self.signer, live.ORDERS, body)
         except kalshi.Refused as e:
+            self.broker.drop_pending(cid)
             log('real-order-refused', ticker=t, message=str(e))
             if e.status != 429:
                 self.disarm(f'Kalshi refused an order on {t} ({e}). Nothing was bought.')
             return
         except Exception as e:
-            # Sent, no clear answer: it may or may not have filled. Read the account's fills for this round and book them.
+            # Sent, no clear answer: it may or may not have filled. Look this order up on Kalshi and book what it bought;
+            # if Kalshi does not show it yet, housekeeping keeps looking every 10 s.
             log('real-order-unclear', ticker=t, message=repr(e))
             note = f'An order on {t} got no clear answer from Kalshi ({e!r}). '
             try:
                 await asyncio.sleep(1.5)
-                n, paid, fees = live.from_fills(await live.read_fills(self.signer, f'ticker={t}&min_ts={int(decided) - 2}'), intent.side)
-                if n > 0:
-                    self.broker.record(t, intent.side, n, paid, fees, intent.limit, count, time.time(), latency_ms=(time.time() - decided) * 1000, **context)
-                note += f'Kalshi shows {n:g} contracts bought; they are in the record.' if n > 0 else 'Kalshi shows nothing bought.'
+                found = await self.resolve_order({'cid': cid, 'ts': now, 'ticker': t, 'side': intent.side, 'limit_price': intent.limit, 'wanted': count, **context})
+                note += found if found is not None else 'Kalshi does not show it yet; the bot keeps checking and books anything it bought.'
             except Exception as e2:
-                note += f'The fills could not be read either ({e2!r}): check Kalshi for a position in this round.'
+                note += f'It could not be looked up ({e2!r}); the bot keeps trying and books anything it bought. Check Kalshi for a position in this round.'
             self.disarm(note)
             return
         log('real-order-result', ticker=t, **{k: reply.get(k) for k in ('order_id', 'fill_count', 'remaining_count', 'average_fill_price', 'average_fee_paid')})
         filled = float(reply.get('fill_count') or 0)
         if filled <= 0:
+            self.broker.drop_pending(cid)
             self.broker.miss(t, intent.side, intent.limit, market.book.ask(intent.side), intent.edge, intent.secs_left, time.time())
-            self.cooldown[t] = time.time() + 1.0  # nothing bought: the round may be tried again
+            # Nothing bought (the price moved first): like the paper bot, the round may be tried again a second later, as
+            # a new order at the new ask and only if the edge still holds there. An order itself is never resent.
+            self.cooldown[t] = time.time() + 1.0
             return
         try:
             n, paid, fees = live.from_fills(await live.read_fills(self.signer, f"order_id={reply['order_id']}", want=filled), intent.side)
@@ -508,6 +620,8 @@ class Bot:
             log('real-fills-unread', ticker=t, message=repr(e))
             n, paid, fees = live.from_reply(reply, intent.side)
         fill = self.broker.record(t, intent.side, n, paid, fees, intent.limit, count, time.time(), latency_ms=(time.time() - decided) * 1000, **context)
+        self.broker.drop_pending(cid)
+        self.balance -= paid + fees
         log('real-fill', ticker=t, side=fill.side, contracts=fill.contracts, price=round(fill.price, 4), fee=round(fill.fee, 4), cash=round(self.broker.cash, 4))
         if paid + fees > count * intent.limit * 1.08 + 0.02:
             self.disarm(f'The fill on {t} cost more than the order allowed (${paid + fees:.2f}). Check Kalshi before switching back on.')
@@ -521,4 +635,9 @@ class Bot:
             log('markets-error', message=repr(e))
         if self.live:
             await self.reconcile_all(recent_s=86400)
+            for name, job in (('balance', self.refresh_balance), ('pending', self.resolve_pending)):
+                try:
+                    await job()
+                except Exception as e:
+                    log(name + '-error', message=repr(e))
         await asyncio.gather(self.stream(), self.housekeeping())

@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS fills (
 CREATE INDEX IF NOT EXISTS fills_ticker ON fills (ticker);
 CREATE TABLE IF NOT EXISTS misses (id INTEGER PRIMARY KEY, ts REAL NOT NULL, ticker TEXT NOT NULL, side TEXT NOT NULL, decided_ask REAL, ask_then REAL, edge REAL, secs_left REAL);
 CREATE TABLE IF NOT EXISTS equity (ts REAL NOT NULL, equity REAL NOT NULL, note TEXT);
+CREATE TABLE IF NOT EXISTS pending (
+  cid TEXT PRIMARY KEY, ts REAL NOT NULL, ticker TEXT NOT NULL, side TEXT NOT NULL, limit_price REAL NOT NULL, wanted REAL NOT NULL,
+  q REAL, edge REAL, p_yes REAL, secs_left REAL);
 """
 
 
@@ -98,7 +101,26 @@ class PaperBroker:
         return self.cash + sum(max(0.0, p.cost - p.exit_cash) for p in self.positions.values())
 
     def traded(self, ticker: str) -> bool:
+        """A buy is booked for this round, or a real order on it is still waiting for Kalshi's answer."""
+        return self.has_fill(ticker) or self.db.execute('SELECT 1 FROM pending WHERE ticker = ? LIMIT 1', (ticker,)).fetchone() is not None
+
+    def has_fill(self, ticker: str) -> bool:
         return ticker in self.positions or self.db.execute('SELECT 1 FROM fills WHERE ticker = ? LIMIT 1', (ticker,)).fetchone() is not None
+
+    # Real orders (live mode) are written here before they are sent and removed once Kalshi's answer is booked, so an order
+    # whose outcome was not known (no clear answer, or the bot stopped in between) is looked up again by its client id.
+    def add_pending(self, cid: str, ts: float, ticker: str, side: str, limit: float, want: float, **context) -> None:
+        self.db.execute('INSERT INTO pending (cid, ts, ticker, side, limit_price, wanted, q, edge, p_yes, secs_left) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                        (cid, ts, ticker, side, limit, want, context.get('q'), context.get('edge'), context.get('p_yes'), context.get('secs_left')))
+        self.db.commit()
+
+    def drop_pending(self, cid: str) -> None:
+        self.db.execute('DELETE FROM pending WHERE cid = ?', (cid,))
+        self.db.commit()
+
+    def pending_orders(self) -> List[dict]:
+        cols = ('cid', 'ts', 'ticker', 'side', 'limit_price', 'wanted', 'q', 'edge', 'p_yes', 'secs_left')
+        return [dict(zip(cols, r)) for r in self.db.execute(f'SELECT {", ".join(cols)} FROM pending ORDER BY ts')]
 
     def buy(self, ticker: str, side: str, limit: float, want: float, asks: Sequence[Tuple[float, float]], ts: float, **context) -> Optional[Fill]:
         if ticker in self.positions:
@@ -138,8 +160,8 @@ class PaperBroker:
         if exit_n <= old_n + 0.005:
             return 0.0
         cost = n * price + fee
-        won = lambda sold: (n - sold) if result == side else 0.0
-        if result in ('yes', 'no'):          # settled as held: restate with the sale
+        won = lambda sold: (n - sold) * (cost / n if result == 'void' else 1.0) if result in (side, 'void') else 0.0
+        if result in ('yes', 'no', 'void'):  # settled as held: restate with the sale
             added = (exit_cash + won(exit_n)) - (old_cash + won(old_n))
             self.db.execute('UPDATE fills SET exit_n = ?, exit_cash = ?, payout = ?, pnl = ? WHERE id = ?', (exit_n, exit_cash, exit_cash + won(exit_n), exit_cash + won(exit_n) - cost, fid))
         else:
@@ -160,11 +182,12 @@ class PaperBroker:
         return added
 
     def settle(self, ticker: str, result: str, ts: float) -> Optional[float]:
-        """Close the round's position at $1 a contract if its side won. Returns the P&L, or None with no position."""
+        """Close the round's position at $1 a contract if its side won. A voided round ('void') returns what is still
+        held at its cost. Returns the P&L, or None with no position."""
         pos = self.positions.pop(ticker, None)
         if pos is None:
             return None
-        won = float(pos.left) if pos.side == result else 0.0
+        won = pos.left * pos.price if result == 'void' else float(pos.left) if pos.side == result else 0.0
         payout = pos.exit_cash + won         # what was sold early is already in the cash
         pnl = payout - pos.cost
         self.cash += won

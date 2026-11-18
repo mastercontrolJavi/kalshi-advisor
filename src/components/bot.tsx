@@ -45,15 +45,16 @@ function RealSwitch({b,onChange}:{b:any;onChange:()=>void}){
   return <Card className={cn('border',on?'border-no':'border-line')}>
     <div className="flex flex-wrap items-center gap-3"><h2 className="font-semibold">Real trading</h2>{on?<Pill tone="no">On: placing real orders</Pill>:<Pill tone="neutral">Off</Pill>}</div>
     <p className="mt-2 max-w-4xl text-sm text-muted">{on
-      ?`The bot is buying on your Kalshi account with real money, one order a round at most. It can spend only what is in its own record below (${dollars(cash)} now); the rest of your Kalshi balance is never counted.`
+      ?`The bot is buying on your Kalshi account with real money, one order a round at most. It can spend only what is in its own record below (${dollars(cash)} now), and never more than your Kalshi cash${b.status?.balance!=null?` (${dollars(b.status.balance)} now)`:''}; the rest of your Kalshi balance is never counted.`
       :`While this is off the bot only watches and places no orders. When on, it buys on your Kalshi account with real money, from a budget of ${dollars(b.status?.budget??15)} that it tracks in its own record. In testing on paper this rule did not beat the fees.`}</p>
-    {!on&&sw?.note?<p className="mt-2 max-w-4xl text-sm text-warn" role="status">Switched off{sw.by==='bot'?' by the bot':''}{sw.time?` at ${new Date(sw.time).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}`:''}: {sw.note}</p>:null}
+    {!on&&sw?.note?<p className="mt-2 max-w-4xl text-sm text-warn" role="status">Switched off{sw.by==='bot'?' by the bot':''}{sw.time?` at ${new Date(sw.time).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}`:''}: {sw.note}{sw.by==='bot'?' It buys nothing more, but still sells a position it holds early if the exit rules say so.':''}</p>:null}
     {error?<p className="mt-2 text-sm text-no" role="alert">{error}</p>:null}
     <div className="mt-3 flex flex-wrap items-center gap-2">{on
       ?<Button variant="outline" onClick={()=>void set(false)} disabled={busy}>Turn off</Button>
       :asking
         ?<><Button className="bg-no text-bg hover:bg-no/85" onClick={()=>void set(true)} disabled={busy}>Yes, trade real money</Button><Button variant="ghost" onClick={()=>setAsking(false)} disabled={busy}>Cancel</Button></>
-        :<Button variant="outline" onClick={()=>setAsking(true)} disabled={!running}>Turn on</Button>}
+        :<><Button variant="outline" onClick={()=>setAsking(true)} disabled={!running}>Turn on</Button>
+          {sw?.by==='bot'?<Button variant="ghost" onClick={()=>void set(false)} disabled={busy}>Stop early sales too</Button>:null}</>}
       {!on&&!running?<span className="text-sm text-muted">The bot is not running, so there is nothing to turn on.</span>:null}
       {on?<span className="text-sm text-muted">Turning off stops new orders. A round already bought is held to settlement.</span>:null}</div>
   </Card>;

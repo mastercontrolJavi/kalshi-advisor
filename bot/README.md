@@ -76,13 +76,29 @@ The same rule and sizing, with real Kalshi orders.
   while the switch on the Bot page is on (`data/bot-live.json`, written by the page's button and nothing else). The bot
   reads the file again right before every order, so off is immediate.
 - **Budget.** It spends from its own record, `data/bot-live.db`, which starts at `LIVE_BUDGET` ($15) and grows only by
-  its own wins. An order is cut to what that cash can pay, fee included. The rest of the Kalshi balance is never counted.
+  its own wins. An order is cut to what that cash can pay, fee included, and never more than the account's real cash
+  (`GET /portfolio/balance`, read every 10 s; with no reading in the last minute it does not order). The rest of the
+  Kalshi balance is never counted.
 - **The order** (`live.py`, Kalshi Create Order V2, `POST /portfolio/events/orders`): immediate-or-cancel at the ask it
-  decided on, one a round, sent once and never retried. YES is a bid at the YES price; NO is an ask at 1 - the NO price.
-  The record is written from Kalshi's own fills for that order.
-- **It switches itself off** after any refused order, any order with no clear answer (it then reads the account's fills
-  for that round and books what it finds), any fill dearer than the order allowed, and any unexpected error. The reason
-  is shown on the Bot page. Only the owner switches it back on.
+  decided on. An order is sent once and never resent. One buy a round: an order that fills nothing (the price moved
+  first) is a miss, and like the paper bot it may try again a second later, as a new order at the new ask and only if the
+  edge still holds there. YES is a bid at the YES price; NO is an ask at 1 - the NO price. The record is written from
+  Kalshi's own fills for that order.
+- **Every order is written down before it is sent** (the `pending` table, with its client order id) and crossed off once
+  its answer is booked. An order with no clear answer, or one the bot stopped before booking, is looked up on Kalshi by
+  that id every 10 s and at start, and what it bought is booked. Only that order is read, so a trade by hand on the same
+  round is never taken for the bot's. One Kalshi does not show after 5 minutes is reported on the Bot page.
+- **It switches itself off** after any refused order, any order with no clear answer, any fill dearer than the order
+  allowed, and any unexpected error. The reason is shown on the Bot page. Only the owner switches it back on. While
+  switched off by the bot it buys nothing but still sells a position early by the rules below (a sale can only reduce
+  what is held); switched off by the owner, it does neither.
+- **Voided rounds** return what is still held at its cost (Kalshi: "all positions returned at original cost"). A round
+  counts as voided when its result is `void`, or it is `finalized` with neither yes nor no and no settlement value. A
+  fractional settlement value (a scalar settlement) is left open and logged for the owner. Checked 2026-11-17: every one
+  of 6,480 settled BTC15 markets read `finalized` with `yes` or `no`, so this path has never run for real.
+- **Checked against the real API (read-only, 2026-11-17):** `GET /portfolio/orders?ticker=` lists the bot's orders with
+  the `client_order_id` it sent (hand orders have it empty), `order_id` and `fill_count_fp`, including canceled ones
+  that filled nothing; `GET /portfolio/balance` gives `balance` in cents.
 - **Not tested against the exchange.** The tests use a fake Kalshi (`tests/test_live.py`); nothing was sent during the
   build. The first order with the switch on is the live test.
 

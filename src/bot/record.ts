@@ -19,7 +19,15 @@ export function setSwitch(armed:unknown,status:any,now=Date.now(),path=LIVE_SWIT
   if(typeof armed!=='boolean')throw new Error('armed must be true or false');
   if(armed&&!(status?.running&&status.mode==='live'))throw new Error('The bot is not running in real-money mode, so it cannot be switched on');
   const next:LiveSwitch={armed,time:now,by:'user',note:''};
-  writeFileSync(path+'.tmp',JSON.stringify(next));renameSync(path+'.tmp',path);return next;
+  writeFileSync(path+'.tmp',JSON.stringify(next));replaceFile(path+'.tmp',path);return next;
+}
+/** rename over `to`, retried for a moment: on Windows it fails (EPERM/EBUSY/EACCES) while the bot has the file open to
+ * read it, and "Turn off" must not fail on that. Up to ~0.5 s, only when the file is busy. */
+export function replaceFile(from:string,to:string,rename:(a:string,b:string)=>void=renameSync,tries=10){
+  for(let i=1;;i++){
+    try{rename(from,to);return;}
+    catch(e){if(i>=tries||!['EPERM','EBUSY','EACCES'].includes((e as NodeJS.ErrnoException).code??''))throw e;Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,50);}
+  }
 }
 /** True when an Origin header names the same host as the Host header; a missing, "null" or malformed Origin is not the same origin (and must not throw). */
 export function sameOrigin(origin:string|undefined,host:string|undefined):boolean{
@@ -29,7 +37,8 @@ export function sameOrigin(origin:string|undefined,host:string|undefined):boolea
 export function readStatus(statusPath='data/bot-status.json',now=Date.now()):any{
   try{if(!existsSync(statusPath))return null;const status=JSON.parse(readFileSync(statusPath,'utf8'));status.running=now-Number(status.time)<=BOT_STATUS_MAX_AGE_MS;return status;}catch{return null;}
 }
-export interface BotTrade {time:number;ticker:string;side:'yes'|'no';contracts:number;price:number;fee:number;q:number|null;edge:number|null;secsLeft:number|null;result:string|null;pnl:number|null}
+/** exitCash: what early sales of this round brought in, after fees (live mode; 0 or absent otherwise). */
+export interface BotTrade {time:number;ticker:string;side:'yes'|'no';contracts:number;price:number;fee:number;q:number|null;edge:number|null;secsLeft:number|null;result:string|null;pnl:number|null;exitCash?:number}
 export interface BotRecord {
   missing:boolean;updated:number;start:number;started:number;cash:number;equity:number;peak:number;open:number;
   rounds:number;wins:number;contracts:number;pnl:number;fees:number;misses:number;
@@ -48,7 +57,9 @@ export function summarize(rows:BotTrade[],account:{cash:number;start:number;star
   const contracts=settled.reduce((a,r)=>a+r.contracts,0),pnl=settled.reduce((a,r)=>a+r.pnl!,0);
   let run=0;const curve=settled.map(r=>({time:r.time,pnl:run+=r.pnl!}));
   const edges=settled.filter(r=>r.edge!=null);
-  return {updated:now,start:account.start,started:account.started,cash:account.cash,equity:account.cash+open.reduce((a,r)=>a+r.contracts*r.price+r.fee,0),peak:account.peak,open:open.length,
+  // Open rounds at cost, less what early sales already put in the cash (the bot's PaperBroker.equity does the same).
+  const held=open.reduce((a,r)=>a+Math.max(0,r.contracts*r.price+r.fee-(r.exitCash??0)),0);
+  return {updated:now,start:account.start,started:account.started,cash:account.cash,equity:account.cash+held,peak:account.peak,open:open.length,
     rounds:n,wins:settled.filter(r=>r.pnl!>0).length,contracts,pnl,fees:settled.reduce((a,r)=>a+r.fee,0),misses,perContract:mean,perContractCi:ci,
     avgPrice:contracts?settled.reduce((a,r)=>a+r.price*r.contracts,0)/contracts:null,avgEdge:edges.length?edges.reduce((a,r)=>a+r.edge!,0)/edges.length:null,
     curve,trades:[...rows].sort((a,b)=>b.time-a.time).slice(0,200)};
@@ -62,7 +73,9 @@ export function readBotRecord(dbPath?:string,statusPath='data/bot-status.json',n
   try{
     const account=db.prepare('SELECT cash,start,started*1000 AS started,peak FROM account WHERE id=1').get() as typeof empty|undefined;
     if(!account)return {missing:true,...summarize([],empty,0,now),status,...mode};
-    const rows=db.prepare('SELECT ts*1000 AS time,ticker,side,contracts,price,fee,q,edge,secs_left AS secsLeft,result,pnl FROM fills ORDER BY id').all() as BotTrade[];
+    // exit_cash exists once the bot has opened this ledger since 2026-11-17 (it adds the column itself).
+    const hasExit=(db.prepare('PRAGMA table_info(fills)').all() as {name:string}[]).some(c=>c.name==='exit_cash');
+    const rows=db.prepare(`SELECT ts*1000 AS time,ticker,side,contracts,price,fee,q,edge,secs_left AS secsLeft,result,pnl${hasExit?',exit_cash AS exitCash':''} FROM fills ORDER BY id`).all() as BotTrade[];
     const misses=(db.prepare('SELECT COUNT(*) AS n FROM misses').get() as {n:number}).n;
     return {missing:false,...summarize(rows,account,misses,now),status,...mode};
   }finally{db.close();}

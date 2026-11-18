@@ -1,7 +1,8 @@
 """Real-money mode: the on/off switch, Kalshi's order format and reading back what was filled.
 
 Nothing here runs unless MODE is 'live' and the switch file says armed. The switch is turned on only from the Bot page;
-the bot itself can only turn it off (after any refused or unclear order). An order is sent once and never retried."""
+the bot itself can only turn it off (after any refused or unclear order). An order is sent once and never resent; a
+round whose order filled nothing may get a new order at the new ask (bot/README.md)."""
 from __future__ import annotations
 
 import asyncio

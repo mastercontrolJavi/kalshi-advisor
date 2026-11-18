@@ -63,6 +63,7 @@ def make(tmp_path, cash=15.0, armed=True):
     bot.switch = live.Switch(tmp_path / 'bot-live.json')
     bot.switch.path.write_text(json.dumps({'armed': armed, 'by': 'user'}))
     bot.armed, bot.delay, bot.cooldown, bot.pending, bot.stats, bot.tripped = armed, FeedDelay(), {}, None, {'reasons': {}}, None
+    bot.selling, bot.balance, bot.balance_at = armed, 1000.0, time.time()   # a Kalshi account with plenty of cash, just read
     now = time.time()
     iso = lambda t: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))
     m = Market({'ticker': 'T', 'open_time': iso(now - 300), 'close_time': iso(now + 600), 'floor_strike': 1})
@@ -71,33 +72,55 @@ def make(tmp_path, cash=15.0, armed=True):
     return bot, m
 
 
-def run(bot, m, intent, post, fills=None):
+def fake_kalshi(post=None, fills=None, shown=None, extra_orders=()):
+    """Patch kalshi.post, kalshi.signed_get and live.read_fills. `shown`: None = Kalshi lists none of the bot's orders;
+    else the fill_count_fp it lists for each order the bot sent (or for each client id in extra_orders). Order u-<cid>'s
+    fills are `fills`; any other query (a hand trade's order, say) has none. Returns (sent, asked, restore)."""
     sent, asked = [], []
 
     async def fake_post(signer, path, body):
         sent.append((path, body))
         return post(body) if callable(post) else post
 
+    async def fake_get(signer, path):
+        asked.append(path)
+        if isinstance(fills, Exception):
+            raise fills
+        cids = [b['client_order_id'] for _, b in sent] + list(extra_orders)
+        return {'orders': [] if shown is None else [{'client_order_id': c, 'order_id': 'u-' + c, 'fill_count_fp': shown} for c in cids]
+                + [{'client_order_id': 'by-hand', 'order_id': 'hand', 'fill_count_fp': '9.00'}]}
+
     async def fake_fills(signer, query, want=0.0, tries=4):
         asked.append(query)
         if isinstance(fills, Exception):
             raise fills
-        return fills or []
+        return (fills or []) if query.startswith('order_id=u-') or query.startswith('order_id=o') else []
 
-    old = kalshi.post, live.read_fills, asyncio.sleep
-    kalshi.post, live.read_fills = fake_post, fake_fills
+    old = kalshi.post, kalshi.signed_get, live.read_fills
+    kalshi.post, kalshi.signed_get, live.read_fills = fake_post, fake_get, fake_fills
 
+    def restore():
+        kalshi.post, kalshi.signed_get, live.read_fills = old
+    return sent, asked, restore
+
+
+def quick(coro):
     async def go():
-        real_sleep = old[2]
+        real_sleep = asyncio.sleep
         asyncio.sleep = lambda s: real_sleep(0)
         try:
-            await bot.execute(m, intent, time.time())
+            return await coro()
         finally:
             asyncio.sleep = real_sleep
+    return asyncio.run(go())
+
+
+def run(bot, m, intent, post, fills=None, shown=None):
+    sent, asked, restore = fake_kalshi(post, fills, shown)
     try:
-        asyncio.run(go())
+        quick(lambda: bot.execute(m, intent, time.time()))
     finally:
-        kalshi.post, live.read_fills = old[0], old[1]
+        restore()
     return sent, asked
 
 
@@ -133,18 +156,94 @@ def test_a_refused_order_buys_nothing_and_switches_off(tmp_path):
     assert not bot.switch.armed and 'insufficient_balance' in bot.switch.read()['note'] and bot.pending is None
 
 
-def test_an_unclear_answer_reads_the_fills_books_them_and_switches_off(tmp_path):
-    bot, m = make(tmp_path)
+def timeout(body):
+    raise TimeoutError('timed out')
 
-    def timeout(body):
-        raise TimeoutError('timed out')
-    fills = [{'outcome_side': 'no', 'count_fp': '2.50', 'yes_price_dollars': '0.7200', 'no_price_dollars': '0.2800', 'fee_cost': '0.0353'}]
-    sent, asked = run(bot, m, NO, timeout, fills)
-    assert len(sent) == 1 and asked and asked[0].startswith('ticker=T&min_ts=')            # sent once, never again
+
+FILL_25 = [{'outcome_side': 'no', 'count_fp': '2.50', 'yes_price_dollars': '0.7200', 'no_price_dollars': '0.2800', 'fee_cost': '0.0353'}]
+
+
+def test_an_unclear_answer_looks_the_order_up_books_it_and_switches_off(tmp_path):
+    bot, m = make(tmp_path)
+    sent, asked = run(bot, m, NO, timeout, FILL_25, shown='2.50')
+    cid = sent[0][1]['client_order_id']
+    assert len(sent) == 1 and asked == ['/portfolio/orders?ticker=T&limit=200', f'order_id=u-{cid}']   # sent once; only this order is read
     assert bot.broker.positions['T'].contracts == 2.5 and not bot.switch.armed and '2.5 contracts bought' in bot.switch.read()['note']
+    assert bot.broker.pending_orders() == []
     bot2, m2 = make(tmp_path)
     run(bot2, m2, NO, timeout, RuntimeError('down'))
-    assert not bot2.broker.positions and not bot2.switch.armed and 'check Kalshi' in bot2.switch.read()['note']
+    assert not bot2.broker.positions and not bot2.switch.armed and 'Check Kalshi' in bot2.switch.read()['note']
+    assert len(bot2.broker.pending_orders()) == 1                                           # kept: looked up again later
+
+
+def test_an_unclear_order_kalshi_does_not_show_yet_is_booked_when_it_appears(tmp_path):
+    bot, m = make(tmp_path)
+    sent, _ = run(bot, m, NO, timeout, FILL_25, shown=None)
+    assert not bot.broker.positions and 'keeps checking' in bot.switch.read()['note'] and len(bot.broker.pending_orders()) == 1
+    assert bot.broker.traded('T')                                                           # no second order on the round meanwhile
+    _, _, restore = fake_kalshi(fills=FILL_25, shown='2.50', extra_orders=[sent[0][1]['client_order_id']])
+    try:
+        quick(bot.resolve_pending)
+        quick(bot.resolve_pending)                                                          # repeating it books nothing twice
+    finally:
+        restore()
+    assert bot.broker.positions['T'].contracts == 2.5 and bot.broker.pending_orders() == []
+    assert bot.broker.db.execute('SELECT COUNT(*) FROM fills').fetchone()[0] == 1
+
+
+def test_an_order_kalshi_never_shows_is_reported_after_the_wait(tmp_path):
+    bot, m = make(tmp_path)
+    bot.broker.add_pending('lost', time.time() - 400, 'T', 'no', 0.28, 4.0)
+    _, _, restore = fake_kalshi(shown=None)
+    try:
+        quick(bot.resolve_pending)
+    finally:
+        restore()
+    assert bot.broker.pending_orders() == [] and not bot.broker.positions
+    assert not bot.switch.armed and 'check Kalshi for a position' in bot.switch.read()['note']
+
+
+def test_a_fill_left_unbooked_by_a_stop_is_booked_at_start_and_only_once(tmp_path):
+    bot, m = make(tmp_path)
+    bot.broker.add_pending('c1', time.time() - 5, 'T', 'no', 0.28, 4.0, q=0.36)             # sent, then the bot stopped
+    _, asked, restore = fake_kalshi(fills=FILL_25, shown='2.50', extra_orders=['c1'])
+    try:
+        quick(bot.resolve_pending)
+    finally:
+        restore()
+    assert bot.broker.positions['T'].contracts == 2.5 and 'order_id=hand' not in asked and bot.switch.armed
+    assert bot.broker.pending_orders() == []
+    bot.broker.add_pending('c2', time.time(), 'T', 'no', 0.28, 4.0)                          # booked already: dropped, not booked twice
+    _, _, restore = fake_kalshi(fills=FILL_25, shown='2.50', extra_orders=['c2'])
+    try:
+        quick(bot.resolve_pending)
+    finally:
+        restore()
+    assert bot.broker.db.execute('SELECT COUNT(*) FROM fills').fetchone()[0] == 1 and bot.broker.pending_orders() == []
+
+
+def test_the_order_is_never_larger_than_the_real_balance(tmp_path):
+    bot, m = make(tmp_path)
+    bot.balance = 0.60                                                                      # the record says $15, the account has 60c
+    sent, _ = run(bot, m, NO, {'order_id': 'o8', 'fill_count': '0.00'})
+    n = float(sent[0][1]['count'])
+    assert 0 < n < 4 and n * 0.28 + order_fee(0.28, n) <= 0.60 + 1e-9
+    bot, m = make(tmp_path)
+    bot.balance = 0.001
+    sent, _ = run(bot, m, NO, {'order_id': 'o9', 'fill_count': '4.00'})
+    assert sent == [] and bot.switch.armed and bot.stats['reasons'] == {'Kalshi balance cannot pay for this order': 1}
+    assert bot.cooldown['T'] < m.close                                                      # the account may be topped up: tried again soon
+    bot, m = make(tmp_path)
+    bot.balance_at = time.time() - 120                                                      # no recent balance: no order
+    sent, _ = run(bot, m, NO, {'order_id': 'o10', 'fill_count': '4.00'})
+    assert sent == [] and bot.stats['reasons'] == {'Kalshi balance not known': 1}
+
+
+def test_a_fill_comes_off_the_known_balance(tmp_path):
+    bot, m = make(tmp_path)
+    fills = [{'outcome_side': 'no', 'count_fp': '4.00', 'yes_price_dollars': '0.7300', 'no_price_dollars': '0.2700', 'fee_cost': '0.0552'}]
+    run(bot, m, NO, {'order_id': 'o1', 'fill_count': '4.00'}, fills)
+    assert math.isclose(bot.balance, 1000 - 4 * 0.27 - 0.0552) and bot.broker.pending_orders() == []
 
 
 def test_nothing_filled_is_a_miss_and_stays_on(tmp_path):

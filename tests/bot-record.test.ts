@@ -2,7 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {summarize,readBotRecord,readSwitch,setSwitch,sameOrigin,type BotTrade} from '../src/bot/record';
+import {summarize,readBotRecord,readSwitch,setSwitch,sameOrigin,replaceFile,type BotTrade} from '../src/bot/record';
 const t=(time:number,contracts:number,price:number,pnl:number|null,edge:number|null=.05):BotTrade=>({time,ticker:'T'+time,side:'yes',contracts,price,fee:.01,q:.5,edge,secsLeft:300,result:pnl==null?null:pnl>0?'yes':'no',pnl});
 describe('bot record',()=>{
   it('summarizes settled rounds per contract and keeps open positions at cost',()=>{
@@ -49,4 +49,15 @@ it('compares Origin to Host without throwing on junk',()=>{
   expect(sameOrigin('http://127.0.0.1:3000','127.0.0.1:3000')).toBe(true);
   for(const o of [undefined,'','null','not a url','http://evil.example','http://127.0.0.1:3001'])expect(sameOrigin(o,'127.0.0.1:3000')).toBe(false);
   expect(sameOrigin('http://127.0.0.1:3000',undefined)).toBe(false);
+});
+it('counts early sales of an open round out of its value, as the bot does',()=>{
+  const sold={...t(3,2,.25,null),exitCash:.3};                                       // 2 bought for 51c; one sold early for 30c
+  expect(summarize([sold],{cash:15-.51+.3,start:15,started:0,peak:15},0,1).equity).toBeCloseTo(15-.51+.3+(.51-.3));
+  expect(summarize([{...sold,exitCash:.9}],{cash:15-.51+.9,start:15,started:0,peak:15},0,1).equity).toBeCloseTo(15-.51+.9);  // never below zero
+});
+it('retries the switch file replace while it is held open, and only then',()=>{
+  const busy=(code:string,n:number)=>{let calls=0;return {fn:(_a:string,_b:string)=>{if(++calls<=n)throw Object.assign(new Error(code),{code});},calls:()=>calls};};
+  const locked=busy('EPERM',2);replaceFile('a','b',locked.fn);expect(locked.calls()).toBe(3);
+  const stuck=busy('EBUSY',99);expect(()=>replaceFile('a','b',stuck.fn,3)).toThrow('EBUSY');expect(stuck.calls()).toBe(3);
+  const other=busy('ENOENT',1);expect(()=>replaceFile('a','b',other.fn)).toThrow('ENOENT');expect(other.calls()).toBe(1);
 });
