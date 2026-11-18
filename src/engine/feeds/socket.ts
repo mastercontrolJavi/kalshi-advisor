@@ -1,13 +1,13 @@
 import WebSocket from 'ws';
 export class ReconnectingSocket {
-  socket?:WebSocket; private timer?:NodeJS.Timeout; private heartbeat?:NodeJS.Timeout; private stopped=false; private attempts=0; private lastMessage=0;
+  socket?:WebSocket; private timer?:NodeJS.Timeout; private heartbeat?:NodeJS.Timeout; private stopped=false; private attempts=0; private lastMessage=0; private rejected=false;
   // pingMs: protocol ping cadence; onAlive fires on any frame or pong so callers can tell a quiet-but-live feed from a dead one.
   constructor(private url:string,private subscribe:()=>unknown[],private onMessage:(data:any)=>void,private status:(s:string)=>void,private headers?:()=>Record<string,string>,private options:{pingMs?:number;onAlive?:()=>void}={}){}
   start(){this.stopped=false;this.connect();}
   private connect(){
     if(this.stopped)return;
     // Reset the watchdog clock per attempt; otherwise a slow handshake is killed using the previous connection's silence.
-    this.status('connecting');this.lastMessage=Date.now();
+    this.status('connecting');this.lastMessage=Date.now();this.rejected=false;
     try {
       // Keep per-message compression. It costs CPU (the same feeds 80 vs 29 ms/s), but in Kalshi's 2,000–3,000 message/s
       // bursts bytes are the limit: on 2026-10-23 an uncompressed connection fell 7 s behind while a compressed one on the
@@ -15,7 +15,9 @@ export class ReconnectingSocket {
       const ws=this.socket=new WebSocket(this.url,{headers:this.headers?.(),handshakeTimeout:10000,followRedirects:false});
       // After restart() the old socket's events still fire; only the current socket may touch shared state.
       ws.on('open',()=>{if(this.socket!==ws)return;this.lastMessage=Date.now();this.status('connected');for(const msg of this.subscribe())ws.send(JSON.stringify(msg));});
-      ws.on('message',raw=>{if(this.socket!==ws)return;this.lastMessage=Date.now();this.options.onAlive?.();this.attempts=0;try{this.onMessage(JSON.parse(raw.toString()));}catch(e){this.status(`message rejected: ${(e as Error).message}`);}});
+      // A rejected message (bad JSON, a handler error such as a failed journal write) is reported, and the next message handled
+      // cleanly reports 'connected' again: the socket never stopped delivering, so the feed must not stay marked down (2026-11-17).
+      ws.on('message',raw=>{if(this.socket!==ws)return;this.lastMessage=Date.now();this.options.onAlive?.();this.attempts=0;try{this.onMessage(JSON.parse(raw.toString()));if(this.rejected){this.rejected=false;this.status('connected');}}catch(e){this.rejected=true;this.status(`message rejected: ${(e as Error).message}`);}});
       ws.on('pong',()=>{if(this.socket!==ws)return;this.lastMessage=Date.now();this.options.onAlive?.();});
       ws.on('error',()=>{if(this.socket===ws)this.status('connection error');ws.terminate();});
       ws.on('close',()=>{if(this.socket!==ws)return;clearInterval(this.heartbeat);this.status('disconnected');if(!this.stopped)this.timer=setTimeout(()=>this.connect(),Math.min(30000,500*2**Math.min(this.attempts++,6))+Math.random()*300);});

@@ -2,7 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {summarize,readBotRecord,readSwitch,setSwitch,type BotTrade} from '../src/bot/record';
+import {summarize,readBotRecord,readSwitch,setSwitch,sameOrigin,type BotTrade} from '../src/bot/record';
 const t=(time:number,contracts:number,price:number,pnl:number|null,edge:number|null=.05):BotTrade=>({time,ticker:'T'+time,side:'yes',contracts,price,fee:.01,q:.5,edge,secsLeft:300,result:pnl==null?null:pnl>0?'yes':'no',pnl});
 describe('bot record',()=>{
   it('summarizes settled rounds per contract and keeps open positions at cost',()=>{
@@ -44,4 +44,9 @@ describe('bot record',()=>{
       expect(r.live).toBe(true);expect(r.switch?.armed).toBe(true);expect(r.missing).toBe(true);
     }finally{rmSync(dir,{recursive:true,force:true});}
   });
+});
+it('compares Origin to Host without throwing on junk',()=>{
+  expect(sameOrigin('http://127.0.0.1:3000','127.0.0.1:3000')).toBe(true);
+  for(const o of [undefined,'','null','not a url','http://evil.example','http://127.0.0.1:3001'])expect(sameOrigin(o,'127.0.0.1:3000')).toBe(false);
+  expect(sameOrigin('http://127.0.0.1:3000',undefined)).toBe(false);
 });

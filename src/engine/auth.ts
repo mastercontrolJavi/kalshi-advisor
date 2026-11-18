@@ -21,3 +21,6 @@ export function authorized(header:string|undefined,req?:Pick<IncomingMessage,'he
   return actual.length===expected.length&&timingSafeEqual(actual,expected);
 }
 export function requireDashboardCredentials(){if(localAuthOff())return;if(!process.env.DASHBOARD_USER||!process.env.DASHBOARD_PASSWORD)throw new Error('DASHBOARD_USER and DASHBOARD_PASSWORD required in .env.local (or DASHBOARD_AUTH=off for local-only access)');}
+/** The request's path, or null for a target the URL parser rejects ("//", "//a:b"): never throws, so a bad request cannot
+ * become an unhandled rejection in the engine's async HTTP handler (2026-11-17 audit). */
+export function requestPath(url:string|undefined):string|null{try{return new URL(url??'/','http://127.0.0.1').pathname;}catch{return null;}}

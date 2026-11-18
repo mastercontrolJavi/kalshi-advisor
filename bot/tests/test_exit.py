@@ -70,7 +70,7 @@ def make(tmp_path, entry=0.28, n=2.0, side='yes', **cfg):
     bot.broker = PaperBroker(':memory:', 15.0, now=0)
     bot.switch = live.Switch(tmp_path / 'bot-live.json')
     bot.switch.path.write_text(json.dumps({'armed': True}))
-    bot.armed, bot.delay, bot.cooldown, bot.pending, bot.stats = True, FeedDelay(), {}, None, {'reasons': {}, 'evals': 0}
+    bot.armed, bot.delay, bot.cooldown, bot.pending, bot.stats, bot.tripped = True, FeedDelay(), {}, None, {'reasons': {}, 'evals': 0}, None
     bot.peaks, bot.exit_since, bot.exit_wait, bot.exit_tries = {}, {}, {}, {}
     now = time.time()
     iso = lambda t: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))

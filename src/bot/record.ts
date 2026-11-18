@@ -21,6 +21,11 @@ export function setSwitch(armed:unknown,status:any,now=Date.now(),path=LIVE_SWIT
   const next:LiveSwitch={armed,time:now,by:'user',note:''};
   writeFileSync(path+'.tmp',JSON.stringify(next));renameSync(path+'.tmp',path);return next;
 }
+/** True when an Origin header names the same host as the Host header; a missing, "null" or malformed Origin is not the same origin (and must not throw). */
+export function sameOrigin(origin:string|undefined,host:string|undefined):boolean{
+  if(!origin||!host)return false;
+  try{return new URL(origin).host===host;}catch{return false;}
+}
 export function readStatus(statusPath='data/bot-status.json',now=Date.now()):any{
   try{if(!existsSync(statusPath))return null;const status=JSON.parse(readFileSync(statusPath,'utf8'));status.running=now-Number(status.time)<=BOT_STATUS_MAX_AGE_MS;return status;}catch{return null;}
 }

@@ -23,3 +23,15 @@ it('restart leaves exactly one live connection and schedules no extra reconnect'
   expect([...wss.clients].filter(c=>c.readyState===1).length).toBe(1);
   socket.stop();wss.close();
 },10000);
+// Regression (2026-11-17 audit): one message whose handler threw (bad JSON, or a journal write failing with SQLite's
+// "disk I/O error", seen 2026-11-13) set the status to 'message rejected' for good while the socket stayed open and kept
+// delivering. BenchmarkFeed.current() then returned nothing and the stale-book breaker stayed tripped until a reconnect;
+// a price venue stayed unhealthy. The next message handled cleanly now reports 'connected' again.
+it('a rejected message does not leave the feed marked down while it keeps delivering',async()=>{
+  const wss=new WebSocketServer({port:0});await new Promise(r=>wss.once('listening',r));const port=(wss.address() as any).port,statuses:string[]=[],got:any[]=[];
+  wss.on('connection',ws=>{ws.send('not json');setTimeout(()=>ws.send(JSON.stringify({n:1})),50);});
+  const socket=new ReconnectingSocket(`ws://127.0.0.1:${port}`,()=>[],m=>got.push(m),s=>statuses.push(s),undefined,{pingMs:200});
+  socket.start();await new Promise(r=>setTimeout(r,500));socket.stop();wss.close();
+  expect(statuses.some(s=>s.startsWith('message rejected'))).toBe(true);
+  expect(got).toEqual([{n:1}]);expect(statuses.at(-1)).toBe('connected');
+},10000);

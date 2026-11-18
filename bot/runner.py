@@ -84,6 +84,7 @@ class Bot:
         self.broker = PaperBroker(cfg.LIVE_DB_PATH, cfg.LIVE_BUDGET) if self.live else PaperBroker(cfg.DB_PATH, cfg.START_BANKROLL)
         self.switch = live.Switch(Path(cfg.LIVE_DB_PATH).with_name('bot-live.json'))
         self.armed = False               # refreshed every 10 s, and read again from the file right before an order
+        self.tripped: Optional[float] = None  # when the bot last switched itself off (ms); only a later switch-on by the owner counts
         self.peaks: Dict[str, float] = {}       # highest bid seen for the side held, per round
         self.exit_since: Dict[str, float] = {}  # when the exit condition first held without a break
         self.exit_wait: Dict[str, float] = {}   # no new sell attempt before this time
@@ -97,6 +98,8 @@ class Bot:
         self.book_sids: set = set()      # subscription ids that carry order-book messages
         self.delay = FeedDelay()
         self.last_value_ms = 0.0      # local receive time of the newest BRTI value
+        self.print_ms = 0.0           # ... of the newest 1 Hz print, and of the newest 5 Hz value: the age guard is on the one priced off
+        self.fast_ms = 0.0
         self.pending: Optional[str] = None  # ticker with an order in flight
         self.cooldown: Dict[str, float] = {}
         self.stats = {'messages': 0, 'evals': 0, 'reasons': {}}
@@ -174,16 +177,19 @@ class Bot:
                 except Exception as e:
                     log(name + '-error', message=repr(e))
             tick += 1
-            self.armed = self.live and self.switch.armed
+            self.armed = self.live and self.switched_on()
             try:
                 self.write_status()
             except Exception as e:
                 log('status-error', message=repr(e))
             if tick % 6 == 0:
-                s = self.broker.summary()
-                log('status', equity=round(s['equity'], 4), rounds=s['rounds'], wins=s['wins'], open=s['open'], misses=s['misses'],
-                    book_delay_ms=round(self.delay.ms), vol_ready=self.pricer.ready, messages=self.stats['messages'], evals=self.stats['evals'],
-                    reasons=self.stats['reasons'])
+                try:  # a log line: never worth stopping the bot over (an error here would end the whole process)
+                    s = self.broker.summary()
+                    log('status', equity=round(s['equity'], 4), rounds=s['rounds'], wins=s['wins'], open=s['open'], misses=s['misses'],
+                        book_delay_ms=round(self.delay.ms), vol_ready=self.pricer.ready, messages=self.stats['messages'], evals=self.stats['evals'],
+                        reasons=self.stats['reasons'])
+                except Exception as e:
+                    log('status-error', message=repr(e))
                 self.stats = {'messages': 0, 'evals': 0, 'reasons': {}}
             await asyncio.sleep(10)
 
@@ -209,12 +215,19 @@ class Bot:
     # ---------- websocket ----------
     async def subscribe(self, tickers: list) -> None:
         new = [t for t in tickers if t not in self.subscribed]
-        if not new or self.ws is None:
+        ws, subscribed = self.ws, self.subscribed
+        if not new or ws is None:
             return
         self.next_id += 1
-        # use_yes_price: NO levels arrive quoted as YES prices (what the engine uses); they are converted back on receipt.
-        await self.ws.send(json.dumps({'id': self.next_id, 'cmd': 'subscribe', 'params': {'channels': ['orderbook_delta'], 'market_tickers': new, 'use_yes_price': True}}))
-        self.subscribed.update(new)
+        # Marked before the send: housekeeping and a reconnect can both get here, and a round subscribed twice would get
+        # every book change twice. A failed send unmarks them (on the same connection's set) so a later call tries again.
+        subscribed.update(new)
+        try:
+            # use_yes_price: NO levels arrive quoted as YES prices (what the engine uses); they are converted back on receipt.
+            await ws.send(json.dumps({'id': self.next_id, 'cmd': 'subscribe', 'params': {'channels': ['orderbook_delta'], 'market_tickers': new, 'use_yes_price': True}}))
+        except BaseException:
+            subscribed.difference_update(new)
+            raise
         log('subscribed', tickers=new)
 
     async def stream(self) -> None:
@@ -290,10 +303,9 @@ class Bot:
             ts_ms, price = int(raw['time']), float(raw['value'])
             if kind == 'cfbenchmarks_value':
                 if ts_ms % 1000 == 0 and self.pricer.on_print(ts_ms // 1000, price):
-                    self.last_value_ms = now_ms
-            else:
-                self.pricer.on_fast(ts_ms / 1000, price)
-                self.last_value_ms = now_ms
+                    self.last_value_ms = self.print_ms = now_ms
+            elif self.pricer.on_fast(ts_ms / 1000, price):
+                self.last_value_ms = self.fast_ms = now_ms
             market = self.current(ts_ms / 1000)
             if market is not None:
                 self.evaluate(market)
@@ -337,6 +349,10 @@ class Bot:
         priced = self.pricer.fair(market.strike, int(round(market.close)))
         if priced is None:
             return self.skip('model warming up')
+        # The pricer uses a 5 Hz value only within 1.5 s of the last 1 Hz print; past that it prices off the print. A fresh
+        # 5 Hz value must not pass the age guard for a print that stopped arriving.
+        if now * 1000 - (self.fast_ms if self.pricer.spot_fast else self.print_ms) > self.cfg.MAX_PRINT_AGE_MS:
+            return self.skip('BRTI value stale')
         fv, left = priced
         yes_ask, no_ask = market.book.ask('yes'), market.book.ask('no')
         intent, why = decide(self.cfg, fv, left, yes_ask, no_ask, self.broker.equity)
@@ -404,7 +420,7 @@ class Bot:
         and tried again (three attempts a round) instead of switching real trading off."""
         t = market.ticker
         try:
-            if not self.switch.armed:
+            if not self.switched_on():
                 self.armed = False
                 return
             self.exit_wait[t], self.exit_tries[t] = time.time() + 20.0, self.exit_tries.get(t, 0) + 1
@@ -423,10 +439,18 @@ class Bot:
         finally:
             self.pending = None
 
+    def switched_on(self) -> bool:
+        """The switch file says on, and the owner switched it on after the bot last switched itself off. The second part
+        keeps the bot off when its own write to the file failed (a file held open by another program, say)."""
+        s = self.switch.read()
+        return s['armed'] and (self.tripped is None or (isinstance(s['time'], (int, float)) and s['time'] > self.tripped))
+
     def disarm(self, note: str) -> None:
-        self.armed = False
+        self.armed, self.tripped = False, time.time() * 1000
         try:
             self.switch.off(note)
+        except Exception as e:
+            log('switch-write-error', message=repr(e))
         finally:
             log('real-trading-off', note=note)
 
@@ -434,7 +458,7 @@ class Bot:
         """One real order: immediate-or-cancel at the decided ask, sent once. Kalshi's fills are what the ledger records.
         Anything other than a clean answer switches real trading off until the owner switches it on again."""
         t, now = market.ticker, time.time()
-        if not self.switch.armed:  # the file is the authority: off on the page is off here, at once
+        if not self.switched_on():  # the file is the authority: off on the page is off here, at once
             self.armed = False
             return
         if not (market.book.valid and not market.book.crossed and self.delay.ms <= self.cfg.MAX_BOOK_DELAY_MS and now < market.close - 5):

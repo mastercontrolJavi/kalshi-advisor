@@ -63,7 +63,7 @@ export default function Bot(){
   const load=useCallback(async()=>{setLoading(true);try{const r=await fetch('/api/bot',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);setB(await r.json());setError('');}catch(e){setError((e as Error).message);}finally{setLoading(false);}},[]);
   useEffect(()=>{void load();const t=setInterval(()=>void load(),REFRESH_MS);return()=>clearInterval(t);},[load]);
   const s=b?.status,c=s?.config,target=c?.target??100,ci=b?.perContractCi,live=!!b?.live;
-  const progress=b&&!b.missing?Math.max(0,Math.min(1,(b.equity-b.start)/(target-b.start))):0;
+  const progress=b&&!b.missing?(target>b.start?Math.max(0,Math.min(1,(b.equity-b.start)/(target-b.start))):0):0;
   return <>
     <SiteHeader current="/bot"><Button variant="ghost" size="sm" onClick={()=>void load()} disabled={loading} aria-label="Refresh bot record"><RefreshCw aria-hidden className={cn('size-4',loading&&'animate-spin')}/>{b?new Date(b.updated).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'—'}</Button></SiteHeader>
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 pt-4 pb-16 sm:px-6">
@@ -97,7 +97,7 @@ export default function Bot(){
         <dt className="text-muted">Contracts settled</dt><dd className="num text-right md:pr-6">{qty(b.contracts)}</dd>
       </dl></Card>:null}
       <Card><h2 className="mb-3 font-semibold">Trade history</h2>{b.trades.length?<div className="overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="text-left text-xs text-muted"><tr>{['When','Market','Side','Contracts','Price','Model said','Edge seen','Time left','Fees','Result'].map(h=><th key={h} scope="col" className="pb-2 pr-3 font-medium">{h}</th>)}</tr></thead>
-        <tbody>{b.trades.map((m:any)=><tr key={m.ticker} className="border-t border-line"><td className="py-2 pr-3 text-muted">{new Date(m.time).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</td><td className="num pr-3 text-xs">{m.ticker.replace('KXBTC15M-','')}</td>
+        <tbody>{b.trades.map((m:any,i:number)=><tr key={`${m.ticker}-${m.time}-${i}`} className="border-t border-line"><td className="py-2 pr-3 text-muted">{new Date(m.time).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</td><td className="num pr-3 text-xs">{m.ticker.replace('KXBTC15M-','')}</td>
           <td className={cn('pr-3 font-medium',m.side==='yes'?'text-yes':'text-no')}>{m.side.toUpperCase()}</td><td className="num pr-3">{qty(m.contracts)}</td><td className="num pr-3">{cents(m.price)}</td><td className="num pr-3">{pct(m.q)}</td><td className="num pr-3">{signedCents(m.edge)}</td><td className="num pr-3">{m.secsLeft!=null?mmss(m.secsLeft):'—'}</td><td className="num pr-3 text-muted">{dollars(m.fee)}</td>
           <td className={cn('num',tone(m.pnl))}>{m.pnl==null?<span className="text-muted">open</span>:<>{signedDollars(m.pnl)}{m.result==='sold'?<span className="ml-1 text-xs text-muted">sold</span>:null}</>}</td></tr>)}</tbody></table></div>:<Empty>{live?'No real trades yet.':'No paper trades yet.'}</Empty>}</Card>
       </>}

@@ -62,7 +62,7 @@ def make(tmp_path, cash=15.0, armed=True):
     bot.broker = PaperBroker(':memory:', cash, now=0)
     bot.switch = live.Switch(tmp_path / 'bot-live.json')
     bot.switch.path.write_text(json.dumps({'armed': armed, 'by': 'user'}))
-    bot.armed, bot.delay, bot.cooldown, bot.pending, bot.stats = armed, FeedDelay(), {}, None, {'reasons': {}}
+    bot.armed, bot.delay, bot.cooldown, bot.pending, bot.stats, bot.tripped = armed, FeedDelay(), {}, None, {'reasons': {}}, None
     now = time.time()
     iso = lambda t: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))
     m = Market({'ticker': 'T', 'open_time': iso(now - 300), 'close_time': iso(now + 600), 'floor_strike': 1})
@@ -175,3 +175,23 @@ def test_paper_mode_never_touches_the_order_path(tmp_path):
     bot.live, bot.cfg = False, BotConfig(LATENCY_MS=0)
     sent, _ = run(bot, m, NO, {'order_id': 'o6', 'fill_count': '4.00'})
     assert sent == [] and bot.broker.positions['T'].contracts == 4.0                         # a paper fill against the book
+
+
+def test_switching_off_holds_even_if_the_file_cannot_be_written(tmp_path):
+    bot, m = make(tmp_path)
+
+    def locked(note):
+        raise PermissionError('file in use')
+    bot.switch.off = locked                                      # e.g. the file held open by another program for a moment
+
+    def refuse(body):
+        raise kalshi.Refused(400, 'insufficient balance')
+    sent, _ = run(bot, m, NO, refuse)
+    assert len(sent) == 1 and bot.switch.read()['armed']         # the file still says on ...
+    assert not bot.switched_on() and bot.pending is None         # ... but the bot keeps itself off
+    m2 = Market({'ticker': 'U', 'open_time': '2020-01-01T00:00:00Z', 'close_time': '2099-01-01T00:00:00Z', 'floor_strike': 1})
+    m2.book.snapshot([('0.72', '100')], [(0.24, '100')])
+    sent, _ = run(bot, m2, NO, {'order_id': 'o7', 'fill_count': '4.00'})
+    assert sent == []                                            # no order on the next round either
+    bot.switch.path.write_text(json.dumps({'armed': True, 'by': 'user', 'time': time.time() * 1000 + 1000}))
+    assert bot.switched_on()                                     # the owner switching it on again is what counts
