@@ -7,7 +7,8 @@ const log=(event,data={})=>{const message=JSON.stringify({time:new Date().toISOS
 let stopping=false;const children=new Set();const timers=new Set();
 // Edge sidecar (edge/, stdlib Python 3.11+, DECISIONS 75). EDGE_PYTHON overrides the interpreter.
 const PYTHON=process.env.EDGE_PYTHON??(process.platform==='win32'?'python':'python3');
-// Paper-trading bot (bot/, Python via uv, DECISIONS 81): places no real orders. BOT=off in the environment or .env.local skips it.
+// Trading bot (bot/, Python via uv, DECISIONS 81-83): paper by default; real orders only with BOT_MODE=live and the Bot page's switch on,
+// and every (re)start begins switched off. BOT=off in the environment or .env.local skips it. Its output is also in logs/bot.log.
 const botOff=(process.env.BOT??(()=>{try{return readFileSync('.env.local','utf8').match(/^BOT=(.*)$/m)?.[1];}catch{return undefined;}})())?.trim()==='off';
 function child(args,options={},command=process.execPath){const p=spawn(command,args,{cwd:root,stdio:'inherit',windowsHide:true,...options});children.add(p);p.on('exit',()=>children.delete(p));return p;}
 // Output is piped through (not inherited) so the tail of a failing step lands in launcher.log: the window it printed to is minimised or gone.

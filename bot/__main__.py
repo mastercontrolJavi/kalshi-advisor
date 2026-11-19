@@ -29,11 +29,18 @@ def status() -> None:
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'run'
     if cmd == 'run':
-        from .runner import Bot
+        from . import runner
+        cfg = load_config()
+        runner.open_log(cfg.LOG_PATH, cfg.LOG_MAX_MB, cfg.LOG_BACKUPS)
         try:
-            asyncio.run(Bot(load_config()).run())
+            asyncio.run(runner.Bot(cfg).run())
         except KeyboardInterrupt:
-            pass
+            runner.log('bot-stop', reason='interrupted')
+        except BaseException as e:  # the traceback goes to logs/bot.log before the process ends with an error code
+            runner.log_crash('main', e)
+            raise
+        finally:
+            runner.close_log()
     elif cmd == 'status':
         status()
     elif cmd == 'reset':

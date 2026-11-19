@@ -38,15 +38,22 @@ function Now({s,off}:{s:any;off:boolean}){
 /** The real-money switch. Turning it on takes two presses; turning it off takes one and works even if the bot is down. */
 function RealSwitch({b,onChange}:{b:any;onChange:()=>void}){
   const [asking,setAsking]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
-  const sw=b.switch,on=!!sw?.armed,running=!!b.status?.running,cash=b.missing?b.status?.budget:b.cash;
+  // "On" means good for the bot running now (its boot id, not run out): b.switchLive, not just what the file says.
+  const sw=b.switch,on=!!b.switchLive,running=!!b.status?.running,cash=b.missing?b.status?.budget:b.cash;
+  const until=on&&sw?.expires_at?new Date(sw.expires_at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):null;
+  const flat=Number(b.status?.maxContracts)>0?Number(b.status.maxContracts):null,hours=Number(b.status?.armMaxHours)>0?Number(b.status.armMaxHours):4;
+  const drift:any[]=Array.isArray(b.status?.drift)?b.status.drift:[];
   const set=async(armed:boolean)=>{setBusy(true);setError('');
     try{const r=await fetch('/api/bot/live',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({armed})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error??`HTTP ${r.status}`);setAsking(false);onChange();}
     catch(e){setError((e as Error).message);}finally{setBusy(false);}};
   return <Card className={cn('border',on?'border-no':'border-line')}>
-    <div className="flex flex-wrap items-center gap-3"><h2 className="font-semibold">Real trading</h2>{on?<Pill tone="no">On: placing real orders</Pill>:<Pill tone="neutral">Off</Pill>}</div>
+    <div className="flex flex-wrap items-center gap-3"><h2 className="font-semibold">Real trading</h2>{on?<Pill tone="no">On{until?` until ${until}`:''}: placing real orders</Pill>:<Pill tone="neutral">Off</Pill>}</div>
     <p className="mt-2 max-w-4xl text-sm text-muted">{on
-      ?`The bot is buying on your Kalshi account with real money, one order a round at most. It can spend only what is in its own record below (${dollars(cash)} now), and never more than your Kalshi cash${b.status?.balance!=null?` (${dollars(b.status.balance)} now)`:''}; the rest of your Kalshi balance is never counted.`
-      :`While this is off the bot only watches and places no orders. When on, it buys on your Kalshi account with real money, from a budget of ${dollars(b.status?.budget??15)} that it tracks in its own record. In testing on paper this rule did not beat the fees.`}</p>
+      ?`The bot is buying on your Kalshi account with real money, one order a round at most${flat?`, ${flat} contract${flat===1?'':'s'} each`:''}. It switches itself off${until?` at ${until}`:''} and whenever it restarts. It can spend only what is in its own record below (${dollars(cash)} now), and never more than your Kalshi cash${b.status?.balance!=null?` (${dollars(b.status.balance)} now)`:''}; the rest of your Kalshi balance is never counted.`
+      :`While this is off the bot only watches and places no orders. When on, it buys on your Kalshi account with real money, from a budget of ${dollars(b.status?.budget??15)} that it tracks in its own record. In testing on paper this rule did not beat the fees. Switching on lasts ${hours} hour${hours===1?'':'s'} at most and ends if the bot restarts${flat?`; each order is ${flat} contract${flat===1?'':'s'}`:''}.`}</p>
+    {drift.length?<div className="mt-2 max-w-4xl text-sm text-warn" role="status"><p>The bot&apos;s record and Kalshi differ on {drift.length} item{drift.length===1?'':'s'} (checked when the bot started). Look at these on Kalshi before switching on:</p>
+      <ul className="mt-1 list-disc pl-5">{drift.slice(0,8).map((d,i)=><li key={i}>{d.ticker??'Account'}: {d.error?String(d.error):d.balance_short!=null?`Kalshi cash is ${dollars(d.balance_short)} less than the record's cash`
+        :[d.contracts?`${d.contracts>0?'+':''}${d.contracts} contracts bought`:'',d.sold?`${d.sold>0?'+':''}${d.sold} sold`:'',d.paid?`${dollars(d.paid)} paid`:'',d.sold_cash?`${dollars(d.sold_cash)} from sales`:'',d.fee?`${dollars(d.fee)} fees`:''].filter(Boolean).join(', ')+' on Kalshi compared with the record'}</li>)}</ul></div>:null}
     {!on&&sw?.note?<p className="mt-2 max-w-4xl text-sm text-warn" role="status">Switched off{sw.by==='bot'?' by the bot':''}{sw.time?` at ${new Date(sw.time).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}`:''}: {sw.note}{sw.by==='bot'?' It buys nothing more, but still sells a position it holds early if the exit rules say so.':''}</p>:null}
     {error?<p className="mt-2 text-sm text-no" role="alert">{error}</p>:null}
     <div className="mt-3 flex flex-wrap items-center gap-2">{on
@@ -83,7 +90,7 @@ export default function Bot(){
         <Kpi label="Missed orders" sub={live?'price moved, nothing bought':'ask moved before the fill'}>{b.misses}</Kpi>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card><h2 className="mb-3 font-semibold">Right now</h2><Now s={s} off={live&&!b.switch?.armed}/></Card>
+        <Card><h2 className="mb-3 font-semibold">Right now</h2><Now s={s} off={live&&!b.switchLive}/></Card>
         <Card><h2 className="mb-4 font-semibold">Cumulative result</h2>{b.curve.length?<Equity data={b.curve}/>:<Empty>No settled rounds yet.</Empty>}</Card>
       </div>
       {c?<Card><h2 className="mb-3 font-semibold">Its rules</h2><dl className="grid grid-cols-2 gap-y-2 text-sm md:grid-cols-4">

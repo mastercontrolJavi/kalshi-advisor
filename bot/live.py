@@ -19,7 +19,12 @@ ORDERS = '/portfolio/events/orders'  # Kalshi Create Order V2; the older /portfo
 
 
 class Switch:
-    """data/bot-live.json: {"armed": bool, "time": ms, "by": "user" | "bot", "note": str}. Missing or unreadable = off."""
+    """data/bot-live.json: {"armed": bool, "time": ms, "by": "user" | "bot", "note": str, "expires_at": ms,
+    "boot_id": str}. Missing or unreadable = off.
+
+    Being armed in the file is not enough to trade (2026-11-18). The arming must also name the run of the bot it was
+    made for (`boot_id`, a new one at every start, so a restart after a crash is never armed) and an end time
+    (`expires_at`, UTC ms, at most ARM_MAX_HOURS ahead). `why_off` is the one place that decides."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -27,18 +32,50 @@ class Switch:
     def read(self) -> dict:
         try:
             data = json.loads(self.path.read_text(encoding='utf-8'))
-            return {'armed': data.get('armed') is True, 'time': data.get('time'), 'by': data.get('by'), 'note': data.get('note') or ''}
+            return {'armed': data.get('armed') is True, 'time': data.get('time'), 'by': data.get('by'), 'note': data.get('note') or '',
+                    'expires_at': data.get('expires_at'), 'boot_id': data.get('boot_id')}
         except Exception:
-            return {'armed': False, 'time': None, 'by': None, 'note': ''}
+            return {'armed': False, 'time': None, 'by': None, 'note': '', 'expires_at': None, 'boot_id': None}
 
     @property
     def armed(self) -> bool:
+        """What the file says. Whether that arming is good for this run of the bot is why_off()."""
         return self.read()['armed']
+
+    def why_off(self, boot_id: Optional[str], now_ms: float, max_hours: float, state: Optional[dict] = None) -> Optional[str]:
+        """None when real orders are allowed right now, else the reason they are not."""
+        s = self.read() if state is None else state
+        if not s['armed']:
+            return 'switched off'
+        if not boot_id or s['boot_id'] != boot_id:
+            return 'switched on for an earlier run of the bot'
+        exp = s['expires_at']
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+            return 'switched on without an end time'
+        if now_ms >= exp:
+            return 'the time it was switched on for has run out'
+        if exp - now_ms > max_hours * 3600_000 + 60_000:  # a minute of slack for the page's clock
+            return f'switched on for longer than the {max_hours:g} hours allowed'
+        return None
 
     def off(self, note: str) -> None:
         tmp = self.path.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'armed': False, 'time': time.time() * 1000, 'by': 'bot', 'note': note}), encoding='utf-8')
+        tmp.write_text(json.dumps({'armed': False, 'time': time.time() * 1000, 'by': 'bot', 'note': note, 'expires_at': None, 'boot_id': None}), encoding='utf-8')
         os.replace(tmp, self.path)
+
+
+def drift(row: dict, fills: List[dict]) -> Optional[dict]:
+    """Compare one round of the bot's record with what Kalshi's fills for that market add up to. `row`: ticker, side,
+    contracts, paid, fee, exit_n, exit_cash. Returns the differences (Kalshi minus the record) when any is larger than
+    half a hundredth of a contract or one cent, else None. A buy or a sale by hand on the same round shows up here."""
+    side = row['side']
+    n, paid, fees = from_fills(fills, side)
+    sold_n, sold_cash = sold(fills, side)
+    d = {'contracts': n - row['contracts'], 'paid': paid - row['paid'], 'fee': fees - row['fee'],
+         'sold': min(sold_n, n) - row['exit_n'], 'sold_cash': sold_cash - row['exit_cash']}
+    if abs(d['contracts']) <= 0.005 and abs(d['sold']) <= 0.005 and all(abs(d[k]) <= 0.01 for k in ('paid', 'fee', 'sold_cash')):
+        return None
+    return {'ticker': row['ticker'], **{k: round(v, 4) for k, v in d.items()}}
 
 
 def sell_body(ticker: str, side: str, limit: float, contracts: float, client_order_id: Optional[str] = None) -> dict:

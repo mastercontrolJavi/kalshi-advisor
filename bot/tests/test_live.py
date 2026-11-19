@@ -56,12 +56,18 @@ def test_switch_is_off_unless_the_file_says_armed(tmp_path):
     assert not s.armed and s.read()['by'] == 'bot' and s.read()['note'] == 'why'
 
 
-def make(tmp_path, cash=15.0, armed=True):
+def arming(armed=True, boot_id='boot-1', hours=1.0, **more):
+    """What the Bot page writes when the owner switches on: for this run of the bot, with an end time."""
+    return json.dumps({'armed': armed, 'by': 'user', 'boot_id': boot_id, 'expires_at': time.time() * 1000 + hours * 3600_000, **more})
+
+
+def make(tmp_path, cash=15.0, armed=True, **cfg):
     bot = Bot.__new__(Bot)                                       # no key, no socket
-    bot.cfg, bot.live, bot.signer = BotConfig(MODE='live'), True, object()
+    # MAX_CONTRACTS_PER_ROUND=0: these tests are about the rule's own size; the flat test size is in test_safety.py
+    bot.cfg, bot.live, bot.signer = BotConfig(MODE='live', **{'MAX_CONTRACTS_PER_ROUND': 0, **cfg}), True, object()
     bot.broker = PaperBroker(':memory:', cash, now=0)
-    bot.switch = live.Switch(tmp_path / 'bot-live.json')
-    bot.switch.path.write_text(json.dumps({'armed': armed, 'by': 'user'}))
+    bot.switch, bot.boot_id = live.Switch(tmp_path / 'bot-live.json'), 'boot-1'
+    bot.switch.path.write_text(arming(armed))
     bot.armed, bot.delay, bot.cooldown, bot.pending, bot.stats, bot.tripped = armed, FeedDelay(), {}, None, {'reasons': {}}, None
     bot.selling, bot.balance, bot.balance_at = armed, 1000.0, time.time()   # a Kalshi account with plenty of cash, just read
     now = time.time()
@@ -292,5 +298,5 @@ def test_switching_off_holds_even_if_the_file_cannot_be_written(tmp_path):
     m2.book.snapshot([('0.72', '100')], [(0.24, '100')])
     sent, _ = run(bot, m2, NO, {'order_id': 'o7', 'fill_count': '4.00'})
     assert sent == []                                            # no order on the next round either
-    bot.switch.path.write_text(json.dumps({'armed': True, 'by': 'user', 'time': time.time() * 1000 + 1000}))
+    bot.switch.path.write_text(arming(time=time.time() * 1000 + 1000))
     assert bot.switched_on()                                     # the owner switching it on again is what counts

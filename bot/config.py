@@ -41,6 +41,14 @@ class BotConfig:
     MODE: str = 'paper'            # 'paper' | 'live'
     LIVE_BUDGET: float = 15.0
     LIVE_DB_PATH: str = str(ROOT / 'data' / 'bot-live.db')
+    # --- Arming and plumbing-test sizing (2026-11-18 audit). Switching real trading on is good for one run of the bot
+    # and for ARM_MAX_HOURS at most: every start, a restart after a crash included, begins switched off, and an arming
+    # that has run out switches itself off (bot/live.py Switch.why_off).
+    ARM_MAX_HOURS: float = 4.0
+    # Real orders are a flat MAX_CONTRACTS_PER_ROUND contracts (still cut to what the cash can pay) instead of the
+    # Kelly size: the paper record shows no edge, so real money is only testing the plumbing. 0 = size by the rule.
+    MAX_CONTRACTS_PER_ROUND: float = 1.0
+    AUDIT_ROUNDS: int = 50         # at start, this many of the latest recorded rounds are compared with Kalshi's fills
     # --- Selling a losing position early (live mode only), 2026-11-17, user: "sell whatever we have left, something is
     # better than nothing". When the best bid for the side held has stayed at or under EXIT_BELOW x the entry price for
     # EXIT_HOLD_S seconds, with at least EXIT_MIN_SECS_LEFT left, the bot sells what it holds at that bid. Replay on
@@ -59,8 +67,11 @@ class BotConfig:
     # --- Fill model ---
     LATENCY_MS: int = 300          # decision -> the order reaching Kalshi; the paper fill uses the book as it is then
     # --- Data guards ---
-    MAX_BOOK_DELAY_MS: int = 1500  # Kalshi's stream behind its own send times by more than this: no trade
-    MAX_PRINT_AGE_MS: int = 1500   # newest BRTI value older than this (local receive time): no trade
+    # 500 ms each since 2026-11-18 (were 1500), the engine's stale-book breaker (DECISIONS 70): the bet is on about one
+    # second of information, so a book or an index value older than half of that is not a price to decide on. The 5 Hz
+    # value arrives every 200 ms; without it the bot can decide only in the half second after each 1 Hz print.
+    MAX_BOOK_DELAY_MS: int = 500   # Kalshi's stream behind its own send times by more than this: no trade
+    MAX_PRINT_AGE_MS: int = 500    # newest BRTI value older than this (local receive time): no trade
     USE_FAST_SPOT: bool = True     # price off the 5 Hz BRTI value when it is newer than the 1 Hz print (pre-window only)
     VOL_HALFLIFE_S: float = 300.0
     VOL_FLOOR_ANN: float = 0.10
@@ -71,6 +82,10 @@ class BotConfig:
     PRIORITY: str = 'low'          # below-normal CPU priority so the bot yields to the advisor's engine
     DB_PATH: str = str(ROOT / 'data' / 'bot.db')
     SERIES: str = 'KXBTC15M'
+    # Everything the bot prints also goes here, with the traceback of any crash (runner.open_log). Rotated by size.
+    LOG_PATH: str = str(ROOT / 'logs' / 'bot.log')
+    LOG_MAX_MB: float = 5.0
+    LOG_BACKUPS: int = 5
 
     def __post_init__(self) -> None:
         if not (0 < self.MIN_EDGE < 1 and 0 <= self.MIN_ASK < self.MAX_ASK <= 1):
@@ -85,6 +100,10 @@ class BotConfig:
             raise ValueError('EXIT_BELOW and EXIT_BACK must be in [0, 1), EXIT_UP positive and the exit times non-negative')
         if self.MODE not in ('paper', 'live') or not (0 < self.LIVE_BUDGET <= 1000):
             raise ValueError("MODE must be 'paper' or 'live', and LIVE_BUDGET between 0 and 1000 dollars")
+        if not (0 < self.ARM_MAX_HOURS <= 24 and self.MAX_CONTRACTS_PER_ROUND >= 0 and self.AUDIT_ROUNDS >= 0):
+            raise ValueError('ARM_MAX_HOURS must be in (0, 24], MAX_CONTRACTS_PER_ROUND and AUDIT_ROUNDS not negative')
+        if min(self.MAX_BOOK_DELAY_MS, self.MAX_PRINT_AGE_MS) <= 0 or self.LOG_MAX_MB <= 0 or self.LOG_BACKUPS < 0:
+            raise ValueError('the data guards and the log size must be positive')
 
 
 def load_config(env: Optional[Mapping[str, str]] = None, dotenv: Optional[Path] = ROOT / '.env.local') -> BotConfig:
