@@ -33,6 +33,8 @@ export function setSwitch(armed:unknown,status:any,now=Date.now(),path=LIVE_SWIT
   if(typeof armed!=='boolean')throw new Error('armed must be true or false');
   if(armed&&!(status?.running&&status.mode==='live'))throw new Error('The bot is not running in real-money mode, so it cannot be switched on');
   if(armed&&!(typeof status.bootId==='string'&&status.bootId))throw new Error('The running bot is an older version without a boot id; restart it, then switch on');
+  // The bot compares its record with Kalshi when it starts (up to about a minute). No arming until that result is on the page (PR 16 review).
+  if(armed&&status.auditPending!==false)throw new Error('The bot is still checking its record against Kalshi after starting. Try again in a minute, once the check is shown as finished');
   const hours=Math.min(ARM_MAX_HOURS,Number.isFinite(status?.armMaxHours)&&status.armMaxHours>0?status.armMaxHours:ARM_MAX_HOURS);
   const next:LiveSwitch={armed,time:now,by:'user',note:'',expires_at:armed?now+hours*3600000:null,boot_id:armed?status.bootId:null};
   writeFileSync(path+'.tmp',JSON.stringify(next));replaceFile(path+'.tmp',path);return next;

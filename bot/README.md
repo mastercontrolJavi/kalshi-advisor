@@ -151,4 +151,6 @@ money back".
   only in the half second after each 1 Hz print.
 - **Record against Kalshi.** At start in live mode the latest `AUDIT_ROUNDS` (50) recorded rounds are compared with
   Kalshi's fills (contracts and dollars bought and sold) and the record's cash with the account's. Differences are
-  logged (`ledger-drift`) and shown on the Bot page; nothing is changed automatically.
+  logged (`ledger-drift`) and shown on the Bot page; nothing is changed automatically. It runs beside the stream at one
+  read a second (up to about a minute), and real trading cannot be switched on until it has finished: the bot refuses
+  to order and the Bot page refuses to arm while `auditPending` is true.

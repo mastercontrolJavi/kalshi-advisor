@@ -171,6 +171,7 @@ class Bot:
     drift: List[dict] = []             # what the start-up comparison with Kalshi found (live mode)
     decision_marks: Optional[dict] = None  # timestamps of the decision being executed
     audit_at: Optional[float] = None
+    audit_pending: bool = False        # live mode, from the start until that comparison has finished: no arming before it
 
     def __init__(self, cfg: BotConfig):
         self.cfg = cfg
@@ -179,6 +180,7 @@ class Bot:
         self.signer = kalshi.Signer(*credentials())
         # Live mode keeps its own ledger, started at the real-money budget; the paper account is not touched.
         self.live = cfg.MODE == 'live'
+        self.audit_pending = self.live   # cleared by audit(); until then switched_on() is False and the page cannot arm
         self.broker = PaperBroker(cfg.LIVE_DB_PATH, cfg.LIVE_BUDGET) if self.live else PaperBroker(cfg.DB_PATH, cfg.START_BANKROLL)
         self.switch = live.Switch(Path(cfg.LIVE_DB_PATH).with_name('bot-live.json'))
         self.armed = False               # refreshed every 10 s, and read again from the file right before an order
@@ -317,7 +319,17 @@ class Bot:
         here: sales found on Kalshi are booked by reconcile(), which runs first; what is still different is logged
         ('ledger-drift') and shown on the Bot page for the owner to look at before switching on."""
         if not self.live:
+            self.audit_pending = False
             return
+        try:
+            await self._audit()
+        except Exception as e:  # the comparison itself failed: say so on the page instead of blocking arming for good
+            log_crash('audit', e)
+            self.drift, self.audit_at = [{'ticker': None, 'error': f'the comparison with Kalshi failed: {e!r}'}], time.time()
+        finally:
+            self.audit_pending = False
+
+    async def _audit(self) -> None:
         found: List[dict] = []
         rows = self.broker.db.execute('SELECT ticker, side, contracts, contracts * price, fee, exit_n, exit_cash FROM fills ORDER BY id DESC LIMIT ?', (self.cfg.AUDIT_ROUNDS,)).fetchall()
         for ticker, side, n, paid, fee, exit_n, exit_cash in reversed(rows):
@@ -423,7 +435,7 @@ class Bot:
         data = {'time': now * 1000, 'started': self.started * 1000, 'connected': self.connected, 'ready': self.pricer.ready,
                 'bootId': self.boot_id, 'armMaxHours': cfg.ARM_MAX_HOURS, 'maxContracts': cfg.MAX_CONTRACTS_PER_ROUND,
                 'clockOffsetMs': round(kalshi.clock.offset_ms) if kalshi.clock.synced else None,
-                'drift': self.drift if self.live else None, 'auditAt': None if self.audit_at is None else self.audit_at * 1000,
+                'drift': self.drift if self.live else None, 'auditPending': self.audit_pending, 'auditAt': None if self.audit_at is None else self.audit_at * 1000,
                 'mode': cfg.MODE, 'armed': self.armed, 'switch': self.switch.read() if self.live else None, 'budget': cfg.LIVE_BUDGET,
                 'balance': self.balance if self.live and now - self.balance_at <= BALANCE_MAX_AGE_S else None, 'selling': self.selling,
                 'warmup': [self.pricer.vol.count, cfg.VOL_MIN_SAMPLES], 'bookDelayMs': round(self.delay.ms),
@@ -703,6 +715,8 @@ class Bot:
     def switched_on(self) -> bool:
         """The switch file says on, and the owner switched it on after the bot last switched itself off. The second part
         keeps the bot off when its own write to the file failed (a file held open by another program, say)."""
+        if self.audit_pending:
+            return False  # the start-up comparison with Kalshi has not finished: nothing is bought before its result is on the page
         s = self.switch.read()
         if self.switch.why_off(self.boot_id, time.time() * 1000, self.cfg.ARM_MAX_HOURS, s) is not None:
             return False  # off, armed for another run of the bot, no end time, or run out (live.Switch.why_off)
@@ -832,5 +846,7 @@ class Bot:
                     await job()
                 except Exception as e:
                     log(name + '-error', message=repr(e))
-            spawn(self.audit(), 'audit')  # beside the stream, not before it: it is paced and takes several seconds
+            # Beside the stream, not before it (it is paced: up to about a minute). Real trading cannot be switched on
+            # until it has finished: audit_pending keeps switched_on() False and the Bot page refuses to arm (PR 16 review).
+            spawn(self.audit(), 'audit')
         await asyncio.gather(self.stream(), self.housekeeping())

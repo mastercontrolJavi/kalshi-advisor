@@ -43,6 +43,8 @@ function RealSwitch({b,onChange}:{b:any;onChange:()=>void}){
   const until=on&&sw?.expires_at?new Date(sw.expires_at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):null;
   const flat=Number(b.status?.maxContracts)>0?Number(b.status.maxContracts):null,hours=Number(b.status?.armMaxHours)>0?Number(b.status.armMaxHours):4;
   const drift:any[]=Array.isArray(b.status?.drift)?b.status.drift:[];
+  // The bot compares its record with Kalshi when it starts; until that has finished it cannot be switched on.
+  const checking=running&&b.status?.auditPending!==false;
   const set=async(armed:boolean)=>{setBusy(true);setError('');
     try{const r=await fetch('/api/bot/live',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({armed})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error??`HTTP ${r.status}`);setAsking(false);onChange();}
     catch(e){setError((e as Error).message);}finally{setBusy(false);}};
@@ -55,12 +57,13 @@ function RealSwitch({b,onChange}:{b:any;onChange:()=>void}){
       <ul className="mt-1 list-disc pl-5">{drift.slice(0,8).map((d,i)=><li key={i}>{d.ticker??'Account'}: {d.error?String(d.error):d.balance_short!=null?`Kalshi cash is ${dollars(d.balance_short)} less than the record's cash`
         :[d.contracts?`${d.contracts>0?'+':''}${d.contracts} contracts bought`:'',d.sold?`${d.sold>0?'+':''}${d.sold} sold`:'',d.paid?`${dollars(d.paid)} paid`:'',d.sold_cash?`${dollars(d.sold_cash)} from sales`:'',d.fee?`${dollars(d.fee)} fees`:''].filter(Boolean).join(', ')+' on Kalshi compared with the record'}</li>)}</ul></div>:null}
     {!on&&sw?.note?<p className="mt-2 max-w-4xl text-sm text-warn" role="status">Switched off{sw.by==='bot'?' by the bot':''}{sw.time?` at ${new Date(sw.time).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}`:''}: {sw.note}{sw.by==='bot'?' It buys nothing more, but still sells a position it holds early if the exit rules say so.':''}</p>:null}
+    {!on&&checking?<p className="mt-2 max-w-4xl text-sm text-muted" role="status">Checking the bot&apos;s record against Kalshi (about a minute after a start). Real trading can be switched on when this has finished.</p>:null}
     {error?<p className="mt-2 text-sm text-no" role="alert">{error}</p>:null}
     <div className="mt-3 flex flex-wrap items-center gap-2">{on
       ?<Button variant="outline" onClick={()=>void set(false)} disabled={busy}>Turn off</Button>
       :asking
         ?<><Button className="bg-no text-bg hover:bg-no/85" onClick={()=>void set(true)} disabled={busy}>Yes, trade real money</Button><Button variant="ghost" onClick={()=>setAsking(false)} disabled={busy}>Cancel</Button></>
-        :<><Button variant="outline" onClick={()=>setAsking(true)} disabled={!running}>Turn on</Button>
+        :<><Button variant="outline" onClick={()=>setAsking(true)} disabled={!running||checking}>Turn on</Button>
           {sw?.by==='bot'?<Button variant="ghost" onClick={()=>void set(false)} disabled={busy}>Stop early sales too</Button>:null}</>}
       {!on&&!running?<span className="text-sm text-muted">The bot is not running, so there is nothing to turn on.</span>:null}
       {on?<span className="text-sm text-muted">Turning off stops new orders. A round already bought is held to settlement.</span>:null}</div>

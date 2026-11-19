@@ -477,3 +477,36 @@ def test_the_status_file_carries_the_boot_id_and_the_drift(tmp_path):
     s = json.loads(bot.status_path.read_text(encoding='utf-8'))
     assert s['bootId'] == 'boot-1' and s['armMaxHours'] == 4.0 and s['drift'] == [{'ticker': 'B', 'contracts': 2.0}] and s['mode'] == 'live'
     assert s['maxContracts'] == 0 and 'clockOffsetMs' in s
+
+
+def test_no_arming_before_the_start_up_comparison_has_finished(tmp_path):
+    bot, m = make(tmp_path)                                      # a valid arming for this run
+    bot.broker.record('A', 'no', 2.0, 0.50, 0.0263, 0.25, 2.0, 1.0)
+    bot.audit_pending = True                                     # as __init__ leaves a live bot
+    assert not bot.switched_on()
+    sent, _ = run(bot, m, NO, {'order_id': 'x', 'fill_count': '4.00'})
+    assert sent == [] and 'T' not in bot.broker.positions        # an arming that slipped in early buys nothing
+    bot.pricer, bot.markets, bot.view, bot.connected, bot.started = __import__('bot.strategy', fromlist=['Pricer']).Pricer(bot.cfg), {}, None, True, time.time()
+    bot.last_value_ms, bot.status_path = 0.0, tmp_path / 'bot-status.json'
+    bot.write_status()
+    assert json.loads(bot.status_path.read_text(encoding='utf-8'))['auditPending'] is True      # the page is told, and refuses to arm
+    bot.balance = bot.broker.cash
+    audit(bot, {'A': [BUY]})
+    assert not bot.audit_pending and bot.audit_at is not None and bot.drift == [] and bot.switched_on()
+    bot.write_status()
+    assert json.loads(bot.status_path.read_text(encoding='utf-8'))['auditPending'] is False
+
+
+def test_a_comparison_that_fails_outright_is_reported_and_does_not_block_for_good(tmp_path):
+    bot, _ = make(tmp_path)
+    bot.audit_pending = True
+
+    async def boom():
+        raise RuntimeError('ledger unreadable')
+    bot._audit = boom
+    quick(bot.audit)
+    assert not bot.audit_pending and 'ledger unreadable' in bot.drift[0]['error'] and bot.audit_at is not None
+    paper, _ = make(tmp_path)
+    paper.live, paper.audit_pending = False, True
+    quick(paper.audit)
+    assert not paper.audit_pending                               # paper mode has nothing to compare
