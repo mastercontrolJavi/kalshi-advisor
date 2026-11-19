@@ -53,9 +53,34 @@ if (Test-Starting) {
     -WorkingDirectory $root -WindowStyle Minimized
 }
 
+# Startup failures (tests, build, type check) are written to logs/launcher.log by scripts/trade.mjs; surface them here
+# instead of waiting out the timeout. Only lines added after this launch began count.
+$launcherLog = Join-Path $root 'logs\launcher.log'
+$logStart = if (Test-Path $launcherLog) { (Get-Item $launcherLog).Length } else { 0 }
+function Get-StartupFailure {
+  if (-not (Test-Path $launcherLog)) { return $null }
+  try {
+    $fs = [IO.File]::Open($launcherLog, 'Open', 'Read', 'ReadWrite')
+    try { $null = $fs.Seek([Math]::Min($logStart, $fs.Length), 'Begin'); $text = (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }
+  } catch { return $null }
+  foreach ($line in ($text -split "`n")) {
+    if ($line -match '"event":"startup-failed"') { try { return ($line | ConvertFrom-Json) } catch { return [pscustomobject]@{ message = $line; tail = '' } } }
+  }
+  return $null
+}
+
 $deadline = (Get-Date).AddMinutes(6)
 while ((Get-Date) -lt $deadline) {
   Start-Sleep -Seconds 2
+  $failure = Get-StartupFailure
+  if ($failure) {
+    Write-Host ''
+    Write-Host "Kalshi Advisor failed to start: $($failure.message)" -ForegroundColor Red
+    if ($failure.tail) { Write-Host '--- last output of the failed step ---'; Write-Host $failure.tail }
+    Write-Host "Full log: $launcherLog"
+    Read-Host 'Press Enter to close'
+    exit 1
+  }
   if (Test-Dashboard) {
     Write-Host 'Ready.' -ForegroundColor Green
     Open-Dashboard

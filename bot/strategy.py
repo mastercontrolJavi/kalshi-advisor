@@ -30,6 +30,7 @@ class Pricer:
         self.prints: 'OrderedDict[int, float]' = OrderedDict()  # epoch second -> 1 Hz print
         self.last: Optional[Tuple[int, float]] = None           # newest 1 Hz print
         self.fast: Optional[Tuple[float, float]] = None         # newest 5 Hz value (epoch seconds, price)
+        self.spot_fast = False                                  # the last fair() priced off the 5 Hz value, not the 1 Hz print
 
     def on_print(self, ts: int, price: float) -> bool:
         """A 1 Hz settlement print for epoch second ts. Out-of-order and repeated seconds are ignored."""
@@ -44,16 +45,20 @@ class Pricer:
             self.prints.popitem(last=False)
         return True
 
-    def on_fast(self, ts: float, price: float) -> None:
+    def on_fast(self, ts: float, price: float) -> bool:
         if price > 0 and (self.fast is None or ts > self.fast[0]):
             self.fast = (ts, price)
+            return True
+        return False
 
     @property
     def ready(self) -> bool:
         return self.last is not None and self.vol.ready
 
     def fair(self, strike: float, close_ts: int) -> Optional[Tuple[FairValue, float]]:
-        """(fair value, seconds left measured from the value priced on), or None when it cannot be priced."""
+        """(fair value, seconds left measured from the value priced on), or None when it cannot be priced. spot_fast
+        says afterwards which value that was."""
+        self.spot_fast = False
         if not self.ready or not strike > 0:
             return None
         ts, spot = self.last
@@ -64,7 +69,7 @@ class Pricer:
         if left > WINDOW:
             # Before the settlement window any newer value of the same index is simply a fresher spot.
             if self.cfg.USE_FAST_SPOT and self.fast is not None and ts < self.fast[0] < ts + 1.5 and close_ts - self.fast[0] > WINDOW:
-                left, spot = close_ts - self.fast[0], self.fast[1]
+                left, spot, self.spot_fast = close_ts - self.fast[0], self.fast[1], True
             return fair_value(spot, strike, left, sigma), left
         fixed = [p for t, p in self.prints.items() if close_ts - WINDOW <= t < ts]
         if len(fixed) + left < WINDOW - 2:  # prints missing from the window: the average cannot be trusted

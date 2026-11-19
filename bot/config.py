@@ -31,8 +31,31 @@ class BotConfig:
     MAX_SECS_LEFT: float = 600.0   # the first 5 minutes were a coin flip around zero
 
     # --- Sizing: fractional Kelly on the model's probability, in hundredths of a contract ---
-    KELLY_FRAC: float = 0.5
-    MAX_RISK_FRAC: float = 0.10    # most of the bankroll one round may cost
+    # 2026-11-13, user choice: 1.5x the first sizing (was 0.5 Kelly, 10% cap). A replay of 134 paper trades put the useful ceiling at 1.5-2x.
+    KELLY_FRAC: float = 0.75
+    MAX_RISK_FRAC: float = 0.15    # most of the bankroll one round may cost
+    # --- Real money (bot/live.py), 2026-11-17, user: "same type of experiment, but with real money that I can afford to lose" ---
+    # MODE 'live' sends real Kalshi orders, and only while the switch on the Bot page is on (data/bot-live.json). The bot
+    # spends from its own ledger (LIVE_DB_PATH), which starts at LIVE_BUDGET and grows only by its own wins: whatever
+    # else is in the Kalshi account is never counted. In live mode the paper account is left as it is.
+    MODE: str = 'paper'            # 'paper' | 'live'
+    LIVE_BUDGET: float = 15.0
+    LIVE_DB_PATH: str = str(ROOT / 'data' / 'bot-live.db')
+    # --- Selling a losing position early (live mode only), 2026-11-17, user: "sell whatever we have left, something is
+    # better than nothing". When the best bid for the side held has stayed at or under EXIT_BELOW x the entry price for
+    # EXIT_HOLD_S seconds, with at least EXIT_MIN_SECS_LEFT left, the bot sells what it holds at that bid. Replay on
+    # the bot's 302 entries and on 5,312 recorded cheap-side entries (minute candles): the same average result as
+    # holding (-3.5c vs -3.9c; +0.8c vs +0.8c) with smaller swings. Selling winners at a fixed gain (2x the entry,
+    # +15c, ...) cost about 2c a contract in the same replay, so there is no take-profit rule.
+    # Reversal (the owner sold three rounds by hand that had gone up and were turning): once the bid has been EXIT_UP
+    # above the entry, a fall back to EXIT_BACK x its highest bid sells too, down to EXIT_REVERSAL_MIN_SECS_LEFT.
+    # Both rules together in the same replay: -3.8c vs -3.9c held, swing 27c vs 37c. They cut swings, not the fee.
+    EXIT_BELOW: float = 0.5        # 0 switches the losing-position exit off
+    EXIT_MIN_SECS_LEFT: float = 120.0
+    EXIT_UP: float = 0.10
+    EXIT_BACK: float = 0.6         # 0 switches the reversal exit off
+    EXIT_REVERSAL_MIN_SECS_LEFT: float = 60.0
+    EXIT_HOLD_S: float = 15.0      # the bid must stay there this long: one flicker of the book is not a reversal
     # --- Fill model ---
     LATENCY_MS: int = 300          # decision -> the order reaching Kalshi; the paper fill uses the book as it is then
     # --- Data guards ---
@@ -58,6 +81,10 @@ class BotConfig:
             raise ValueError('need 0 <= MIN_SECS_LEFT < MAX_SECS_LEFT <= 900')
         if self.START_BANKROLL <= 0 or self.LATENCY_MS < 0 or self.PRIORITY not in ('low', 'normal'):
             raise ValueError('invalid bankroll, latency or priority')
+        if not (0 <= self.EXIT_BELOW < 1 and 0 <= self.EXIT_BACK < 1 and self.EXIT_UP > 0 and min(self.EXIT_HOLD_S, self.EXIT_MIN_SECS_LEFT, self.EXIT_REVERSAL_MIN_SECS_LEFT) >= 0):
+            raise ValueError('EXIT_BELOW and EXIT_BACK must be in [0, 1), EXIT_UP positive and the exit times non-negative')
+        if self.MODE not in ('paper', 'live') or not (0 < self.LIVE_BUDGET <= 1000):
+            raise ValueError("MODE must be 'paper' or 'live', and LIVE_BUDGET between 0 and 1000 dollars")
 
 
 def load_config(env: Optional[Mapping[str, str]] = None, dotenv: Optional[Path] = ROOT / '.env.local') -> BotConfig:

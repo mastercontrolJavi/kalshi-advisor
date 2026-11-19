@@ -26,7 +26,7 @@ import {dayKey,guardrails} from './guardrails';
 import {filledSeconds,mean,probability,volatility,warmVolatility} from './model/math';
 import {evaluate,size,latchSignal,emptyLatch,type Latch} from './signals';
 import {validateConfig} from './config';
-import {authorized,requireDashboardCredentials} from './auth';
+import {authorized,requireDashboardCredentials,requestPath} from './auth';
 import {createExecutor} from './executor';
 import {buildCalibration} from './calibration';
 import {openingCall,OPENING_K_DEADLINE_SECONDS} from './model/opening';
@@ -197,7 +197,8 @@ async function paperSweep(){
 const server=createServer(async(req,res)=>{
   res.setHeader('Cache-Control','no-store');
   if(!authorized(req.headers.authorization,req)){res.writeHead(401,{'WWW-Authenticate':'Basic realm="Kalshi Advisor"'});res.end('Authentication required');return;}
-  const path=new URL(req.url??'/', 'http://127.0.0.1').pathname;
+  // requestPath never throws: a target like "//" used to throw here, outside the try, as an unhandled rejection that exited the engine.
+  const path=requestPath(req.url);if(path===null){res.writeHead(400);res.end('Bad request');return;}
   try{
     if(req.method==='GET'&&path==='/analytics'){
       const fees=new Map((journal.db.prepare("SELECT json_extract(context,'$.ticker') AS ticker,SUM(json_extract(context,'$.fee_cost')) AS fees FROM account_raw WHERE type='fill' GROUP BY 1").all() as {ticker:string;fees:number}[]).map(r=>[r.ticker,r.fees]));
@@ -229,10 +230,10 @@ const server=createServer(async(req,res)=>{
       res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,config}));return;
     }
     res.writeHead(404);res.end('Not found');
-  }catch(e){res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}
+  }catch(e){if(!res.headersSent)res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:(e as Error).message}));}
 });
 const wss=new WebSocketServer({noServer:true});
-server.on('upgrade',(req,socket,head)=>{if(req.url!=='/ws'||!authorized(req.headers.authorization,req)){socket.write('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="Kalshi Advisor"\r\n\r\n');socket.destroy();return;}wss.handleUpgrade(req,socket,head,ws=>{wss.emit('connection',ws,req);ws.send(JSON.stringify(state));});});
+server.on('upgrade',(req,socket,head)=>{if(req.url!=='/ws'||!authorized(req.headers.authorization,req)){socket.write('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="Kalshi Advisor"\r\n\r\n');socket.destroy();return;}wss.handleUpgrade(req,socket,head,ws=>{ws.on('error',()=>ws.terminate());wss.emit('connection',ws,req);ws.send(JSON.stringify(state));});});
 server.listen(Number(process.env.ENGINE_PORT??3001),'127.0.0.1',()=>log('engine-listening',{port:Number(process.env.ENGINE_PORT??3001),authenticated:client.authenticated}));
 proxy.start();if(orderFlow)microstructure.start();safe('initial-refresh-error',async()=>{await refresh();benchmark.start();await account.sync();});
 const refreshTimer=setInterval(()=>safe('market-refresh-error',refresh),5000);
@@ -240,7 +241,10 @@ const fallbackTimer=setInterval(()=>safe('book-fallback-error',()=>kalshi.fallba
 const backupTimer=setInterval(()=>safe('book-backup-error',()=>kalshi.pollBackup()),500);
 const accountTimer=setInterval(()=>safe('account-sync-error',()=>account.sync()),30000);
 const settlementTimer=setInterval(()=>safe('settlement-error',settlements),10000);
-const pruneTimer=setInterval(()=>journal.prune(),3600000);journal.prune();
+// Pruning is synchronous SQLite work in a bare timer: an error (SQLite 'disk I/O error' was seen 2026-11-13) is logged
+// instead of becoming an uncaught exception that exits the engine.
+const prune=()=>{try{journal.prune();}catch(e){console.log(JSON.stringify({time:new Date().toISOString(),event:'prune-error',data:{message:(e as Error).message}}));}};
+const pruneTimer=setInterval(prune,3600000);prune();
 const paperTimer=setInterval(()=>safe('paper-sweep-error',paperSweep),30000);
 // Late-round forecast (final minute): fitted on the kept final-minute seconds and used only once its learned weights beat
 // the default blend on rounds held out of the fit; until then the main forecast applies there too. Fitted once at startup

@@ -27,8 +27,11 @@ function history(n:number,now:number):RealEvent[]{
 }
 it('guardrails stay fast as the trade history grows (4 Hz on the engine loop)',()=>{
   const now=Date.UTC(2026,9,23,23,0),events=history(4000,now);guardrails(events,100,defaults,now);
-  const started=performance.now();for(let i=0;i<20;i++)guardrails(events,100,defaults,now+i*250);
-  expect(performance.now()-started).toBeLessThan(150);
+  // The fastest of five batches: a machine busy with its own start-up (this test once took 196 ms right after the
+  // laptop woke, and that stopped the app from starting) slows some batches, while slower code slows every one.
+  let best=Infinity;
+  for(let b=0;b<5;b++){const started=performance.now();for(let i=0;i<20;i++)guardrails(events,100,defaults,now+i*250);best=Math.min(best,performance.now()-started);}
+  expect(best).toBeLessThan(150);
 });
 it('the day key is exact in every zone across DST changes, however often it is asked',()=>{
   const zones=['America/Los_Angeles','America/New_York','Asia/Kathmandu','Australia/Lord_Howe','UTC'];

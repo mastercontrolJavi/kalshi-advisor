@@ -17,7 +17,7 @@ export function validateConfig(input: unknown): Config {
   const result = {...defaults};
   for (const [key,value] of Object.entries(input)) {
     if (RETIRED.has(key)) continue;
-    if (!(key in defaults)) throw new Error(`Unknown setting ${key}`);
+    if (!Object.hasOwn(defaults,key)) throw new Error(`Unknown setting ${key}`);
     const original = defaults[key as keyof Config];
     if (typeof value !== typeof original || (typeof value === 'number' && !Number.isFinite(value))) throw new Error(`Invalid ${key}`);
     (result as unknown as Record<string,number|boolean|string>)[key] = value as number|boolean|string;

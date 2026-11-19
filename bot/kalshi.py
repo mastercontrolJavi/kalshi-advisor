@@ -1,5 +1,5 @@
-"""Kalshi access for the bot: request signing, public REST reads and the signed websocket URL. Read-only: there is no
-order-placing code in this package."""
+"""Kalshi access for the bot: request signing, public REST reads, the signed websocket URL and, for live mode only
+(bot/live.py), one signed order request. The order request is sent once and never retried."""
 from __future__ import annotations
 
 import asyncio
@@ -50,6 +50,47 @@ def _get(path: str, timeout: float = 10.0) -> dict:
                 raise
             time.sleep(min(8.0, 0.3 * 2 ** attempt))
     raise RuntimeError('Kalshi rate limit: retries exhausted')
+
+
+class Refused(Exception):
+    """Kalshi answered and did not take the order (HTTP 4xx): nothing was bought."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(f'HTTP {status}: {message}')
+        self.status = status
+
+
+def _signed(signer: Signer, method: str, path: str, body: Optional[dict] = None, timeout: float = 10.0) -> dict:
+    """One signed request, never retried: an order is not idempotent, and a retry after a timeout could buy twice.
+    Raises Refused when Kalshi clearly said no; any other error means the outcome is not known."""
+    if not path.startswith('/') or '://' in path:
+        raise ValueError('invalid Kalshi API path')
+    headers = {**signer.headers('/trade-api/v2' + path, method), 'Accept': 'application/json'}
+    data = None
+    if body is not None:
+        headers['Content-Type'] = 'application/json'
+        data = json.dumps(body).encode()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(REST + path, data=data, headers=headers, method=method), timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if 400 <= e.code < 500:
+            try:
+                err = json.loads(e.read())
+                err = err.get('error', err)
+                message = str(err.get('message') or err.get('code') or 'no reason given')
+            except Exception:
+                message = 'no reason given'
+            raise Refused(e.code, message) from None
+        raise
+
+
+async def post(signer: Signer, path: str, body: dict) -> dict:
+    return await asyncio.to_thread(_signed, signer, 'POST', path, body)
+
+
+async def signed_get(signer: Signer, path: str) -> dict:
+    return await asyncio.to_thread(_signed, signer, 'GET', path)
 
 
 async def get(path: str) -> dict:

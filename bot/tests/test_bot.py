@@ -13,7 +13,7 @@ from bot.strategy import Pricer, decide, size  # noqa: E402
 from edge.ev_gate import order_fee, taker_fee  # noqa: E402
 from edge.fair_value import FairValue  # noqa: E402
 
-CFG = BotConfig()
+CFG = BotConfig(KELLY_FRAC=0.5, MAX_RISK_FRAC=0.10)   # the sizing these numbers were worked out for; the live default may differ
 
 
 def fv(p):
@@ -167,3 +167,124 @@ def test_sequence_gap_on_a_later_subscription_distrusts_the_books():
         await asyncio.sleep(0)
         assert not bot.markets['B'].book.valid and not bot.markets['A'].book.valid and bot.resynced == 1
     asyncio.run(run())
+
+
+def _priced_bot(print_age_s, fast_age_s):
+    """A bot with a warm pricer whose newest 1 Hz print and 5 Hz value arrived print_age_s and fast_age_s ago (local and
+    exchange time alike), BRTI 500 above the strike and YES asking 90c: a trade if the data is fresh."""
+    import time
+    from bot.runner import Bot, Market
+    now = time.time()
+    bot = Bot.__new__(Bot)
+    bot.cfg, bot.live, bot.armed, bot.pending, bot.cooldown, bot.view = replace(CFG, VOL_MIN_SAMPLES=5), False, False, None, {}, None
+    bot.stats, bot.delay, bot.broker = {'evals': 0, 'reasons': {}}, FeedDelay(), PaperBroker(':memory:', 15.0, now=0)
+    bot.pricer = Pricer(bot.cfg)
+    last = int(now - print_age_s)
+    for t in range(last - 20, last + 1):
+        bot.pricer.on_print(t, 100_500.0 + (t % 2))
+    bot.pricer.on_fast(now - fast_age_s, 100_500.0)
+    bot.print_ms, bot.fast_ms = (now - print_age_s) * 1000, (now - fast_age_s) * 1000
+    bot.last_value_ms = max(bot.print_ms, bot.fast_ms)
+    iso = lambda t: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))
+    m = Market({'ticker': 'T', 'open_time': iso(now - 400), 'close_time': iso(now + 300), 'floor_strike': 100_000})
+    m.book.snapshot([('0.05', '100')], [(0.10, '100')])
+    assert m.book.ask('yes') == 0.90
+    return bot, m
+
+
+def _evaluate(bot, m):
+    import asyncio
+    orders = []
+
+    async def execute(market, intent, decided):
+        orders.append(intent)
+    bot.execute = execute
+
+    async def go():
+        bot.evaluate(m)
+        await asyncio.sleep(0)
+    asyncio.run(go())
+    return orders
+
+
+def test_a_fresh_print_trades():
+    bot, m = _priced_bot(0.3, 0.1)
+    assert len(_evaluate(bot, m)) == 1 and bot.pricer.spot_fast
+
+
+def test_a_stale_1hz_print_does_not_trade_although_the_5hz_value_is_fresh():
+    # The 1 Hz prints stopped 5 s ago while the 5 Hz values kept coming. The pricer ignores a 5 Hz value that far ahead
+    # of the last print, so the round would be priced on the 5-second-old print: no trade.
+    bot, m = _priced_bot(5.0, 0.1)
+    assert _evaluate(bot, m) == [] and bot.stats['reasons'].get('BRTI value stale') == 1
+
+
+def test_two_callers_never_subscribe_the_same_round_twice():
+    import asyncio
+    import json as _json
+    from bot.runner import Bot
+    bot = Bot.__new__(Bot)
+    bot.subscribed, bot.next_id, sent = set(), 10, []
+
+    class FakeWs:
+        async def send(self, text):
+            await asyncio.sleep(0)                          # a real send can yield to the other task
+            sent.append(_json.loads(text)['params']['market_tickers'])
+    bot.ws = FakeWs()
+
+    async def go():
+        await asyncio.gather(bot.subscribe(['A', 'B']), bot.subscribe(['A', 'B']))   # housekeeping and a reconnect at once
+    asyncio.run(go())
+    assert sent == [['A', 'B']] and bot.subscribed == {'A', 'B'}
+
+
+def test_a_failed_subscribe_is_tried_again_later():
+    import asyncio
+    from bot.runner import Bot
+    bot = Bot.__new__(Bot)
+    bot.subscribed, bot.next_id = set(), 10
+
+    class BrokenWs:
+        async def send(self, text):
+            raise ConnectionError('closed')
+    bot.ws = BrokenWs()
+    try:
+        asyncio.run(bot.subscribe(['A']))
+        assert False
+    except ConnectionError:
+        pass
+    assert bot.subscribed == set()
+
+
+def test_housekeeping_survives_a_failing_status_summary():
+    import asyncio
+    from bot.runner import Bot
+    bot = Bot.__new__(Bot)
+    bot.live, ticks = False, []
+
+    async def nothing():
+        return None
+    bot.refresh_markets = bot.settle = nothing
+    bot.write_status = lambda: None
+
+    def broken():
+        raise RuntimeError('database is locked')
+    bot.broker = type('B', (), {'summary': staticmethod(broken)})()
+
+    class Done(Exception):
+        pass
+
+    async def fake_sleep(s):
+        ticks.append(s)
+        if len(ticks) >= 8:
+            raise Done
+    old = asyncio.sleep
+    asyncio.sleep = fake_sleep
+    try:
+        asyncio.run(bot.housekeeping())
+        assert False
+    except Done:
+        pass
+    finally:
+        asyncio.sleep = old
+    assert len(ticks) == 8                                  # kept going past the sixth tick, where the summary failed

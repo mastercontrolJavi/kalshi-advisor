@@ -18,3 +18,11 @@ it('DASHBOARD_AUTH=off opens only genuine local requests; proxied, rebinding or 
     // The password still works for remote access.
     expect(authorized('Basic '+Buffer.from('user:secret').toString('base64'),req('my-pc.tailnet.ts.net'))).toBe(true);
   }finally{delete process.env.DASHBOARD_AUTH;}});
+// Regression (2026-11-17 audit): the engine parsed the request path outside its try block, inside an async handler, so a
+// request for "//" (e.g. /api/engine// through the web proxy) threw ERR_INVALID_URL as an unhandled rejection and Node 24
+// exited the engine. requestPath never throws; an unparseable target is null (answered 400).
+it('requestPath never throws on a malformed request target',async()=>{
+  const {requestPath}=await import('../src/engine/auth');
+  for(const bad of ['//','//a:b','//['])expect(requestPath(bad)).toBeNull();
+  expect(requestPath('/state')).toBe('/state');expect(requestPath('/export/ticks?x=1')).toBe('/export/ticks');expect(requestPath(undefined)).toBe('/');
+});

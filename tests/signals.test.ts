@@ -52,3 +52,11 @@ it('firm signals: a flip to the other side needs its own 3 s',()=>{
   let l:Latch=emptyLatch();const step=(t:number,action:string,p:number)=>{const r=latchSignal(l,ev(action),p,{yesAsk:.5,noAsk:.51},defaults,baseFees,100,t,null);l=r.latch;return r.evaluation.action;};
   for(const t of [0,1000,3000])step(t,'BUY YES',.6);expect(l.side).toBe('yes');
   expect(step(4000,'BUY NO',.4)).toBe('BUY YES');expect(step(6000,'BUY NO',.4)).toBe('BUY YES');expect(step(7000,'BUY NO',.4)).toBe('BUY NO');});
+// Regression (2026-11-17 audit): `'__proto__' in defaults` is true (inherited), so {"__proto__":{}} passed as a known
+// setting and replaced the validated config's prototype instead of being rejected as unknown.
+it('settings reject inherited Object keys such as __proto__',async()=>{
+  const {validateConfig,defaults}=await import('../src/engine/config');
+  expect(()=>validateConfig(JSON.parse('{"__proto__":{}}'))).toThrow('Unknown setting __proto__');
+  expect(()=>validateConfig(JSON.parse('{"__proto__":null}'))).toThrow('Unknown setting __proto__');
+  expect(Object.getPrototypeOf(validateConfig({...defaults}))).toBe(Object.prototype);
+});

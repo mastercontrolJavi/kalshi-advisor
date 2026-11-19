@@ -108,11 +108,17 @@ def make_handler(service: EdgeService, lock: threading.Lock):
     return Handler
 
 
+class _Server(ThreadingHTTPServer):
+    # http.server sets SO_REUSEADDR, which on Windows lets a second sidecar bind a port an orphaned one still holds (two
+    # writers on edge.db, requests split between them). Fail to bind instead; the launcher restarts with backoff.
+    allow_reuse_address = sys.platform != 'win32'
+
+
 def serve(cfg: Optional[EdgeConfig] = None) -> None:
     cfg = cfg or load_config()
     priority = lower_priority() if cfg.PRIORITY == 'low' else 'normal'
     service = EdgeService(cfg, log=log_json)
-    server = ThreadingHTTPServer((cfg.HOST, cfg.PORT), make_handler(service, threading.Lock()))
+    server = _Server((cfg.HOST, cfg.PORT), make_handler(service, threading.Lock()))
     log_json({'event': 'edge-start', 'host': cfg.HOST, 'port': cfg.PORT, 'db': cfg.DB_PATH, 'mode': cfg.MODE,
               'engine_validated': cfg.ENGINE_VALIDATED, 'blackouts': len(service.governor.blackouts), 'python': sys.version.split()[0],
               'priority': priority, 'bankroll': cfg.BANKROLL})
