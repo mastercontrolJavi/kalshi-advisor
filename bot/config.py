@@ -22,7 +22,15 @@ class BotConfig:
     # held to settlement, +2.0c a contract after the fee if filled in the same second (95% -1.8..+5.7), -0.4c if filled
     # one second later. Nothing here is proven; the live paper record at LATENCY_MS is the test.
     MIN_EDGE: float = 0.03         # model probability minus (ask + taker fee)
-    MIN_ASK: float = 0.10          # no longshots: the fee is the largest share of the upside there
+    # 2026-11-19, owner: "let the bot buy cheap tickets under 10 cents". It was 0.10 (no longshots: the fee is about 7%
+    # of the stake there). The rest of the rule is unchanged, so a 5c ask is bought only when the model says 8.3% or
+    # more. Replay with 0.01 on the journal (907 fills, 1 s after the decision, flat 1 contract, held): 48 tickets were
+    # bought under 10c, none under 3c; 9 won (18.8% at an average 7.2c): +11.1c a contract (95% +0.6..+23.1), and the
+    # whole rule went from +0.37c to +0.90c a contract (-1.7..+3.4). Nine winners is not proof: the neighbouring 10-19c
+    # band is -0.5c on 182 fills. Across every recorded round a 3-5c offer wins 4.1% and a 6-10c offer 10.0%: Kalshi's
+    # cheap prices are fair on their own. Selling one of these tickets when it jumped (2x .. 10x the price paid, or a
+    # bid of 30c / 50c) was worse than holding in every version (-4c .. -12c a contract), so there is no such sale.
+    MIN_ASK: float = 0.01          # Kalshi's lowest price
     MAX_ASK: float = 0.97
     BLOCK_MID_BAND: bool = True    # 30-70c asks lost in every time bucket of the replay (-1..-4c)
     MID_BAND_LOW: float = 0.30
@@ -58,12 +66,25 @@ class BotConfig:
     # Reversal (the owner sold three rounds by hand that had gone up and were turning): once the bid has been EXIT_UP
     # above the entry, a fall back to EXIT_BACK x its highest bid sells too, down to EXIT_REVERSAL_MIN_SECS_LEFT.
     # Both rules together in the same replay: -3.8c vs -3.9c held, swing 27c vs 37c. They cut swings, not the fee.
-    EXIT_BELOW: float = 0.5        # 0 switches the losing-position exit off
+    # 2026-11-19, owner's choice after the review of the first 73 real trades: BOTH RULES OFF (0). The bot's own 34 sales
+    # booked -$14.64 where the same positions held to settlement were -$0.39 (the side sold went on to win 10 of 34
+    # times at an average sale price of 13.5c), and a second-by-second replay on 883 recorded entries (the journal's
+    # one-second books, not minute candles) put selling at -1.35c a contract against holding (95% -3.10..+0.30; 54% of
+    # positions sold, swing 40c -> 32c): every sale pays a second fee and crosses the spread. To have them back, set
+    # BOT_EXIT_BELOW=0.5 and BOT_EXIT_BACK=0.6 in .env.local. Sales by hand are still booked either way.
+    EXIT_BELOW: float = 0.0        # 0 = the losing-position exit is off (it was 0.5: sell at half the entry)
     EXIT_MIN_SECS_LEFT: float = 120.0
     EXIT_UP: float = 0.10
-    EXIT_BACK: float = 0.6         # 0 switches the reversal exit off
+    EXIT_BACK: float = 0.0         # 0 = the reversal exit is off (it was 0.6: sell at 60% of the high)
     EXIT_REVERSAL_MIN_SECS_LEFT: float = 60.0
     EXIT_HOLD_S: float = 15.0      # the bid must stay there this long: one flicker of the book is not a reversal
+    # Scalp (2026-11-19, owner: "a scalping button"): a ticket bought under SCALP_BELOW is sold, at once, when its bid
+    # reaches SCALP_AT x the price paid, down to SCALP_MIN_SECS_LEFT. OFF (0) unless switched on from the Bot page
+    # (bot/features.py): on the replay's 48 tickets under 10c, selling at 5x made +1.9c a contract where holding made
+    # +11.1c (9.2c worse, 95% 2.5..16.8c worse); 2x, 3x, 10x, a bid of 30c and a bid of 50c were all worse than holding.
+    SCALP_AT: float = 0.0          # 0 = off; 5 = sell at five times the price paid
+    SCALP_BELOW: float = 0.10
+    SCALP_MIN_SECS_LEFT: float = 5.0
     # --- Fill model ---
     LATENCY_MS: int = 300          # decision -> the order reaching Kalshi; the paper fill uses the book as it is then
     # --- Data guards ---
@@ -98,6 +119,8 @@ class BotConfig:
             raise ValueError('invalid bankroll, latency or priority')
         if not (0 <= self.EXIT_BELOW < 1 and 0 <= self.EXIT_BACK < 1 and self.EXIT_UP > 0 and min(self.EXIT_HOLD_S, self.EXIT_MIN_SECS_LEFT, self.EXIT_REVERSAL_MIN_SECS_LEFT) >= 0):
             raise ValueError('EXIT_BELOW and EXIT_BACK must be in [0, 1), EXIT_UP positive and the exit times non-negative')
+        if not ((self.SCALP_AT == 0 or self.SCALP_AT > 1) and 0 < self.SCALP_BELOW <= 1 and self.SCALP_MIN_SECS_LEFT >= 0):
+            raise ValueError('SCALP_AT must be 0 (off) or a multiple above 1, SCALP_BELOW a price and SCALP_MIN_SECS_LEFT not negative')
         if self.MODE not in ('paper', 'live') or not (0 < self.LIVE_BUDGET <= 1000):
             raise ValueError("MODE must be 'paper' or 'live', and LIVE_BUDGET between 0 and 1000 dollars")
         if not (0 < self.ARM_MAX_HOURS <= 24 and self.MAX_CONTRACTS_PER_ROUND >= 0 and self.AUDIT_ROUNDS >= 0):

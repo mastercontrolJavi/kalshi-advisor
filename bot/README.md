@@ -23,11 +23,13 @@ on, and the 5 Hz value). On every index value and every book change it:
 1. prices the round with `edge/fair_value.py` (probability that the last-minute BRTI average finishes at or above the
    strike, with the measured variance of BRTI);
 2. compares that with each side's ask after the taker fee (`0.07 x P x (1 - P)` a contract);
-3. buys the better side if the edge is at least 3c, the ask is 10-30c or 70-97c, and 2-10 minutes are left;
+3. buys the better side if the edge is at least 3c, the ask is 1-30c or 70-97c, and 2-10 minutes are left (tickets
+   under 10c since 2026-11-19, the owner's request: `MIN_ASK` 0.01, was 0.10; the replay and its limits are in
+   `config.py`);
 4. sizes it at `KELLY_FRAC` of Kelly (0.75), at most `MAX_RISK_FRAC` (15%) of the bankroll, in hundredths of a
    contract (Kalshi fills fractions). Real orders ignore this and are a flat 1 contract (`MAX_CONTRACTS_PER_ROUND`);
-5. holds to settlement. One buy a round. On paper there are no exits; live mode sells a losing or reversing position
-   early (below).
+5. holds to settlement. One buy a round. There are no exits on paper, and since 2026-11-19 none in live mode either:
+   the two rules that sold a losing or reversing position early are switched off (below).
 
 The paper order is immediate-or-cancel at the ask the bot decided on, filled against the book as it stands
 `LATENCY_MS` (300 ms) later. If the ask has moved away it is recorded as a miss and nothing is bought.
@@ -125,9 +127,38 @@ money back".
   round): both rules together average the same as holding (-3.8c vs -3.9c a contract; +1.3c vs +0.8c on the bot's
   cheap entries) with smaller swings (27c vs 37c). Selling at a fixed gain cost about 2c a contract, so there is none.
   The exits trim the swings; they do not create an edge.
+- **Both rules are off since 2026-11-19 (owner's choice; `EXIT_BELOW` = 0 and `EXIT_BACK` = 0).** In the first 73 real
+  trades the bot's own 34 sales booked -$14.64 where the same positions held to settlement were -$0.39 (95% of the
+  difference: +$2.30..+$28.92; the side sold went on to win 10 of 34 times, sold at 13.5c on average). A replay on the
+  journal's one-second books (883 entries of the rule, 2026-10-14 to 11-18) put selling at -1.35c a contract against
+  holding (95% -3.10..+0.30): 54% of positions were sold, each paying a second fee and crossing the spread, and the
+  swing fell from 40c to 32c. The loss rule alone was -0.86c, the reversal rule alone -0.81c. The minute-candle replay
+  above could not see a 15-second rule. To switch them back on: `BOT_EXIT_BELOW=0.5` and `BOT_EXIT_BACK=0.6` in
+  `.env.local`.
 - **The record follows Kalshi.** Every 10 s, and at start for the last day, the bot reads the account's fills for the
   rounds it holds and books whatever was sold, by itself or by the owner by hand (`PaperBroker.exits`, totals not
-  additions, so it is safe to repeat; a sale found after settlement restates the round).
+  additions, so it is safe to repeat; a sale found after settlement restates the round). Only fills after the bot's own
+  buy count (`live.sold`, 2026-11-19): Kalshi reports a purchase of the other side exactly like a sale, and a hand
+  purchase made before the bot bought had been booked as a sale of the bot's position (KXBTC15M-26NOV192315-15). A
+  hand purchase of the other side after the bot's buy is still booked as a sale: on the account it is one. Trading the
+  same round by hand therefore still shows up in the comparison at start; the bot's record is cleanest when it has
+  the round to itself.
+
+### Feature switches on the Bot page (2026-11-19)
+
+The owner asked for buttons. The Bot page's **Features** card has three, each with one line on what the record shows:
+
+| switch | what it sets | default |
+|---|---|---|
+| Buy tickets under 10c | `MIN_ASK` 0.01 (on) / 0.10 (off) | on |
+| Sell losers early | `EXIT_BELOW` 0.5 and `EXIT_BACK` 0.6 (on) / both 0 (off) | off |
+| Scalp cheap tickets | `SCALP_AT` 5 (on) / 0 (off): a ticket bought under 10c is sold at once when its bid reaches 5x the price paid, down to 5 s left | off |
+
+A press writes `data/bot-features.json` (`POST /api/bot/features`, same origin and JSON only); the bot reads it every
+10 s and lays it over the settings it started with (`bot/features.py`), so nothing is restarted. A switch that is not
+in the file leaves `config.py` / `.env.local` as they are, and a file that cannot be read keeps what is running. The
+switches never turn real trading on and never change the size. The last two sell, and the bot sells only in real-money
+mode, so they are not shown for the paper account.
 
 ## Safety, log and timing (2026-11-18)
 

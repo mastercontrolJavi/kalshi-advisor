@@ -1,8 +1,8 @@
 import {describe,it,expect} from 'vitest';
-import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {summarize,readBotRecord,readSwitch,setSwitch,switchLive,sameOrigin,replaceFile,type BotTrade} from '../src/bot/record';
+import {summarize,readBotRecord,readSwitch,setSwitch,switchLive,sameOrigin,replaceFile,readFeatures,setFeature,featuresShown,type BotTrade} from '../src/bot/record';
 const t=(time:number,contracts:number,price:number,pnl:number|null,edge:number|null=.05):BotTrade=>({time,ticker:'T'+time,side:'yes',contracts,price,fee:.01,q:.5,edge,secsLeft:300,result:pnl==null?null:pnl>0?'yes':'no',pnl});
 describe('bot record',()=>{
   it('summarizes settled rounds per contract and keeps open positions at cost',()=>{
@@ -73,4 +73,24 @@ it('retries the switch file replace while it is held open, and only then',()=>{
   const locked=busy('EPERM',2);replaceFile('a','b',locked.fn);expect(locked.calls()).toBe(3);
   const stuck=busy('EBUSY',99);expect(()=>replaceFile('a','b',stuck.fn,3)).toThrow('EBUSY');expect(stuck.calls()).toBe(3);
   const other=busy('ENOENT',1);expect(()=>replaceFile('a','b',other.fn)).toThrow('ENOENT');expect(other.calls()).toBe(1);
+});
+it('sets one feature switch at a time and shows the file over what the bot reports',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'bot-features-')),path=join(dir,'bot-features.json');
+  try{
+    expect(readFeatures(path)).toEqual({});                                         // no file: the bot's own settings stand
+    expect(()=>setFeature('armed',true,1,path)).toThrow(/Unknown feature/);         // never the real-money switch
+    expect(()=>setFeature('__proto__',true,1,path)).toThrow(/Unknown feature/);
+    expect(()=>setFeature('scalp','yes',1,path)).toThrow(/true or false/);
+    expect(readFeatures(path)).toEqual({});
+    expect(setFeature('scalp',true,5,path)).toEqual({scalp:true});
+    expect(setFeature('cheap',false,6,path)).toEqual({scalp:true,cheap:false});     // the other switch is kept
+    expect(JSON.parse(readFileSync(path,'utf8'))).toEqual({scalp:true,cheap:false,time:6,by:'user'});
+    writeFileSync(path,JSON.stringify({scalp:'on',sellLosers:true,other:1}));expect(readFeatures(path)).toEqual({sellLosers:true});
+    const bot={features:{cheap:true,sellLosers:false,scalp:false}};
+    expect(featuresShown(bot,{})).toEqual({cheap:true,sellLosers:false,scalp:false});
+    expect(featuresShown(bot,{scalp:true})).toEqual({cheap:true,sellLosers:false,scalp:true});   // a press shows at once
+    expect(featuresShown(null,{cheap:false})).toEqual({cheap:false});               // bot not reporting: only what the file says
+    const status=join(dir,'status.json');writeFileSync(status,JSON.stringify({time:100,mode:'paper',features:bot.features}));writeFileSync(path,JSON.stringify({cheap:false}));
+    expect(readBotRecord(join(dir,'none.db'),status,105,join(dir,'no-switch.json'),path).features).toEqual({cheap:false,sellLosers:false,scalp:false});
+  }finally{rmSync(dir,{recursive:true,force:true});}
 });

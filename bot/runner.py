@@ -22,7 +22,7 @@ import websockets
 
 from edge.ev_gate import taker_fee
 
-from . import kalshi, live
+from . import features, kalshi, live
 from .book import Book, FeedDelay
 from .config import BotConfig, credentials
 from .paper import PaperBroker, walk
@@ -174,7 +174,12 @@ class Bot:
     audit_pending: bool = False        # live mode, from the start until that comparison has finished: no arming before it
 
     def __init__(self, cfg: BotConfig):
+        # base_cfg: the settings the bot started with. cfg: those with the Bot page's feature switches laid over them
+        # (bot/features.py), read at start and every 10 s. Everything reads self.cfg at the moment it decides.
+        self.base_cfg = cfg
+        self.features_path = Path(cfg.LIVE_DB_PATH).with_name('bot-features.json')
         self.cfg = cfg
+        self.refresh_features()
         self.boot_id = uuid.uuid4().hex
         self.drift, self.audit_at = [], None
         self.signer = kalshi.Signer(*credentials())
@@ -267,10 +272,11 @@ class Bot:
 
     async def reconcile(self, ticker: str) -> None:
         """Live mode: book whatever Kalshi shows as sold of this round's position, by the bot or by the owner by hand."""
-        row = self.broker.db.execute('SELECT side FROM fills WHERE ticker = ? ORDER BY id LIMIT 1', (ticker,)).fetchone()
+        row = self.broker.db.execute('SELECT side, ts FROM fills WHERE ticker = ? ORDER BY id LIMIT 1', (ticker,)).fetchone()
         if row is None:
             return
-        n, cash = live.sold(await live.read_fills(self.signer, f'ticker={ticker}&limit=200', tries=2), row[0])
+        # Only fills after the bot's own buy: a purchase of the other side made by hand earlier in the round is not a sale.
+        n, cash = live.sold(await live.read_fills(self.signer, f'ticker={ticker}&limit=200', tries=2), row[0], row[1])
         added = self.broker.exits(ticker, n, cash, time.time()) if n > 0 else 0.0
         if added:
             log('real-sale-booked', ticker=ticker, sold=n, cash=round(cash, 4), added=round(added, 4), equity=round(self.broker.equity, 4))
@@ -331,11 +337,11 @@ class Bot:
 
     async def _audit(self) -> None:
         found: List[dict] = []
-        rows = self.broker.db.execute('SELECT ticker, side, contracts, contracts * price, fee, exit_n, exit_cash FROM fills ORDER BY id DESC LIMIT ?', (self.cfg.AUDIT_ROUNDS,)).fetchall()
-        for ticker, side, n, paid, fee, exit_n, exit_cash in reversed(rows):
+        rows = self.broker.db.execute('SELECT ticker, side, contracts, contracts * price, fee, exit_n, exit_cash, ts FROM fills ORDER BY id DESC LIMIT ?', (self.cfg.AUDIT_ROUNDS,)).fetchall()
+        for ticker, side, n, paid, fee, exit_n, exit_cash, ts in reversed(rows):
             try:
                 fills = await live.read_fills(self.signer, f'ticker={ticker}&limit=200')
-                d = live.drift({'ticker': ticker, 'side': side, 'contracts': n, 'paid': paid, 'fee': fee, 'exit_n': exit_n, 'exit_cash': exit_cash}, fills)
+                d = live.drift({'ticker': ticker, 'side': side, 'contracts': n, 'paid': paid, 'fee': fee, 'exit_n': exit_n, 'exit_cash': exit_cash, 'ts': ts}, fills)
             except Exception as e:
                 d = {'ticker': ticker, 'error': repr(e)}
             if d is not None:
@@ -413,6 +419,7 @@ class Bot:
                     log('expire-error', message=repr(e))
             self.armed = self.live and self.switched_on()
             self.selling = self.live and self.may_sell()
+            self.refresh_features()
             try:
                 self.write_status()
             except Exception as e:
@@ -427,6 +434,21 @@ class Bot:
                     log('status-error', message=repr(e))
                 self.stats = {'messages': 0, 'evals': 0, 'reasons': {}}
             await asyncio.sleep(10)
+
+    def refresh_features(self) -> None:
+        """The owner's switches on the Bot page (bot/features.py), laid over the settings the bot started with. A change
+        is logged once. Anything wrong with the file leaves the settings as they are."""
+        try:
+            switches = features.read(self.features_path)
+            if switches is None:  # the file is there but could not be read this time: keep what is running
+                return
+            new = features.apply(self.base_cfg, switches)
+        except Exception as e:  # e.g. a combination config.py refuses: keep what is running
+            log('features-error', message=repr(e))
+            return
+        if new != self.cfg:
+            log('features', **features.state(new), min_ask=new.MIN_ASK, exit_below=new.EXIT_BELOW, exit_back=new.EXIT_BACK, scalp_at=new.SCALP_AT)
+            self.cfg = new
 
     def write_status(self) -> None:
         """A small file the dashboard's Bot page reads (written every 10 s, replaced atomically)."""
@@ -446,7 +468,8 @@ class Bot:
                 'config': {'start': self.broker.start, 'target': cfg.TARGET, 'minEdge': cfg.MIN_EDGE, 'minAsk': cfg.MIN_ASK, 'maxAsk': cfg.MAX_ASK,
                            'midBand': [cfg.MID_BAND_LOW, cfg.MID_BAND_HIGH] if cfg.BLOCK_MID_BAND else None, 'window': [cfg.MIN_SECS_LEFT, cfg.MAX_SECS_LEFT],
                            'kelly': cfg.KELLY_FRAC, 'maxRisk': cfg.MAX_RISK_FRAC, 'latencyMs': cfg.LATENCY_MS,
-                           'exit': {'below': cfg.EXIT_BELOW, 'up': cfg.EXIT_UP, 'back': cfg.EXIT_BACK} if self.live else None}}
+                           'exit': {'below': cfg.EXIT_BELOW, 'up': cfg.EXIT_UP, 'back': cfg.EXIT_BACK, 'scalpAt': cfg.SCALP_AT, 'scalpBelow': cfg.SCALP_BELOW} if self.live else None},
+                'features': features.state(cfg)}
         tmp = self.status_path.with_suffix('.tmp')
         tmp.write_text(json.dumps(data), encoding='utf-8')
         os.replace(tmp, self.status_path)
@@ -665,15 +688,17 @@ class Bot:
             self.exit_since.pop(t, None)
             return None
         peak = self.peaks[t] = max(self.peaks.get(t, pos.price), bid)
-        why = None
-        if cfg.EXIT_BELOW > 0 and left >= cfg.EXIT_MIN_SECS_LEFT and bid <= cfg.EXIT_BELOW * pos.price:
+        why, hold = None, cfg.EXIT_HOLD_S
+        if cfg.SCALP_AT > 0 and pos.price < cfg.SCALP_BELOW and left >= cfg.SCALP_MIN_SECS_LEFT and bid >= cfg.SCALP_AT * pos.price:
+            why, hold = 'cheap ticket jumped', 0.0   # a jump can be over in seconds: no waiting (the owner's switch, bot/features.py)
+        elif cfg.EXIT_BELOW > 0 and left >= cfg.EXIT_MIN_SECS_LEFT and bid <= cfg.EXIT_BELOW * pos.price:
             why = 'down to half its entry'
         elif cfg.EXIT_BACK > 0 and left >= cfg.EXIT_REVERSAL_MIN_SECS_LEFT and peak >= pos.price + cfg.EXIT_UP and bid <= cfg.EXIT_BACK * peak:
             why = 'reversing from its high'
         if why is None:
             self.exit_since.pop(t, None)
             return None
-        return (why, bid) if now - self.exit_since.setdefault(t, now) >= cfg.EXIT_HOLD_S else None
+        return (why, bid) if now - self.exit_since.setdefault(t, now) >= hold else None
 
     async def execute_exit(self, market: Market, pos, why: str, bid: float, marks: Optional[dict] = None) -> None:
         """One real sale of what is held, immediate-or-cancel at the bid, reduce_only (it can only close the position).

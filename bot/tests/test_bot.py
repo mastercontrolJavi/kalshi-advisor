@@ -90,7 +90,10 @@ def test_decide_rules():
     assert decide(CFG, fv(0.30), 700, 0.22, 0.79, 15.0)[0] is None     # first five minutes
     assert decide(CFG, fv(0.24), 300, 0.22, 0.79, 15.0)[1] == 'no edge after the fee'
     assert decide(CFG, fv(0.60), 300, 0.50, 0.51, 15.0)[1] == 'mid band'
-    assert decide(CFG, fv(0.15), 300, 0.05, 0.96, 15.0)[1] == 'ask outside the allowed prices'
+    assert decide(replace(CFG, MIN_ASK=0.10), fv(0.15), 300, 0.05, 0.96, 15.0)[1] == 'ask outside the allowed prices'
+    cheap, _ = decide(CFG, fv(0.15), 300, 0.05, 0.96, 15.0)            # since 2026-11-19 a ticket under 10c is bought on the same rule
+    assert BotConfig().MIN_ASK == 0.01 and cheap and cheap.side == 'yes' and cheap.limit == 0.05 and math.isclose(cheap.edge, 0.15 - 0.05 - taker_fee(0.05))
+    assert decide(CFG, fv(0.07), 300, 0.05, 0.96, 15.0)[1] == 'no edge after the fee'      # ... and only with the 3c edge
     no, _ = decide(CFG, fv(0.10), 300, 0.20, 0.82, 15.0)
     assert no and no.side == 'no' and math.isclose(no.q, 0.90)
     assert decide(CFG, fv(0.30), 300, 0.22, 0.79, 0.5)[1] == 'bankroll below the bust level'

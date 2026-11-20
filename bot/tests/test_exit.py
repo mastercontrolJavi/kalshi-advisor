@@ -30,6 +30,72 @@ def test_sold_counts_the_other_sides_fills_at_this_sides_price():
     assert live.sold(fills[:1], 'no') == (0.0, 0.0)
 
 
+def test_a_hand_purchase_of_the_other_side_before_the_bots_buy_is_not_a_sale():
+    # Kalshi's own records of KXBTC15M-26NOV192315-15 (2026-11-19): the owner bought YES by hand, the bot bought NO five
+    # minutes later, then the owner bought NO. The record showed the bot's 2.06 NO as sold at 82c; nothing was sold.
+    hand_yes = {'created_time': '2026-11-20T04:03:17.203614Z', 'outcome_side': 'yes', 'count_fp': '26.26', 'yes_price_dollars': '0.1800', 'no_price_dollars': '0.8200', 'fee_cost': '0.271400'}
+    bot_no = {'created_time': '2026-11-20T04:08:03.659283Z', 'outcome_side': 'no', 'count_fp': '2.06', 'yes_price_dollars': '0.0380', 'no_price_dollars': '0.9620', 'fee_cost': '0.005280'}
+    hand_no = {'created_time': '2026-11-20T04:12:33.576376Z', 'outcome_side': 'no', 'count_fp': '24.20', 'yes_price_dollars': '0.0060', 'no_price_dollars': '0.9940', 'fee_cost': '0.010200'}
+    fills, recorded = [hand_no, bot_no, hand_yes], 1795147683.52                   # the record's time of the bot's buy (this PC's clock)
+    assert live.sold(fills, 'no')[0] == 26.26                                      # as it was: every YES fill of the round
+    assert live.sold(fills, 'no', recorded) == (0.0, 0.0)
+    assert live.drift({'ticker': 'T', 'side': 'no', 'contracts': 26.26, 'paid': 2.06 * 0.962 + 24.20 * 0.994, 'fee': 0.01548, 'exit_n': 0.0, 'exit_cash': 0.0, 'ts': recorded}, fills) is None
+    # A sale after the buy still counts, by the bot or by hand, and so does a fill whose time cannot be read.
+    sale = {'created_time': '2026-11-20T04:09:40Z', 'outcome_side': 'yes', 'count_fp': '2.06', 'yes_price_dollars': '0.5000', 'no_price_dollars': '0.5000', 'fee_cost': '0.0361'}
+    n, cash = live.sold(fills + [sale], 'no', recorded)
+    assert n == 2.06 and math.isclose(cash, 2.06 * 0.50 - 0.0361)
+    assert live.sold([bot_no, {**sale, 'created_time': None}], 'no', recorded)[0] == 2.06
+    assert live.sold([bot_no, {**sale, 'created_time': None, 'ts': 1795147780}], 'no', recorded)[0] == 2.06     # `ts` when there is no ISO time
+    # The buy is found on Kalshi's clock: a sale two seconds after it counts although this PC's record of the buy is later.
+    quick = {**sale, 'created_time': '2026-11-20T04:08:05.700000Z'}
+    assert live.sold([bot_no, quick], 'no', recorded + 4.0)[0] == 2.06
+    # With no fill of the buy in the list, the recorded time is used with a few seconds of slack.
+    assert live.sold([hand_yes], 'no', recorded) == (0.0, 0.0) and live.sold([quick], 'no', recorded)[0] == 2.06
+
+
+def test_scalp_sells_a_cheap_ticket_at_once_when_it_jumps_and_only_when_switched_on(tmp_path):
+    off = dict(EXIT_BELOW=0.0, EXIT_BACK=0.0)
+    bot, m, pos, now = make(tmp_path, entry=0.04, SCALP_AT=5.0, **off)
+    book(m, 0.19); assert bot.exit_signal(m, pos, now) is None                     # 4.75x the 4c paid: not yet
+    book(m, 0.20); assert bot.exit_signal(m, pos, now + 1) == ('cheap ticket jumped', 0.20)   # 5x: sold with no waiting
+    assert bot.exit_signal(m, pos, m.close - 3) is None                            # last seconds: left to settle
+    bot2, m2, pos2, now2 = make(tmp_path, entry=0.04, **off)                       # the switch is off by default
+    book(m2, 0.70); assert BotConfig().SCALP_AT == 0 and bot2.exit_signal(m2, pos2, now2) is None
+    bot3, m3, pos3, now3 = make(tmp_path, entry=0.25, SCALP_AT=5.0, **off)         # not a ticket under 10c
+    book(m3, 0.97); assert bot3.exit_signal(m3, pos3, now3) is None
+
+
+def test_feature_switches_from_the_bot_page_overlay_the_settings(tmp_path):
+    from bot import features
+    base, path = BotConfig(), tmp_path / 'bot-features.json'
+    assert features.read(path) == {} and features.apply(base, {}) is base          # no file: config.py as it is
+    assert features.state(base) == {'cheap': True, 'sellLosers': False, 'scalp': False}
+    path.write_text(json.dumps({'cheap': False, 'sellLosers': True, 'scalp': True, 'time': 1, 'by': 'user', 'armed': True, 'other': 'x'}))
+    cfg = features.apply(base, features.read(path))
+    assert (cfg.MIN_ASK, cfg.EXIT_BELOW, cfg.EXIT_BACK, cfg.SCALP_AT) == (0.10, 0.5, 0.6, 5.0) and features.state(cfg) == {'cheap': False, 'sellLosers': True, 'scalp': True}
+    assert cfg.MODE == base.MODE and cfg.MAX_CONTRACTS_PER_ROUND == base.MAX_CONTRACTS_PER_ROUND   # nothing else moves: not the mode, not the size
+    path.write_text(json.dumps({'scalp': 'yes', 'cheap': 1}))                      # not true/false: ignored
+    assert features.read(path) == {}
+    path.write_text('{not json'); assert features.read(path) is None               # there but unreadable: "keep what is running"
+    path.write_text('[1]'); assert features.read(path) is None
+    path.write_text(json.dumps({'scalp': False}))                                  # switching back restores the starting settings
+    assert features.apply(base, features.read(path)) == base
+    bot, m, pos, now = make(tmp_path)                                              # the running bot picks a change up, and logs it once
+    bot.base_cfg, bot.features_path = bot.cfg, path
+    path.write_text(json.dumps({'scalp': True})); bot.refresh_features()
+    assert bot.cfg.SCALP_AT == 5.0 and bot.cfg.EXIT_BELOW == 0.5                   # the rest of the bot's own settings stay
+    path.write_text('{"scalp": tr'); bot.refresh_features()                        # caught half-written: the switch stays as it was
+    assert bot.cfg.SCALP_AT == 5.0
+    path.unlink(); bot.refresh_features(); assert bot.cfg == bot.base_cfg
+
+
+def test_the_bot_does_not_sell_on_its_own_by_default(tmp_path):
+    assert BotConfig().EXIT_BELOW == 0 and BotConfig().EXIT_BACK == 0              # 2026-11-19, owner's choice (config.py)
+    bot, m, pos, now = make(tmp_path, EXIT_BELOW=BotConfig().EXIT_BELOW, EXIT_BACK=BotConfig().EXIT_BACK, EXIT_HOLD_S=0.0)
+    book(m, 0.60); assert bot.exit_signal(m, pos, now) is None                     # up 32c ...
+    book(m, 0.05); assert bot.exit_signal(m, pos, now + 1) is None                 # ... and down to a fifth of the entry: held
+
+
 def test_ledger_books_a_sale_once_and_settles_the_rest(tmp_path):
     b = PaperBroker(str(tmp_path / 'l.db'), 15.0, now=0)
     b.record('T', 'no', 4.0, 4 * 0.25, 0.05, 0.25, 4.0, 1.0)
@@ -66,6 +132,7 @@ def test_a_sale_found_after_settlement_restates_the_round(tmp_path):
 
 def make(tmp_path, entry=0.28, n=2.0, side='yes', **cfg):
     bot = Bot.__new__(Bot)
+    cfg = {'EXIT_BELOW': 0.5, 'EXIT_BACK': 0.6, **cfg}   # both rules are off by default since 2026-11-19; these tests are of the rules
     bot.cfg, bot.live, bot.signer = BotConfig(MODE='live', **cfg), True, object()
     bot.broker = PaperBroker(':memory:', 15.0, now=0)
     bot.switch = live.Switch(tmp_path / 'bot-live.json')

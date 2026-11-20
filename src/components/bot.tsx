@@ -69,6 +69,31 @@ function RealSwitch({b,onChange}:{b:any;onChange:()=>void}){
       {on?<span className="text-sm text-muted">Turning off stops new orders. A round already bought is held to settlement.</span>:null}</div>
   </Card>;
 }
+/** The owner's feature switches (bot/features.py). Each line says what the record shows, so a switch is never a promise.
+ * `realOnly`: the bot sells only in real-money mode, so those two are not shown on paper. */
+const FEATURES:{name:'cheap'|'sellLosers'|'scalp';title:string;realOnly?:boolean;text:string}[]=[
+  {name:'cheap',title:'Buy tickets under 10¢',text:'The same rule and the same size, down to 1¢. On the recorded rounds it bought 48 such tickets and 9 paid out: +11¢ a contract. Nine winners is too few to count on.'},
+  {name:'sellLosers',title:'Sell losers early',realOnly:true,text:'Sells when the price has halved from the entry, or was up 10¢ and has fallen back to 60% of its high. On the first 73 real trades these sales cost about $14 against holding; on the recorded rounds, 1.4¢ a contract.'},
+  {name:'scalp',title:'Scalp cheap tickets',realOnly:true,text:'Sells a ticket bought under 10¢ as soon as its bid reaches 5 times what it cost. On the recorded rounds this made 9¢ a contract less than holding the same tickets.'}];
+function Features({b,onChange}:{b:any;onChange:()=>void}){
+  const [busy,setBusy]=useState(''),[error,setError]=useState('');
+  const set=async(name:string,on:boolean)=>{setBusy(name);setError('');
+    try{const r=await fetch('/api/bot/features',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,on})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error??`HTTP ${r.status}`);onChange();}
+    catch(e){setError((e as Error).message);}finally{setBusy('');}};
+  const rows=FEATURES.filter(f=>b.live||!f.realOnly);
+  return <Card>
+    <h2 className="font-semibold">Features</h2>
+    <p className="mt-2 max-w-4xl text-sm text-muted">How the bot trades. A change reaches the bot within about 10 seconds, with no restart. None of these turns real trading on or off.</p>
+    {!b.status?.running?<p className="mt-2 max-w-4xl text-sm text-muted" role="status">The bot is not running. A change made here takes effect when it starts.</p>:null}
+    {error?<p className="mt-2 text-sm text-no" role="alert">{error}</p>:null}
+    <ul className="mt-2">{rows.map((f,i)=>{const on=b.features?.[f.name];
+      return <li key={f.name} className={cn('flex flex-wrap items-center gap-3 py-3',i>0&&'border-t border-line')}>
+        <div className="min-w-0 flex-1 basis-80"><div className="flex flex-wrap items-center gap-3"><h3 className="text-sm font-medium">{f.title}</h3>{on===true?<Pill tone="yes">On</Pill>:on===false?<Pill tone="neutral">Off</Pill>:<Pill tone="neutral">Not reported yet</Pill>}</div>
+          <p className="mt-1 max-w-4xl text-sm text-muted">{f.text}</p></div>
+        <Button variant="outline" onClick={()=>void set(f.name,on!==true)} disabled={busy!==''} aria-label={`${on===true?'Turn off':'Turn on'}: ${f.title}`}>{on===true?'Turn off':'Turn on'}</Button>
+      </li>;})}</ul>
+  </Card>;
+}
 export default function Bot(){
   const [b,setB]=useState<any>(null),[error,setError]=useState(''),[loading,setLoading]=useState(false);
   const load=useCallback(async()=>{setLoading(true);try{const r=await fetch('/api/bot',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);setB(await r.json());setError('');}catch(e){setError((e as Error).message);}finally{setLoading(false);}},[]);
@@ -83,6 +108,7 @@ export default function Bot(){
           ?'A program trading the 15-minute BTC market on your Kalshi account, with real money, while the switch below is on. It buys one side a round when its model beats the ask after the fee, and holds to settlement.'
           :'A program trading the 15-minute BTC market on paper against the live Kalshi book. It places no real orders. It buys one side a round when its model beats the ask after the fee, and holds to settlement.'} Judge it by the result per contract once {JUDGE_AT} rounds have settled; the bankroll before then is mostly luck.</p></Card>
       {b&&live?<RealSwitch b={b} onChange={()=>void load()}/>:null}
+      {b?<Features b={b} onChange={()=>void load()}/>:null}
       {!b?<Empty>{error?`Could not load the bot record: ${error}`:'Loading the bot record…'}</Empty>:b.missing?<Empty>{live?'No real-money record yet. The bot creates it the first time it runs.':'No paper account yet. The bot creates it the first time it runs.'}</Empty>:<>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
         <Kpi label="Bankroll" className={tone(b.equity-b.start)} sub={`started with ${dollars(b.start)} · peak ${dollars(b.peak)}`}>{dollars(b.equity)}</Kpi>
@@ -102,7 +128,7 @@ export default function Bot(){
         <dt className="text-muted">Time left when it buys</dt><dd className="num text-right md:pr-6">{mmss(c.window[1])}–{mmss(c.window[0])}</dd>
         <dt className="text-muted">Most it risks a round</dt><dd className="num text-right md:pr-6">{pct(c.maxRisk,0)} of bankroll</dd>
         <dt className="text-muted">{live?'Order type':'Fill delay simulated'}</dt><dd className="num text-right md:pr-6">{live?'fill now or cancel':`${c.latencyMs} ms`}</dd>
-        {c.exit?<><dt className="text-muted">Sells early when</dt><dd className="text-right md:pr-6 md:col-span-3">{[c.exit.below?`the price halves from its entry`:'',c.exit.back?`it was up ${cents(c.exit.up,0)} or more and falls back to ${pct(c.exit.back,0)} of its high`:''].filter(Boolean).join(', or ')||'never'}</dd></>:null}
+        {c.exit?<><dt className="text-muted">Sells early when</dt><dd className="text-right md:pr-6 md:col-span-3">{[c.exit.below?`the price halves from its entry`:'',c.exit.back?`it was up ${cents(c.exit.up,0)} or more and falls back to ${pct(c.exit.back,0)} of its high`:'',c.exit.scalpAt?`a ticket bought under ${cents(c.exit.scalpBelow,0)} reaches ${c.exit.scalpAt} times its price`:''].filter(Boolean).join(', or ')||'never'}</dd></>:null}
         <dt className="text-muted">Average entry price</dt><dd className="num text-right md:pr-6">{cents(b.avgPrice)}</dd>
         <dt className="text-muted">Average edge it saw</dt><dd className="num text-right md:pr-6">{signedCents(b.avgEdge)}</dd>
         <dt className="text-muted">Contracts settled</dt><dd className="num text-right md:pr-6">{qty(b.contracts)}</dd>
