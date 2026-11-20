@@ -26,8 +26,8 @@ on, and the 5 Hz value). On every index value and every book change it:
 3. buys the better side if the edge is at least 3c, the ask is 1-30c or 70-97c, and 2-10 minutes are left (tickets
    under 10c since 2026-11-19, the owner's request: `MIN_ASK` 0.01, was 0.10; the replay and its limits are in
    `config.py`);
-4. sizes it at `KELLY_FRAC` of Kelly (0.75), at most `MAX_RISK_FRAC` (15%) of the bankroll, in hundredths of a
-   contract (Kalshi fills fractions). Real orders ignore this and are a flat 1 contract (`MAX_CONTRACTS_PER_ROUND`);
+4. sizes it at `KELLY_FRAC` of Kelly (0.75), treating any edge over `SIZE_EDGE_CAP` (4c) as 4c, at most `MAX_RISK_FRAC` (15%) of the bankroll, in hundredths of a
+   contract (Kalshi fills fractions). Real orders use this too unless `MAX_CONTRACTS_PER_ROUND` is set above 0 (0 by default since 2026-11-20);
 5. holds to settlement. One buy a round. There are no exits on paper, and since 2026-11-19 none in live mode either:
    the two rules that sold a losing or reversing position early are switched off (below).
 
@@ -84,7 +84,7 @@ The same rule and sizing, with real Kalshi orders.
   the file carries the bot's `boot_id` (a new one at every start) and `expires_at` (UTC ms), and the bot refuses an
   arming without both. Every start, a restart after a crash included, begins switched off, and an arming that has run
   out is written off with the reason.
-- **Real orders are a flat `MAX_CONTRACTS_PER_ROUND` contracts** (1), cut to what the cash can pay, instead of the Kelly
+- **Real orders are a flat `MAX_CONTRACTS_PER_ROUND` contracts** when set above 0 (it is 0: Kelly, since 2026-11-20), cut to what the cash can pay, instead of the Kelly
   size: the paper record shows no edge, so real money only tests the plumbing. `0` goes back to the rule's size.
 - **Budget.** It spends from its own record, `data/bot-live.db`, which starts at `LIVE_BUDGET` ($15) and grows only by
   its own wins. An order is cut to what that cash can pay, fee included, and never more than the account's real cash

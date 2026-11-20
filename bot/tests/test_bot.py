@@ -1,5 +1,7 @@
 """Accounting, book and decision checks for the paper bot.  uv run --project bot pytest bot/tests"""
 import math
+
+import pytest
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -13,7 +15,7 @@ from bot.strategy import Pricer, decide, size  # noqa: E402
 from edge.ev_gate import order_fee, taker_fee  # noqa: E402
 from edge.fair_value import FairValue  # noqa: E402
 
-CFG = BotConfig(KELLY_FRAC=0.5, MAX_RISK_FRAC=0.10)   # the sizing these numbers were worked out for; the live default may differ
+CFG = BotConfig(KELLY_FRAC=0.5, MAX_RISK_FRAC=0.10, SIZE_EDGE_CAP=0)   # the sizing these numbers were worked out for; the live default may differ
 
 
 def fv(p):
@@ -81,6 +83,17 @@ def test_size_is_fractional_and_capped():
     n = size(CFG, 0.60, 0.20, 1000.0)
     assert n * 0.20 + order_fee(0.20, n) <= 100.0 + 1e-9 and (n + 0.01) * 0.20 + order_fee(0.20, n + 0.01) > 100.0
     assert size(CFG, 0.20, 0.22, 1000.0) == 0            # no edge, no size
+
+
+def test_size_edge_cap():
+    capped = replace(CFG, SIZE_EDGE_CAP=0.04)
+    cost = 0.22 + taker_fee(0.22)
+    assert size(capped, 0.30, 0.22, 15.0) == size(CFG, cost + 0.04, 0.22, 15.0) < size(CFG, 0.30, 0.22, 15.0)   # 6.8c sized as 4c
+    assert size(capped, cost + 0.035, 0.22, 15.0) == size(CFG, cost + 0.035, 0.22, 15.0)                        # under the cap: unchanged
+    assert size(capped, 0.20, 0.22, 15.0) == 0                                                                   # no edge, still nothing
+    assert BotConfig().SIZE_EDGE_CAP == 0.04
+    with pytest.raises(ValueError):
+        BotConfig(SIZE_EDGE_CAP=-0.01)
 
 
 def test_decide_rules():
