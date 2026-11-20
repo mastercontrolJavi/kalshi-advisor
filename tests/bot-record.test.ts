@@ -2,7 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {summarize,readBotRecord,readSwitch,setSwitch,sameOrigin,replaceFile,type BotTrade} from '../src/bot/record';
+import {summarize,readBotRecord,readSwitch,setSwitch,switchLive,sameOrigin,replaceFile,type BotTrade} from '../src/bot/record';
 const t=(time:number,contracts:number,price:number,pnl:number|null,edge:number|null=.05):BotTrade=>({time,ticker:'T'+time,side:'yes',contracts,price,fee:.01,q:.5,edge,secsLeft:300,result:pnl==null?null:pnl>0?'yes':'no',pnl});
 describe('bot record',()=>{
   it('summarizes settled rounds per contract and keeps open positions at cost',()=>{
@@ -23,7 +23,7 @@ describe('bot record',()=>{
   });
   it('reports a missing ledger instead of throwing',()=>{
     const r=readBotRecord('data/does-not-exist.db','data/does-not-exist.json',5);
-    expect(r.missing).toBe(true);expect(r.status).toBeNull();expect(r.rounds).toBe(0);expect(r.live).toBe(false);expect(r.switch).toBeNull();
+    expect(r.missing).toBe(true);expect(r.status).toBeNull();expect(r.rounds).toBe(0);expect(r.live).toBe(false);expect(r.switch).toBeNull();expect(r.switchLive).toBe(false);
   });
   it('switches real trading on only for a running live bot, and off always',()=>{
     const dir=mkdtempSync(join(tmpdir(),'bot-switch-')),path=join(dir,'bot-live.json');
@@ -33,15 +33,28 @@ describe('bot record',()=>{
       expect(()=>setSwitch(true,{running:true,mode:'paper'},1,path)).toThrow(/not running in real-money mode/);
       expect(()=>setSwitch(true,{running:false,mode:'live'},1,path)).toThrow();
       expect(()=>setSwitch('true',{running:true,mode:'live'},1,path)).toThrow(/true or false/);
+      expect(()=>setSwitch(true,{running:true,mode:'live'},1,path)).toThrow(/boot id/);  // a bot from before 2026-11-18: nothing to arm for
       expect(readSwitch(path).armed).toBe(false);
-      expect(setSwitch(true,{running:true,mode:'live'},7,path)).toEqual({armed:true,time:7,by:'user',note:''});
-      expect(readSwitch(path).armed).toBe(true);
+      expect(()=>setSwitch(true,{running:true,mode:'live',bootId:'b1',auditPending:true},1,path)).toThrow(/still checking/);   // the start-up comparison is running
+      expect(()=>setSwitch(true,{running:true,mode:'live',bootId:'b1'},1,path)).toThrow(/still checking/);                      // ... or its state is unknown
+      expect(readSwitch(path).armed).toBe(false);
+      const bot={running:true,mode:'live',bootId:'b1',auditPending:false},H=3600000;
+      expect(setSwitch(true,bot,7,path)).toEqual({armed:true,time:7,by:'user',note:'',expires_at:7+4*H,boot_id:'b1'});   // for this run, 4 hours at most
+      expect(readSwitch(path)).toEqual({armed:true,time:7,by:'user',note:'',expires_at:7+4*H,boot_id:'b1'});
+      expect(setSwitch(true,{...bot,armMaxHours:1},7,path).expires_at).toBe(7+H);    // the bot's own shorter limit
+      expect(setSwitch(true,{...bot,armMaxHours:12},7,path).expires_at).toBe(7+4*H); // never longer than 4 hours from the page
       expect(setSwitch(false,null,9,path).armed).toBe(false);                       // off needs nothing
-      expect(readSwitch(path)).toEqual({armed:false,time:9,by:'user',note:''});
+      expect(readSwitch(path)).toEqual({armed:false,time:9,by:'user',note:'',expires_at:null,boot_id:null});
       writeFileSync(path,'{"armed":"yes"}');expect(readSwitch(path).armed).toBe(false);
-      const status=join(dir,'status.json');writeFileSync(status,JSON.stringify({time:100,mode:'live'}));writeFileSync(path,JSON.stringify({armed:true}));
+      const status=join(dir,'status.json');writeFileSync(status,JSON.stringify({time:100,mode:'live',bootId:'b2'}));writeFileSync(path,JSON.stringify({armed:true}));
       const r=readBotRecord(join(dir,'none.db'),status,105,path);
       expect(r.live).toBe(true);expect(r.switch?.armed).toBe(true);expect(r.missing).toBe(true);
+      expect(r.switchLive).toBe(false);                                             // on in the file, but for no run and with no end: not on
+      writeFileSync(path,JSON.stringify({armed:true,boot_id:'b1',expires_at:500}));
+      expect(readBotRecord(join(dir,'none.db'),status,105,path).switchLive).toBe(false);   // armed for the run before a restart
+      writeFileSync(path,JSON.stringify({armed:true,boot_id:'b2',expires_at:500}));
+      expect(readBotRecord(join(dir,'none.db'),status,105,path).switchLive).toBe(true);
+      expect(switchLive(readSwitch(path),{bootId:'b2'},500)).toBe(false);           // run out
     }finally{rmSync(dir,{recursive:true,force:true});}
   });
 });

@@ -1,8 +1,8 @@
-# bot/ — paper-trading bot for KXBTC15M
+# bot/ — trading bot for KXBTC15M
 
-A Python program (asyncio + websockets) that trades Kalshi's 15-minute BTC market **on paper**. It starts with $15 and
-the first goal is $100. There is no order-placing code in this folder: it reads Kalshi's streams and keeps its own
-ledger in `data/bot.db`.
+A Python program (asyncio + websockets) that trades Kalshi's 15-minute BTC market. By default it trades **on paper**:
+it starts with $15, the first goal is $100, and it keeps its own ledger in `data/bot.db`. With `BOT_MODE=live` and the
+switch on the Bot page on, the same rule places real orders ("Real money" below); nothing else in this folder can.
 
 ```powershell
 npm run bot            # run it (also started by the desktop shortcut / npm run launch; BOT=off in .env.local skips it)
@@ -13,7 +13,7 @@ uv run --project bot python -m bot reset   # back to $15 (stop the bot first)
 ```
 
 It needs [uv](https://docs.astral.sh/uv/) and the same Kalshi API key the advisor uses (`.env.local`); Kalshi's
-streams only accept signed connections. The key is used to connect, never to trade.
+streams only accept signed connections. In paper mode the key is used to connect, never to trade.
 
 ## What it does
 
@@ -24,8 +24,10 @@ on, and the 5 Hz value). On every index value and every book change it:
    strike, with the measured variance of BRTI);
 2. compares that with each side's ask after the taker fee (`0.07 x P x (1 - P)` a contract);
 3. buys the better side if the edge is at least 3c, the ask is 10-30c or 70-97c, and 2-10 minutes are left;
-4. sizes it at half Kelly, at most 10% of the bankroll, in hundredths of a contract (Kalshi fills fractions);
-5. holds to settlement. One buy a round, no exits (every exit rule tested in this project lost to holding).
+4. sizes it at `KELLY_FRAC` of Kelly (0.75), at most `MAX_RISK_FRAC` (15%) of the bankroll, in hundredths of a
+   contract (Kalshi fills fractions). Real orders ignore this and are a flat 1 contract (`MAX_CONTRACTS_PER_ROUND`);
+5. holds to settlement. One buy a round. On paper there are no exits; live mode sells a losing or reversing position
+   early (below).
 
 The paper order is immediate-or-cancel at the ask the bot decided on, filled against the book as it stands
 `LATENCY_MS` (300 ms) later. If the ask has moved away it is recorded as a miss and nothing is bought.
@@ -63,8 +65,9 @@ for the same quote. The miss rate hints at it but does not measure it.
 | `strategy.py` | `Pricer` (BRTI -> probability) and `decide()` (rules and sizing). No I/O; shared by live and replay |
 | `book.py` | Order book from Kalshi's snapshots and deltas; stream-delay measure |
 | `paper.py` | Paper account in SQLite: fills, fees, settlement, summary |
-| `kalshi.py` | Request signing and public REST reads |
-| `runner.py` | The live loop: websocket, market rollover, guards, paper execution |
+| `kalshi.py` | Request signing, one kept-open HTTP connection for every REST call, Kalshi's clock |
+| `live.py` | The real-money switch, Kalshi's order format, reading fills back, the record-vs-Kalshi comparison |
+| `runner.py` | The live loop: websocket, market rollover, guards, paper and real execution, the log file |
 | `backtest.py` | Replay through the same strategy and account code, and the goal projection |
 
 ## Real money (`BOT_MODE=live`, 2026-11-17)
@@ -75,6 +78,12 @@ The same rule and sizing, with real Kalshi orders.
 - **Two locks.** `BOT_MODE=live` in `.env.local` puts the bot in real-money mode, where it only watches. It orders only
   while the switch on the Bot page is on (`data/bot-live.json`, written by the page's button and nothing else). The bot
   reads the file again right before every order, so off is immediate.
+- **Switching on ends by itself** (2026-11-18). It is good for one run of the bot and for `ARM_MAX_HOURS` (4) at most:
+  the file carries the bot's `boot_id` (a new one at every start) and `expires_at` (UTC ms), and the bot refuses an
+  arming without both. Every start, a restart after a crash included, begins switched off, and an arming that has run
+  out is written off with the reason.
+- **Real orders are a flat `MAX_CONTRACTS_PER_ROUND` contracts** (1), cut to what the cash can pay, instead of the Kelly
+  size: the paper record shows no edge, so real money only tests the plumbing. `0` goes back to the rule's size.
 - **Budget.** It spends from its own record, `data/bot-live.db`, which starts at `LIVE_BUDGET` ($15) and grows only by
   its own wins. An order is cut to what that cash can pay, fee included, and never more than the account's real cash
   (`GET /portfolio/balance`, read every 10 s; with no reading in the last minute it does not order). The rest of the
@@ -119,3 +128,29 @@ money back".
 - **The record follows Kalshi.** Every 10 s, and at start for the last day, the bot reads the account's fills for the
   rounds it holds and books whatever was sold, by itself or by the owner by hand (`PaperBroker.exits`, totals not
   additions, so it is safe to repeat; a sale found after settlement restates the round).
+
+## Safety, log and timing (2026-11-18)
+
+- **Log file.** Every line the bot prints also goes to `logs/bot.log` (`LOG_PATH`), rotated at `LOG_MAX_MB` (5) with
+  `LOG_BACKUPS` (5) older files kept. A crash writes a `crash` line with its traceback before the process ends, and a
+  failed background task does the same, so an exit code 1 is never without a reason again.
+- **Timestamps.** Every decision that reaches the order path is one row in the `attempts` table of the ledger
+  (`bot.db` / `bot-live.db`): `spot_ts_ms` (the BRTI value's own time), `book_ts_ms` (Kalshi's send time of the last
+  book message), `decision_ts_ms`, `order_send_ts_ms`, `order_ack_ts_ms`, `round_trip_ms`, the outcome (`filled`,
+  `missed`, `refused`, `unclear`, `not-sent`, `error`) and `clock_offset_ms`. The last three timestamps are this PC's
+  clock; add `clock_offset_ms` to put them on Kalshi's. Paper fills are rows too (`kind = 'paper'`, simulated).
+- **One kept-open connection.** REST calls go through one `httpx` client (HTTP/2; Kalshi's host offers it), so an order
+  does not open a new TLS connection. Measured 2026-11-18 on a public read: 1,000 ms for the first request, 67 ms on
+  the open connection. An order is still sent once and never retried. A request that could not connect at all counts
+  as refused (nothing was sent).
+- **Kalshi's clock.** Read from the `Date` header of every REST answer, as the engine does (1-second resolution, so it
+  can be ~0.5 s off). Rounds open and close, and requests are signed, by that clock. This PC was 1.9 s behind it when
+  measured.
+- **Data guards.** No decision on a book more than `MAX_BOOK_DELAY_MS` (500, was 1,500) behind Kalshi's own send times,
+  or on a BRTI value older than `MAX_PRINT_AGE_MS` (500, was 1,500). If the 5 Hz index channel stops, the bot can decide
+  only in the half second after each 1 Hz print.
+- **Record against Kalshi.** At start in live mode the latest `AUDIT_ROUNDS` (50) recorded rounds are compared with
+  Kalshi's fills (contracts and dollars bought and sold) and the record's cash with the account's. Differences are
+  logged (`ledger-drift`) and shown on the Bot page; nothing is changed automatically. It runs beside the stream at one
+  read a second (up to about a minute), and real trading cannot be switched on until it has finished: the bot refuses
+  to order and the Bot page refuses to arm while `auditPending` is true.

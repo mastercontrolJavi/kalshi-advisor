@@ -7,18 +7,36 @@ import {existsSync,readFileSync,renameSync,writeFileSync} from 'node:fs';
  *
  * The one thing written here is the real-money switch (data/bot-live.json), and only from the Bot page's button. The
  * bot reads it before every real order and can itself only switch it off (bot/live.py).
+ *
+ * Switching on is good for one run of the bot and for a few hours (2026-11-18): the file names the bot's boot id (from
+ * its status file; a new one at every start) and an end time. The bot refuses an arming without both, so a restart
+ * after a crash is never armed and nothing stays on for days (bot/live.py Switch.why_off).
  */
 export const LIVE_DB='data/bot-live.db',LIVE_SWITCH='data/bot-live.json';
-export interface LiveSwitch {armed:boolean;time:number|null;by:string|null;note:string}
+/** expires_at: UTC ms after which the arming no longer counts; boot_id: the run of the bot it was made for. Both null when off. */
+export interface LiveSwitch {armed:boolean;time:number|null;by:string|null;note:string;expires_at:number|null;boot_id:string|null}
+export const ARM_MAX_HOURS=4;
 export function readSwitch(path=LIVE_SWITCH):LiveSwitch{
-  try{const d=JSON.parse(readFileSync(path,'utf8'));return {armed:d.armed===true,time:typeof d.time==='number'?d.time:null,by:typeof d.by==='string'?d.by:null,note:typeof d.note==='string'?d.note:''};}
-  catch{return {armed:false,time:null,by:null,note:''};}
+  try{const d=JSON.parse(readFileSync(path,'utf8'));return {armed:d.armed===true,time:typeof d.time==='number'?d.time:null,by:typeof d.by==='string'?d.by:null,note:typeof d.note==='string'?d.note:'',
+    expires_at:typeof d.expires_at==='number'?d.expires_at:null,boot_id:typeof d.boot_id==='string'?d.boot_id:null};}
+  catch{return {armed:false,time:null,by:null,note:'',expires_at:null,boot_id:null};}
 }
-/** Switching on needs the bot running in live mode (its status file says so); switching off always works. */
+/** True only while the arming is good for the bot that is running now: on, made for its boot id, and not run out. */
+export function switchLive(sw:LiveSwitch|null,status:any,now=Date.now()):boolean{
+  return !!sw&&sw.armed&&typeof status?.bootId==='string'&&sw.boot_id===status.bootId&&sw.expires_at!==null&&now<sw.expires_at;
+}
+/**
+ * Switching on needs the bot running in live mode (its status file says so) and is written for that run (its bootId)
+ * with an end time: the bot's own limit (status.armMaxHours), never more than ARM_MAX_HOURS. Switching off always works.
+ */
 export function setSwitch(armed:unknown,status:any,now=Date.now(),path=LIVE_SWITCH):LiveSwitch{
   if(typeof armed!=='boolean')throw new Error('armed must be true or false');
   if(armed&&!(status?.running&&status.mode==='live'))throw new Error('The bot is not running in real-money mode, so it cannot be switched on');
-  const next:LiveSwitch={armed,time:now,by:'user',note:''};
+  if(armed&&!(typeof status.bootId==='string'&&status.bootId))throw new Error('The running bot is an older version without a boot id; restart it, then switch on');
+  // The bot compares its record with Kalshi when it starts (up to about a minute). No arming until that result is on the page (PR 16 review).
+  if(armed&&status.auditPending!==false)throw new Error('The bot is still checking its record against Kalshi after starting. Try again in a minute, once the check is shown as finished');
+  const hours=Math.min(ARM_MAX_HOURS,Number.isFinite(status?.armMaxHours)&&status.armMaxHours>0?status.armMaxHours:ARM_MAX_HOURS);
+  const next:LiveSwitch={armed,time:now,by:'user',note:'',expires_at:armed?now+hours*3600000:null,boot_id:armed?status.bootId:null};
   writeFileSync(path+'.tmp',JSON.stringify(next));replaceFile(path+'.tmp',path);return next;
 }
 /** rename over `to`, retried for a moment: on Windows it fails (EPERM/EBUSY/EACCES) while the bot has the file open to
@@ -45,12 +63,13 @@ export interface BotRecord {
   /** Average result per contract after fees, with a 95% half-width over rounds (null under 2 rounds). */
   perContract:number|null;perContractCi:number|null;avgPrice:number|null;avgEdge:number|null;
   curve:{time:number;pnl:number}[];trades:BotTrade[];status:any|null;
-  /** Real-money mode: which ledger this is, and the switch as the file says right now. */
-  live:boolean;switch:LiveSwitch|null;
+  /** Real-money mode: which ledger this is, and the switch as the file says right now. switchLive: that arming is
+   * good for the bot running now (its boot id, not run out); the page shows "on" only then. */
+  live:boolean;switch:LiveSwitch|null;switchLive:boolean;
 }
 /** Stale after 30 s: the bot rewrites the file every 10 s while it runs. */
 export const BOT_STATUS_MAX_AGE_MS=30000;
-export function summarize(rows:BotTrade[],account:{cash:number;start:number;started:number;peak:number},misses:number,now:number):Omit<BotRecord,'status'|'missing'|'live'|'switch'>{
+export function summarize(rows:BotTrade[],account:{cash:number;start:number;started:number;peak:number},misses:number,now:number):Omit<BotRecord,'status'|'missing'|'live'|'switch'|'switchLive'>{
   const settled=rows.filter(r=>r.pnl!=null).sort((a,b)=>a.time-b.time),open=rows.filter(r=>r.pnl==null);
   const per=settled.map(r=>r.pnl!/r.contracts),n=per.length,mean=n?per.reduce((a,b)=>a+b,0)/n:null;
   const ci=n>1?1.96*Math.sqrt(per.reduce((a,b)=>a+(b-mean!)**2,0)/(n-1)/n):null;
@@ -65,7 +84,7 @@ export function summarize(rows:BotTrade[],account:{cash:number;start:number;star
     curve,trades:[...rows].sort((a,b)=>b.time-a.time).slice(0,200)};
 }
 export function readBotRecord(dbPath?:string,statusPath='data/bot-status.json',now=Date.now(),switchPath=LIVE_SWITCH):BotRecord{
-  const status=readStatus(statusPath,now),live=status?.mode==='live',mode={live,switch:live?readSwitch(switchPath):null};
+  const status=readStatus(statusPath,now),live=status?.mode==='live',sw=live?readSwitch(switchPath):null,mode={live,switch:sw,switchLive:switchLive(sw,status,now)};
   dbPath??=live?LIVE_DB:'data/bot.db';
   const empty={start:0,started:0,cash:0,peak:0};
   if(!existsSync(dbPath))return {missing:true,...summarize([],empty,0,now),status,...mode};

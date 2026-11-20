@@ -23,6 +23,15 @@ CREATE TABLE IF NOT EXISTS equity (ts REAL NOT NULL, equity REAL NOT NULL, note 
 CREATE TABLE IF NOT EXISTS pending (
   cid TEXT PRIMARY KEY, ts REAL NOT NULL, ticker TEXT NOT NULL, side TEXT NOT NULL, limit_price REAL NOT NULL, wanted REAL NOT NULL,
   q REAL, edge REAL, p_yes REAL, secs_left REAL);
+-- One row per decision that reached the order path (2026-11-18): real orders, sales and paper fills, with where the
+-- time went. spot_ts_ms is the BRTI value's own timestamp and book_ts_ms Kalshi's send time of the last book message
+-- (their clocks); decision / order_send / order_ack are this PC's clock, and clock_offset_ms is Kalshi's clock minus
+-- this PC's at that moment, so local + offset puts them on Kalshi's clock. round_trip_ms = ack - send.
+CREATE TABLE IF NOT EXISTS attempts (
+  id INTEGER PRIMARY KEY, ticker TEXT NOT NULL, kind TEXT NOT NULL, side TEXT NOT NULL, outcome TEXT NOT NULL, limit_price REAL, wanted REAL,
+  filled REAL, cid TEXT, spot_ts_ms REAL, book_ts_ms REAL, decision_ts_ms REAL, order_send_ts_ms REAL, order_ack_ts_ms REAL, round_trip_ms REAL,
+  clock_offset_ms REAL, edge REAL, secs_left REAL, note TEXT);
+CREATE INDEX IF NOT EXISTS attempts_ticker ON attempts (ticker);
 """
 
 
@@ -142,6 +151,18 @@ class PaperBroker:
         self.db.commit()
         return Fill(ticker, side, n, paid / n, fees)
 
+    ATTEMPT_COLS = ('ticker', 'kind', 'side', 'outcome', 'limit_price', 'wanted', 'filled', 'cid', 'spot_ts_ms', 'book_ts_ms', 'decision_ts_ms',
+                    'order_send_ts_ms', 'order_ack_ts_ms', 'round_trip_ms', 'clock_offset_ms', 'edge', 'secs_left', 'note')
+
+    def attempt(self, ticker: str, kind: str, side: str, outcome: str, **marks) -> None:
+        """Write one decision / order attempt with its timestamps (the attempts table). kind: 'buy' | 'sell' | 'paper'.
+        outcome: 'filled' | 'missed' | 'refused' | 'unclear' | 'not-sent' | 'error'. The round trip is worked out here."""
+        row = {**{k: marks.get(k) for k in self.ATTEMPT_COLS}, 'ticker': ticker, 'kind': kind, 'side': side, 'outcome': outcome}
+        if row['round_trip_ms'] is None and row['order_send_ts_ms'] is not None and row['order_ack_ts_ms'] is not None:
+            row['round_trip_ms'] = row['order_ack_ts_ms'] - row['order_send_ts_ms']
+        self.db.execute(f'INSERT INTO attempts ({", ".join(self.ATTEMPT_COLS)}) VALUES ({", ".join("?" * len(self.ATTEMPT_COLS))})', [row[k] for k in self.ATTEMPT_COLS])
+        self.db.commit()
+
     def miss(self, ticker: str, side: str, decided_ask: float, ask_then: Optional[float], edge: float, secs_left: float, ts: float) -> None:
         self.db.execute('INSERT INTO misses (ts, ticker, side, decided_ask, ask_then, edge, secs_left) VALUES (?,?,?,?,?,?,?)',
                         (ts, ticker, side, decided_ask, ask_then, edge, secs_left))
@@ -220,7 +241,7 @@ class PaperBroker:
 
     def reset(self, start: float, now: Optional[float] = None) -> None:
         now = time.time() if now is None else now
-        for table in ('fills', 'misses', 'equity', 'account'):
+        for table in ('fills', 'misses', 'equity', 'account', 'attempts'):
             self.db.execute(f'DELETE FROM {table}')
         self.db.execute('INSERT INTO account (id, cash, start, started, peak) VALUES (1, ?, ?, ?, ?)', (start, start, now, start))
         self.db.execute('INSERT INTO equity (ts, equity, note) VALUES (?, ?, ?)', (now, start, 'start'))
