@@ -4,7 +4,7 @@ import {createServer,request} from 'node:http';
 import {WebSocketServer,WebSocket} from 'ws';
 import {authorized,requireDashboardCredentials} from '../src/engine/auth';
 import {fullSpeed} from '../src/engine/power';
-import {readBotRecord,readStatus,setSwitch,sameOrigin} from '../src/bot/record';
+import {readBotRecord,readStatus,setSwitch,setFeature,sameOrigin} from '../src/bot/record';
 requireDashboardCredentials();
 // This server relays the 4 Hz engine stream to the page, so it must not be power-throttled on battery either (power.ts).
 fullSpeed((event,data)=>console.log(JSON.stringify({time:new Date().toISOString(),event,data})));
@@ -24,6 +24,16 @@ const server=createServer((req,res)=>{
     if(!sameOrigin(req.headers.origin,req.headers.host)||!String(req.headers['content-type']??'').startsWith('application/json'))return fail(403,'Not allowed from here');
     let raw='';req.on('data',c=>{raw+=c;if(raw.length>1000)req.destroy();});
     req.on('end',()=>{try{const next=setSwitch(JSON.parse(raw||'{}').armed,readStatus());console.log(JSON.stringify({time:new Date().toISOString(),event:'real-trading-switch',data:next}));
+      res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(next));}catch(e){fail(400,(e as Error).message);}});
+    return;
+  }
+  // The feature switches on the Bot page (bot/features.py): the same rule as the switch above, this page's own buttons
+  // only. They change what the bot buys and sells, never whether real trading is on.
+  if(req.url==='/api/bot/features'&&req.method==='POST'){
+    const fail=(code:number,error:string)=>{res.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify({error}));};
+    if(!sameOrigin(req.headers.origin,req.headers.host)||!String(req.headers['content-type']??'').startsWith('application/json'))return fail(403,'Not allowed from here');
+    let raw='';req.on('data',c=>{raw+=c;if(raw.length>1000)req.destroy();});
+    req.on('end',()=>{try{const body=JSON.parse(raw||'{}'),next=setFeature(body.name,body.on);console.log(JSON.stringify({time:new Date().toISOString(),event:'bot-feature-switch',data:{name:body.name,on:body.on}}));
       res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(next));}catch(e){fail(400,(e as Error).message);}});
     return;
   }

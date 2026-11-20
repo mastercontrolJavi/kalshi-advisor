@@ -10,6 +10,7 @@ import json
 import os
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -66,11 +67,12 @@ class Switch:
 
 def drift(row: dict, fills: List[dict]) -> Optional[dict]:
     """Compare one round of the bot's record with what Kalshi's fills for that market add up to. `row`: ticker, side,
-    contracts, paid, fee, exit_n, exit_cash. Returns the differences (Kalshi minus the record) when any is larger than
-    half a hundredth of a contract or one cent, else None. A buy or a sale by hand on the same round shows up here."""
+    contracts, paid, fee, exit_n, exit_cash, and ts (the recorded time of the buy) when known. Returns the differences
+    (Kalshi minus the record) when any is larger than half a hundredth of a contract or one cent, else None. A buy or a
+    sale by hand on the same round shows up here."""
     side = row['side']
     n, paid, fees = from_fills(fills, side)
-    sold_n, sold_cash = sold(fills, side)
+    sold_n, sold_cash = sold(fills, side, row.get('ts'))
     d = {'contracts': n - row['contracts'], 'paid': paid - row['paid'], 'fee': fees - row['fee'],
          'sold': min(sold_n, n) - row['exit_n'], 'sold_cash': sold_cash - row['exit_cash']}
     if abs(d['contracts']) <= 0.005 and abs(d['sold']) <= 0.005 and all(abs(d[k]) <= 0.01 for k in ('paid', 'fee', 'sold_cash')):
@@ -90,13 +92,46 @@ def sell_body(ticker: str, side: str, limit: float, contracts: float, client_ord
             'self_trade_prevention_type': 'taker_at_cross', 'cancel_order_on_pause': True, 'reduce_only': True}
 
 
-def sold(fills: List[dict], side: str) -> Tuple[float, float]:
+def fill_time(f: dict) -> Optional[float]:
+    """Kalshi's own time of a fill, epoch seconds: `created_time` (ISO, UTC) or `ts`. None when neither can be read."""
+    raw = f.get('created_time')
+    if isinstance(raw, str) and raw:
+        try:
+            return datetime.fromisoformat(raw.replace('Z', '+00:00')).timestamp()
+        except ValueError:
+            pass
+    try:
+        return float(f['ts']) if f.get('ts') is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+BUY_MATCH_S = 30.0   # the bot's own buy is looked for in Kalshi's fills this close to the time the record gives it
+BUY_SLACK_S = 3.0    # with no such fill, a fill up to this long before the recorded time still counts (clock difference)
+
+
+def sold(fills: List[dict], side: str, bought_at: Optional[float] = None) -> Tuple[float, float]:
     """(contracts, dollars after fees) of `side` sold in these fills, whoever sold them: the bot or the owner by hand.
-    Kalshi reports a sale of one side as a fill on the other (outcome_side), with both prices on it."""
+    Kalshi reports a sale of one side as a fill on the other (outcome_side), with both prices on it, and reports a
+    purchase of the other side the same way: the two cannot be told apart on a fill.
+
+    `bought_at` is the time the record gives the bot's own buy (epoch seconds). With it, only fills AFTER that buy
+    count. Without it, a purchase of the other side made by hand before the bot bought was booked as a sale of the
+    bot's position (2026-11-19, KXBTC15M-26NOV192315-15: the owner bought YES 26.26 at 18c, the bot bought NO 2.06 five
+    minutes later, and the record showed that NO as sold at 82c). The buy is located in Kalshi's own fills (the fill of
+    `side` nearest `bought_at`), so both times are on Kalshi's clock; this PC's clock runs about 2 s behind it. A fill
+    with no readable time is counted, as before. A purchase of the other side made by hand AFTER the bot's buy still
+    counts: on the account that is a sale of the position."""
     other = 'no' if side == 'yes' else 'yes'
+    start: Optional[float] = None
+    if bought_at is not None:
+        own = [t for f in fills if (f.get('outcome_side') or f.get('side')) == side and (t := fill_time(f)) is not None and abs(t - bought_at) <= BUY_MATCH_S]
+        start = min(own, key=lambda t: abs(t - bought_at)) if own else bought_at - BUY_SLACK_S
     n = cash = 0.0
     for f in fills:
         if (f.get('outcome_side') or f.get('side')) != other:
+            continue
+        if start is not None and (t := fill_time(f)) is not None and t <= start:
             continue
         count = float(f['count_fp'])
         n += count

@@ -47,6 +47,34 @@ export function replaceFile(from:string,to:string,rename:(a:string,b:string)=>vo
     catch(e){if(i>=tries||!['EPERM','EBUSY','EACCES'].includes((e as NodeJS.ErrnoException).code??''))throw e;Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,50);}
   }
 }
+/**
+ * The owner's feature switches on the Bot page (2026-11-19), data/bot-features.json. The page writes the file here and
+ * the bot reads it every 10 s (bot/features.py): no restart. A switch that is not in the file leaves the bot's own
+ * setting as it is. None of them switches real trading on.
+ *   cheap: buy tickets under 10c · sellLosers: sell a losing or reversing position early · scalp: sell a ticket
+ *   bought under 10c when its bid has jumped to 5x the price paid.
+ */
+export const FEATURES='data/bot-features.json';
+export const FEATURE_NAMES=['cheap','sellLosers','scalp'] as const;
+export type FeatureName=typeof FEATURE_NAMES[number];
+export type Features=Partial<Record<FeatureName,boolean>>;
+export function readFeatures(path=FEATURES):Features{
+  try{const d=JSON.parse(readFileSync(path,'utf8')),out:Features={};for(const k of FEATURE_NAMES)if(typeof d?.[k]==='boolean')out[k]=d[k];return out;}
+  catch{return {};}
+}
+/** Sets one switch and keeps the others as the file has them. */
+export function setFeature(name:unknown,on:unknown,now=Date.now(),path=FEATURES):Features{
+  if(typeof name!=='string'||!(FEATURE_NAMES as readonly string[]).includes(name))throw new Error('Unknown feature');
+  if(typeof on!=='boolean')throw new Error('on must be true or false');
+  const next:Features={...readFeatures(path),[name]:on};
+  writeFileSync(path+'.tmp',JSON.stringify({...next,time:now,by:'user'}));replaceFile(path+'.tmp',path);return next;
+}
+/** What the page shows: what the running bot reports as in effect, with the file on top (a press shows at once; the bot follows within 10 s). */
+export function featuresShown(status:any,file:Features):Features{
+  const out:Features={},bot=status?.features;
+  for(const k of FEATURE_NAMES){const v=typeof file[k]==='boolean'?file[k]:typeof bot?.[k]==='boolean'?bot[k]:undefined;if(v!==undefined)out[k]=v;}
+  return out;
+}
 /** True when an Origin header names the same host as the Host header; a missing, "null" or malformed Origin is not the same origin (and must not throw). */
 export function sameOrigin(origin:string|undefined,host:string|undefined):boolean{
   if(!origin||!host)return false;
@@ -66,10 +94,12 @@ export interface BotRecord {
   /** Real-money mode: which ledger this is, and the switch as the file says right now. switchLive: that arming is
    * good for the bot running now (its boot id, not run out); the page shows "on" only then. */
   live:boolean;switch:LiveSwitch|null;switchLive:boolean;
+  /** The feature switches as the page should show them (featuresShown). A name is absent when neither the bot nor the file says. */
+  features:Features;
 }
 /** Stale after 30 s: the bot rewrites the file every 10 s while it runs. */
 export const BOT_STATUS_MAX_AGE_MS=30000;
-export function summarize(rows:BotTrade[],account:{cash:number;start:number;started:number;peak:number},misses:number,now:number):Omit<BotRecord,'status'|'missing'|'live'|'switch'|'switchLive'>{
+export function summarize(rows:BotTrade[],account:{cash:number;start:number;started:number;peak:number},misses:number,now:number):Omit<BotRecord,'status'|'missing'|'live'|'switch'|'switchLive'|'features'>{
   const settled=rows.filter(r=>r.pnl!=null).sort((a,b)=>a.time-b.time),open=rows.filter(r=>r.pnl==null);
   const per=settled.map(r=>r.pnl!/r.contracts),n=per.length,mean=n?per.reduce((a,b)=>a+b,0)/n:null;
   const ci=n>1?1.96*Math.sqrt(per.reduce((a,b)=>a+(b-mean!)**2,0)/(n-1)/n):null;
@@ -83,8 +113,9 @@ export function summarize(rows:BotTrade[],account:{cash:number;start:number;star
     avgPrice:contracts?settled.reduce((a,r)=>a+r.price*r.contracts,0)/contracts:null,avgEdge:edges.length?edges.reduce((a,r)=>a+r.edge!,0)/edges.length:null,
     curve,trades:[...rows].sort((a,b)=>b.time-a.time).slice(0,200)};
 }
-export function readBotRecord(dbPath?:string,statusPath='data/bot-status.json',now=Date.now(),switchPath=LIVE_SWITCH):BotRecord{
-  const status=readStatus(statusPath,now),live=status?.mode==='live',sw=live?readSwitch(switchPath):null,mode={live,switch:sw,switchLive:switchLive(sw,status,now)};
+export function readBotRecord(dbPath?:string,statusPath='data/bot-status.json',now=Date.now(),switchPath=LIVE_SWITCH,featuresPath=FEATURES):BotRecord{
+  const status=readStatus(statusPath,now),live=status?.mode==='live',sw=live?readSwitch(switchPath):null;
+  const mode={live,switch:sw,switchLive:switchLive(sw,status,now),features:featuresShown(status,readFeatures(featuresPath))};
   dbPath??=live?LIVE_DB:'data/bot.db';
   const empty={start:0,started:0,cash:0,peak:0};
   if(!existsSync(dbPath))return {missing:true,...summarize([],empty,0,now),status,...mode};
