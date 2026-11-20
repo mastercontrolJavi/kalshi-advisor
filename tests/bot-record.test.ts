@@ -39,10 +39,10 @@ describe('bot record',()=>{
       expect(()=>setSwitch(true,{running:true,mode:'live',bootId:'b1'},1,path)).toThrow(/still checking/);                      // ... or its state is unknown
       expect(readSwitch(path).armed).toBe(false);
       const bot={running:true,mode:'live',bootId:'b1',auditPending:false},H=3600000;
-      expect(setSwitch(true,bot,7,path)).toEqual({armed:true,time:7,by:'user',note:'',expires_at:7+4*H,boot_id:'b1'});   // for this run, 4 hours at most
-      expect(readSwitch(path)).toEqual({armed:true,time:7,by:'user',note:'',expires_at:7+4*H,boot_id:'b1'});
+      expect(setSwitch(true,bot,7,path)).toEqual({armed:true,time:7,by:'user',note:'',expires_at:7+10*H,boot_id:'b1'});   // for this run, 10 hours at most
+      expect(readSwitch(path)).toEqual({armed:true,time:7,by:'user',note:'',expires_at:7+10*H,boot_id:'b1'});
       expect(setSwitch(true,{...bot,armMaxHours:1},7,path).expires_at).toBe(7+H);    // the bot's own shorter limit
-      expect(setSwitch(true,{...bot,armMaxHours:12},7,path).expires_at).toBe(7+4*H); // never longer than 4 hours from the page
+      expect(setSwitch(true,{...bot,armMaxHours:12},7,path).expires_at).toBe(7+10*H); // never longer than 10 hours from the page
       expect(setSwitch(false,null,9,path).armed).toBe(false);                       // off needs nothing
       expect(readSwitch(path)).toEqual({armed:false,time:9,by:'user',note:'',expires_at:null,boot_id:null});
       writeFileSync(path,'{"armed":"yes"}');expect(readSwitch(path).armed).toBe(false);
