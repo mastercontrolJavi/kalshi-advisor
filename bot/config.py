@@ -42,6 +42,12 @@ class BotConfig:
     # 2026-11-13, user choice: 1.5x the first sizing (was 0.5 Kelly, 10% cap). A replay of 134 paper trades put the useful ceiling at 1.5-2x.
     KELLY_FRAC: float = 0.75
     MAX_RISK_FRAC: float = 0.15    # most of the bankroll one round may cost
+    # 2026-11-20, user choice: size every trade as if its edge were at most SIZE_EDGE_CAP (0 = no cap). Which trades are
+    # taken is unchanged. On the 319 settled paper rounds the model's 5c+ edges won 27% against the 38% it said (n 44,
+    # -$16.20) while 0-5c edges made +$15.74, so plain Kelly put the biggest bets on the worst trades. Replay at a fixed
+    # $15: plain Kelly +$2.77, cap 3c +$6.92, 4c +$8.47, 5c +$8.82; a blend toward Kalshi's price was worse (-$3 to -$4)
+    # because the fee wipes out the small edges first. The cap was picked on those same rounds: live is the test.
+    SIZE_EDGE_CAP: float = 0.04
     # --- Real money (bot/live.py), 2026-11-17, user: "same type of experiment, but with real money that I can afford to lose" ---
     # MODE 'live' sends real Kalshi orders, and only while the switch on the Bot page is on (data/bot-live.json). The bot
     # spends from its own ledger (LIVE_DB_PATH), which starts at LIVE_BUDGET and grows only by its own wins: whatever
@@ -55,7 +61,8 @@ class BotConfig:
     ARM_MAX_HOURS: float = 4.0
     # Real orders are a flat MAX_CONTRACTS_PER_ROUND contracts (still cut to what the cash can pay) instead of the
     # Kelly size: the paper record shows no edge, so real money is only testing the plumbing. 0 = size by the rule.
-    MAX_CONTRACTS_PER_ROUND: float = 1.0
+    # 2026-11-20, user: back to the rule's own Kelly size (KELLY_FRAC, capped at MAX_RISK_FRAC of the bankroll).
+    MAX_CONTRACTS_PER_ROUND: float = 0.0
     AUDIT_ROUNDS: int = 50         # at start, this many of the latest recorded rounds are compared with Kalshi's fills
     # --- Selling a losing position early (live mode only), 2026-11-17, user: "sell whatever we have left, something is
     # better than nothing". When the best bid for the side held has stayed at or under EXIT_BELOW x the entry price for
@@ -113,6 +120,8 @@ class BotConfig:
             raise ValueError('MIN_EDGE, MIN_ASK and MAX_ASK must be prices in (0, 1)')
         if not (0 < self.KELLY_FRAC <= 1 and 0 < self.MAX_RISK_FRAC <= 1):
             raise ValueError('KELLY_FRAC and MAX_RISK_FRAC must be in (0, 1]')
+        if not (0 <= self.SIZE_EDGE_CAP < 1):
+            raise ValueError('SIZE_EDGE_CAP must be 0 (off) or a price in (0, 1)')
         if not (0 <= self.MIN_SECS_LEFT < self.MAX_SECS_LEFT <= 900):
             raise ValueError('need 0 <= MIN_SECS_LEFT < MAX_SECS_LEFT <= 900')
         if self.START_BANKROLL <= 0 or self.LATENCY_MS < 0 or self.PRIORITY not in ('low', 'normal'):

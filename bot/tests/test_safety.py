@@ -88,7 +88,7 @@ def test_an_arming_that_has_run_out_switches_itself_off(tmp_path):
 
 
 def test_live_orders_are_one_flat_contract_by_default(tmp_path):
-    assert BotConfig().MAX_CONTRACTS_PER_ROUND == 1.0 and BotConfig().ARM_MAX_HOURS == 4.0
+    assert BotConfig().MAX_CONTRACTS_PER_ROUND == 0.0 and BotConfig().ARM_MAX_HOURS == 4.0   # 2026-11-20: Kelly by default
     bot, m = make(tmp_path, MAX_CONTRACTS_PER_ROUND=1.0)         # the default; NO would be 4 contracts by the rule
     sent, _ = run(bot, m, NO, {'order_id': 'o1', 'fill_count': '0.00'})
     assert sent[0][1]['count'] == '1.00'

@@ -93,10 +93,13 @@ LOT = 100  # Kalshi fills in hundredths of a contract (the owner's real fills: 0
 
 def size(cfg: BotConfig, q: float, ask: float, bankroll: float) -> float:
     """Contracts, in hundredths: KELLY_FRAC of the Kelly stake, at most MAX_RISK_FRAC of the bankroll. Fractional, so a
-    small account stakes what the rule says instead of rounding up to a whole contract."""
+    small account stakes what the rule says instead of rounding up to a whole contract. An edge above SIZE_EDGE_CAP is
+    sized as if it were the cap: the model's big edges have been its worst trades."""
     cost = ask + taker_fee(ask)
     if bankroll <= 0 or cost >= 1 or q <= cost:
         return 0.0
+    if cfg.SIZE_EDGE_CAP > 0:
+        q = min(q, cost + cfg.SIZE_EDGE_CAP)
     kelly = (q - cost) / (1 - cost)
     cap = cfg.MAX_RISK_FRAC * bankroll
     lots = math.floor(min(cfg.KELLY_FRAC * kelly * bankroll, cap) / cost * LOT + 1e-9)
