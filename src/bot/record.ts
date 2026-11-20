@@ -15,7 +15,7 @@ import {existsSync,readFileSync,renameSync,writeFileSync} from 'node:fs';
 export const LIVE_DB='data/bot-live.db',LIVE_SWITCH='data/bot-live.json';
 /** expires_at: UTC ms after which the arming no longer counts; boot_id: the run of the bot it was made for. Both null when off. */
 export interface LiveSwitch {armed:boolean;time:number|null;by:string|null;note:string;expires_at:number|null;boot_id:string|null}
-export const ARM_MAX_HOURS=4;
+export const ARM_MAX_HOURS=10;   // 2026-11-20, user: 4 -> 10, matching bot/config.py, so one arming covers a night
 export function readSwitch(path=LIVE_SWITCH):LiveSwitch{
   try{const d=JSON.parse(readFileSync(path,'utf8'));return {armed:d.armed===true,time:typeof d.time==='number'?d.time:null,by:typeof d.by==='string'?d.by:null,note:typeof d.note==='string'?d.note:'',
     expires_at:typeof d.expires_at==='number'?d.expires_at:null,boot_id:typeof d.boot_id==='string'?d.boot_id:null};}

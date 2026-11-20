@@ -1,0 +1,24 @@
+[
+  {
+    "id": "H1",
+    "registered": "2026-11-20",
+    "status": "testing",
+    "idea": "Skip UP (yes) bets when BTC is down more than 1.5% over the last 6 hours.",
+    "tag": "up_after_6h_drop",
+    "market_check": "up_after_6h_drop",
+    "evidence": "regime-study 2026-11-20: across 12.6k rounds, buying UP at the ask after a >1.5% 6-h drop returned about -5c a contract against about -2.5c in other rounds, same sign in both halves of the data, but only 41-52 distinct days, not monotone (>3% drops showed nothing) and one of many cuts tried. Multi-day trends (24 h, 7 d, distance below the 7-d high) showed no consistent mispricing.",
+    "pass_rule": "Judged only on rounds after the registration date. Market-wide: UP-at-ask result in tagged rounds at least 2c worse than in other rounds, more than 2 standard errors apart, with 200+ tagged rounds (about 25+ distinct days). Bot: tagged UP fills net negative with 30+ fills. Both must hold before it is proposed for the paper bot; real orders only on the owner's yes.",
+    "kill_rule": "Market-wide difference within 1c of zero after 300 tagged rounds."
+  },
+  {
+    "id": "H2",
+    "registered": "2026-11-20",
+    "status": "testing",
+    "idea": "The bot's bets against the 6-hour trend (UP when BTC is down more than 0.5% over 6 h, DOWN when up more than 0.5%) do worse than its bets with the trend.",
+    "tag": "against_6h_trend",
+    "compare_tag": "with_6h_trend",
+    "evidence": "journal 2026-11-20, in-sample: paper against-trend fills -6.1c +/- 4.4 a contract (n 93) vs with-trend +4.6c +/- 3.2 (n 139), about 2 standard errors apart; live the same direction on 13 vs 18 fills. Market-wide the 6-h trend is priced in (regime study), so if real this is the bot's model (no momentum) overstating its edge against the trend, not Kalshi mispricing it.",
+    "pass_rule": "Judged only on bot fills (paper + live) after the registration date: against-trend fills at least 3c a contract worse than with-trend fills, more than 2 standard errors apart, with 80+ against-trend fills. Then proposed as a paper-only filter; real orders only on the owner's yes.",
+    "kill_rule": "Difference within 1c of zero, or with-trend fills worse, after 120 against-trend fills."
+  }
+]

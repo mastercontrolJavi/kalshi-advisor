@@ -80,7 +80,7 @@ The same rule and sizing, with real Kalshi orders.
 - **Two locks.** `BOT_MODE=live` in `.env.local` puts the bot in real-money mode, where it only watches. It orders only
   while the switch on the Bot page is on (`data/bot-live.json`, written by the page's button and nothing else). The bot
   reads the file again right before every order, so off is immediate.
-- **Switching on ends by itself** (2026-11-18). It is good for one run of the bot and for `ARM_MAX_HOURS` (4) at most:
+- **Switching on ends by itself** (2026-11-18). It is good for one run of the bot and for `ARM_MAX_HOURS` (10 since 2026-11-20) at most:
   the file carries the bot's `boot_id` (a new one at every start) and `expires_at` (UTC ms), and the bot refuses an
   arming without both. Every start, a restart after a crash included, begins switched off, and an arming that has run
   out is written off with the reason.

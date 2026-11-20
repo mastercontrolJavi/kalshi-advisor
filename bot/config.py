@@ -58,7 +58,7 @@ class BotConfig:
     # --- Arming and plumbing-test sizing (2026-11-18 audit). Switching real trading on is good for one run of the bot
     # and for ARM_MAX_HOURS at most: every start, a restart after a crash included, begins switched off, and an arming
     # that has run out switches itself off (bot/live.py Switch.why_off).
-    ARM_MAX_HOURS: float = 4.0
+    ARM_MAX_HOURS: float = 10.0    # 2026-11-20, user: 4 -> 10 so one arming covers a night
     # Real orders are a flat MAX_CONTRACTS_PER_ROUND contracts (still cut to what the cash can pay) instead of the
     # Kelly size: the paper record shows no edge, so real money is only testing the plumbing. 0 = size by the rule.
     # 2026-11-20, user: back to the rule's own Kelly size (KELLY_FRAC, capped at MAX_RISK_FRAC of the bankroll).

@@ -88,7 +88,7 @@ def test_an_arming_that_has_run_out_switches_itself_off(tmp_path):
 
 
 def test_live_orders_are_one_flat_contract_by_default(tmp_path):
-    assert BotConfig().MAX_CONTRACTS_PER_ROUND == 0.0 and BotConfig().ARM_MAX_HOURS == 4.0   # 2026-11-20: Kelly by default
+    assert BotConfig().MAX_CONTRACTS_PER_ROUND == 0.0 and BotConfig().ARM_MAX_HOURS == 10.0   # 2026-11-20: Kelly by default
     bot, m = make(tmp_path, MAX_CONTRACTS_PER_ROUND=1.0)         # the default; NO would be 4 contracts by the rule
     sent, _ = run(bot, m, NO, {'order_id': 'o1', 'fill_count': '0.00'})
     assert sent[0][1]['count'] == '1.00'
@@ -475,7 +475,7 @@ def test_the_status_file_carries_the_boot_id_and_the_drift(tmp_path):
     bot.last_value_ms, bot.status_path, bot.drift = 0.0, tmp_path / 'bot-status.json', [{'ticker': 'B', 'contracts': 2.0}]
     bot.write_status()
     s = json.loads(bot.status_path.read_text(encoding='utf-8'))
-    assert s['bootId'] == 'boot-1' and s['armMaxHours'] == 4.0 and s['drift'] == [{'ticker': 'B', 'contracts': 2.0}] and s['mode'] == 'live'
+    assert s['bootId'] == 'boot-1' and s['armMaxHours'] == 10.0 and s['drift'] == [{'ticker': 'B', 'contracts': 2.0}] and s['mode'] == 'live'
     assert s['maxContracts'] == 0 and 'clockOffsetMs' in s
 
 
